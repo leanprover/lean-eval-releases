@@ -16,6 +16,8 @@ equal the workflow-supplied trusted UTC instant, acceptance time and archive
 digest must match a trusted State materialization, release IDs contain the real
 generation date, identities cannot escape the canonical bundle path, and each
 bundle's bytes must match its digest.
+Submission identities are canonical lowercase UUIDv7 values allocated at
+authenticated intake.
 
 The machine-readable contracts are
 [`schema/release-manifest-v1.schema.json`](schema/release-manifest-v1.schema.json)

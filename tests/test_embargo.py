@@ -43,9 +43,10 @@ class EmbargoTests(unittest.TestCase):
 
 
 class ManifestTests(unittest.TestCase):
+    SUBMISSION_ID = "018f7777-2ea8-7f55-9f7c-4f099ef55e4e"
     TRUSTED_AS_OF = "2026-10-21T00:00:00.000Z"
     TRUSTED_SUBMISSIONS = {
-        "submission_123": {
+        SUBMISSION_ID: {
             "accepted_at": "2026-08-20T06:07:08.000Z",
             "archive_sha256": "a" * 64,
         }
@@ -58,12 +59,12 @@ class ManifestTests(unittest.TestCase):
             "generated_at": "2026-10-21T00:00:00.000Z",
             "entries": [
                 {
-                    "submission_id": "submission_123",
+                    "submission_id": self.SUBMISSION_ID,
                     "accepted_at": "2026-08-20T06:07:08.000Z",
                     "eligible_at": "2026-10-20T06:07:08.000Z",
                     "archive_sha256": "a" * 64,
                     "bundle_sha256": "b" * 64,
-                    "bundle_path": "sources/submission_123.tar.gz",
+                    "bundle_path": f"sources/{self.SUBMISSION_ID}.tar.gz",
                     "license": "Apache-2.0",
                 }
             ],
@@ -150,7 +151,7 @@ class ManifestTests(unittest.TestCase):
             root = pathlib.Path(temporary)
             sources = root / "sources"
             sources.mkdir()
-            bundle = sources / "submission_123.tar.gz"
+            bundle = sources / f"{self.SUBMISSION_ID}.tar.gz"
             bundle.write_bytes(b"bundle bytes")
             manifest = self.manifest()
             entries = manifest["entries"]

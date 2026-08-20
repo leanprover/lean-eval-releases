@@ -42,7 +42,7 @@
       "properties": {
         "submission_id": {
           "type": "string",
-          "pattern": "^[a-z][a-z0-9_-]{2,127}$"
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
         },
         "accepted_at": { "$ref": "#/$defs/timestamp" },
         "eligible_at": { "$ref": "#/$defs/timestamp" },
@@ -50,7 +50,7 @@
         "bundle_sha256": { "$ref": "#/$defs/sha256" },
         "bundle_path": {
           "type": "string",
-          "pattern": "^sources/[a-z][a-z0-9_-]{2,127}\\.tar\\.gz$"
+          "pattern": "^sources/[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\\.tar\\.gz$"
         },
         "license": { "const": "Apache-2.0" }
       }

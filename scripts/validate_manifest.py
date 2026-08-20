@@ -16,7 +16,9 @@ from embargo import eligible_at, parse_utc_milliseconds
 
 SHA256 = re.compile(r"[0-9a-f]{64}")
 RELEASE_ID = re.compile(r"lean-eval-(?P<date>[0-9]{4}-[0-9]{2}-[0-9]{2})")
-SUBMISSION_ID = re.compile(r"[a-z][a-z0-9_-]{2,127}")
+SUBMISSION_ID = re.compile(
+    r"[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}"
+)
 
 
 class ManifestError(ValueError):
