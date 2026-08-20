@@ -15,6 +15,8 @@ from typing import Any
 from embargo import eligible_at, parse_utc_milliseconds
 
 SHA256 = re.compile(r"[0-9a-f]{64}")
+REPOSITORY = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")
+COMMIT = re.compile(r"[0-9a-f]{40}")
 RELEASE_ID = re.compile(r"lean-eval-(?P<date>[0-9]{4}-[0-9]{2}-[0-9]{2})")
 SUBMISSION_ID = re.compile(
     r"[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}"
@@ -37,6 +39,11 @@ def string_value(value: Any, label: str) -> str:
     return value
 
 
+def canonical_archive_path(submission_id: str) -> str:
+    """Return the only v1 audit-repository path for a submission ciphertext."""
+    return f"archives/{submission_id.replace('-', '')[:2]}/{submission_id}.tar.age"
+
+
 def load_state_snapshot(value: Any) -> dict[str, dict[str, str]]:
     snapshot = object_value(value, "State acceptance snapshot")
     if (
@@ -51,15 +58,34 @@ def load_state_snapshot(value: Any) -> dict[str, dict[str, str]]:
         if SUBMISSION_ID.fullmatch(submission_id) is None:
             raise ManifestError(f"State submission id is not canonical: {submission_id!r}")
         record = object_value(raw_record, f"State submission {submission_id}")
-        if set(record) != {"accepted_at", "archive_ciphertext_sha256"}:
+        fields = {
+            "accepted_at",
+            "archive_repository",
+            "archive_commit",
+            "archive_path",
+            "archive_ciphertext_sha256",
+        }
+        if set(record) != fields:
             raise ManifestError(f"State submission {submission_id} fields are not canonical")
         accepted_at = string_value(record["accepted_at"], "accepted_at")
         parse_utc_milliseconds(accepted_at)
+        archive_repository = string_value(record["archive_repository"], "archive_repository")
+        if REPOSITORY.fullmatch(archive_repository) is None:
+            raise ManifestError(f"State submission {submission_id} archive repository is invalid")
+        archive_commit = string_value(record["archive_commit"], "archive_commit")
+        if COMMIT.fullmatch(archive_commit) is None:
+            raise ManifestError(f"State submission {submission_id} archive commit is invalid")
+        archive_path = string_value(record["archive_path"], "archive_path")
+        if archive_path != canonical_archive_path(submission_id):
+            raise ManifestError(f"State submission {submission_id} archive path is not canonical")
         archive_ciphertext_sha256 = string_value(record["archive_ciphertext_sha256"], "archive_ciphertext_sha256")
         if SHA256.fullmatch(archive_ciphertext_sha256) is None:
             raise ManifestError(f"State submission {submission_id} archive digest is invalid")
         trusted[submission_id] = {
             "accepted_at": accepted_at,
+            "archive_repository": archive_repository,
+            "archive_commit": archive_commit,
+            "archive_path": archive_path,
             "archive_ciphertext_sha256": archive_ciphertext_sha256,
         }
     return trusted
@@ -112,6 +138,9 @@ def validate_manifest(
             "submission_id",
             "accepted_at",
             "eligible_at",
+            "archive_repository",
+            "archive_commit",
+            "archive_path",
             "archive_ciphertext_sha256",
             "bundle_sha256",
             "bundle_path",
@@ -138,6 +167,20 @@ def validate_manifest(
         if parse_utc_milliseconds(declared_eligible) > generated:
             raise ManifestError(f"{submission_id}: embargo had not expired at generation")
 
+        archive_repository = string_value(entry["archive_repository"], "archive_repository")
+        if REPOSITORY.fullmatch(archive_repository) is None:
+            raise ManifestError(f"{submission_id}: archive_repository is not canonical")
+        archive_commit = string_value(entry["archive_commit"], "archive_commit")
+        if COMMIT.fullmatch(archive_commit) is None:
+            raise ManifestError(f"{submission_id}: archive_commit is not canonical")
+        archive_path = string_value(entry["archive_path"], "archive_path")
+        if archive_path != canonical_archive_path(submission_id):
+            raise ManifestError(f"{submission_id}: archive_path is not canonical")
+        for locator_field in ("archive_repository", "archive_commit", "archive_path"):
+            if entry[locator_field] != trusted[locator_field]:
+                raise ManifestError(
+                    f"{submission_id}: {locator_field} differs from trusted State"
+                )
         archive_ciphertext_sha256 = string_value(entry["archive_ciphertext_sha256"], "archive_ciphertext_sha256")
         if SHA256.fullmatch(archive_ciphertext_sha256) is None:
             raise ManifestError(f"{submission_id}: archive_ciphertext_sha256 is not lowercase SHA-256")

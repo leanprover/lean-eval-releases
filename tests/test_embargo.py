@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import hashlib
 import pathlib
 import sys
@@ -48,6 +49,9 @@ class ManifestTests(unittest.TestCase):
     TRUSTED_SUBMISSIONS = {
         SUBMISSION_ID: {
             "accepted_at": "2026-08-20T06:07:08.000Z",
+            "archive_repository": "leanprover/lean-eval-audit",
+            "archive_commit": "c" * 40,
+            "archive_path": f"archives/01/{SUBMISSION_ID}.tar.age",
             "archive_ciphertext_sha256": "a" * 64,
         }
     }
@@ -62,6 +66,9 @@ class ManifestTests(unittest.TestCase):
                     "submission_id": self.SUBMISSION_ID,
                     "accepted_at": "2026-08-20T06:07:08.000Z",
                     "eligible_at": "2026-10-20T06:07:08.000Z",
+                    "archive_repository": "leanprover/lean-eval-audit",
+                    "archive_commit": "c" * 40,
+                    "archive_path": f"archives/01/{self.SUBMISSION_ID}.tar.age",
                     "archive_ciphertext_sha256": "a" * 64,
                     "bundle_sha256": "b" * 64,
                     "bundle_path": f"sources/{self.SUBMISSION_ID}.tar.gz",
@@ -136,12 +143,62 @@ class ManifestTests(unittest.TestCase):
         with self.assertRaisesRegex(ManifestError, "schema version 1"):
             load_state_snapshot(snapshot)
 
+    def test_state_snapshot_preserves_archive_retrieval_locator(self) -> None:
+        snapshot = {
+            "schema_version": 1,
+            "submissions": copy.deepcopy(self.TRUSTED_SUBMISSIONS),
+        }
+        self.assertEqual(load_state_snapshot(snapshot), self.TRUSTED_SUBMISSIONS)
+
+    def test_archive_path_rejects_traversal_legacy_names_and_wrong_prefix(self) -> None:
+        for unsafe_path in (
+            "../ciphertext.tar.age",
+            "audit/alice-99-deadbeef.tar.age",
+            f"archives/ff/{self.SUBMISSION_ID}.tar.age",
+        ):
+            with self.subTest(archive_path=unsafe_path):
+                snapshot = {
+                    "schema_version": 1,
+                    "submissions": copy.deepcopy(self.TRUSTED_SUBMISSIONS),
+                }
+                snapshot["submissions"][self.SUBMISSION_ID]["archive_path"] = unsafe_path
+                with self.assertRaisesRegex(ManifestError, "archive path is not canonical"):
+                    load_state_snapshot(snapshot)
+
+                manifest = self.manifest()
+                entries = manifest["entries"]
+                assert isinstance(entries, list)
+                assert isinstance(entries[0], dict)
+                entries[0]["archive_path"] = unsafe_path
+                with self.assertRaisesRegex(ManifestError, "archive_path is not canonical"):
+                    validate_manifest(
+                        manifest,
+                        trusted_as_of=self.TRUSTED_AS_OF,
+                        trusted_submissions=self.TRUSTED_SUBMISSIONS,
+                    )
+
+    def test_archive_locator_must_match_state(self) -> None:
+        manifest = self.manifest()
+        entries = manifest["entries"]
+        assert isinstance(entries, list)
+        assert isinstance(entries[0], dict)
+        entries[0]["archive_commit"] = "d" * 40
+        with self.assertRaisesRegex(ManifestError, "archive_commit differs"):
+            validate_manifest(
+                manifest,
+                trusted_as_of=self.TRUSTED_AS_OF,
+                trusted_submissions=self.TRUSTED_SUBMISSIONS,
+            )
+
     def test_ambiguous_archive_digest_field_is_rejected(self) -> None:
         snapshot = {
             "schema_version": 1,
             "submissions": {
                 self.SUBMISSION_ID: {
                     "accepted_at": "2026-08-20T06:07:08.000Z",
+                    "archive_repository": "leanprover/lean-eval-audit",
+                    "archive_commit": "c" * 40,
+                    "archive_path": f"archives/01/{self.SUBMISSION_ID}.tar.age",
                     "archive_sha256": "a" * 64,
                 }
             },

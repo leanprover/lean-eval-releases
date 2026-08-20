@@ -15,7 +15,13 @@
       "additionalProperties": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["accepted_at", "archive_ciphertext_sha256"],
+        "required": [
+          "accepted_at",
+          "archive_repository",
+          "archive_commit",
+          "archive_path",
+          "archive_ciphertext_sha256"
+        ],
         "properties": {
           "accepted_at": {
             "type": "string",
@@ -24,6 +30,18 @@
           "archive_ciphertext_sha256": {
             "type": "string",
             "pattern": "^[0-9a-f]{64}$"
+          },
+          "archive_repository": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$"
+          },
+          "archive_commit": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{40}$"
+          },
+          "archive_path": {
+            "type": "string",
+            "pattern": "^archives/[0-9a-f]{2}/[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\\.tar\\.age$"
           }
         }
       }

@@ -12,10 +12,10 @@ accepted at `2026-12-31T12:00:00.000Z` becomes eligible at
 `2027-02-28T12:00:00.000Z`.
 
 The validator refuses self-declared clocks and provenance: `generated_at` must
-equal the workflow-supplied trusted UTC instant, acceptance time and archive
-digest must match a trusted State materialization, release IDs contain the real
-generation date, identities cannot escape the canonical bundle path, and each
-bundle's bytes must match its digest.
+equal the workflow-supplied trusted UTC instant; acceptance time and the full
+archive locator plus digest must match a trusted State materialization; release
+IDs contain the real generation date; identities cannot escape the canonical
+bundle path; and each bundle's bytes must match its digest.
 Submission identities are canonical lowercase UUIDv7 values allocated at
 authenticated intake.
 
@@ -32,6 +32,13 @@ from the archive sidecar's `sha256_ciphertext`; it is not the digest of the
 plaintext tar stream, sidecar JSON, Git tree, decrypted contents, or repacked
 publication bundle. The separately named `bundle_sha256` covers the exact
 published `sources/<submission-id>.tar.gz` bytes.
+
+The immutable archive locator consists of `archive_repository`,
+`archive_commit`, and `archive_path`. The v1 path is exactly
+`archives/<first-two-UUID-hex>/<submission-id>.tar.age`; it cannot use a legacy
+issue-derived name or contain absolute or traversal components. A publisher
+retrieves that path at the pinned commit and verifies the ciphertext bytes
+against `archive_ciphertext_sha256` before any decryption.
 
 Publication remains disabled until the source-license language, contributor
 rights, replay decryption boundary, provenance format, and restore drill are
