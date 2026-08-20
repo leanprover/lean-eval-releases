@@ -1,0 +1,22 @@
+# lean-eval delayed source releases
+
+This repository will publish source bundles whose embargo has expired. It is
+separate from the live leaderboard, private State, submission intake, and
+encrypted audit archive so none of those write credentials are present during
+publication.
+
+The release delay is exactly two UTC calendar months after acceptance. Adding
+months preserves the UTC clock time and day where possible; if the target month
+has no such day, it clamps to that month's final day. For example, a submission
+accepted at `2026-12-31T12:00:00.000Z` becomes eligible at
+`2027-02-28T12:00:00.000Z`.
+
+Publication remains disabled until the source-license language, contributor
+rights, replay decryption boundary, provenance format, and restore drill are
+reviewed. The code here implements and tests the embargo calculation and
+manifest validation only; it does not decrypt or publish source.
+
+```bash
+python -m unittest discover -s tests -v
+python scripts/validate_manifest.py path/to/release-manifest.json
+```
