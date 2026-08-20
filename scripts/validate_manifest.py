@@ -51,16 +51,16 @@ def load_state_snapshot(value: Any) -> dict[str, dict[str, str]]:
         if SUBMISSION_ID.fullmatch(submission_id) is None:
             raise ManifestError(f"State submission id is not canonical: {submission_id!r}")
         record = object_value(raw_record, f"State submission {submission_id}")
-        if set(record) != {"accepted_at", "archive_sha256"}:
+        if set(record) != {"accepted_at", "archive_ciphertext_sha256"}:
             raise ManifestError(f"State submission {submission_id} fields are not canonical")
         accepted_at = string_value(record["accepted_at"], "accepted_at")
         parse_utc_milliseconds(accepted_at)
-        archive_sha256 = string_value(record["archive_sha256"], "archive_sha256")
-        if SHA256.fullmatch(archive_sha256) is None:
+        archive_ciphertext_sha256 = string_value(record["archive_ciphertext_sha256"], "archive_ciphertext_sha256")
+        if SHA256.fullmatch(archive_ciphertext_sha256) is None:
             raise ManifestError(f"State submission {submission_id} archive digest is invalid")
         trusted[submission_id] = {
             "accepted_at": accepted_at,
-            "archive_sha256": archive_sha256,
+            "archive_ciphertext_sha256": archive_ciphertext_sha256,
         }
     return trusted
 
@@ -112,7 +112,7 @@ def validate_manifest(
             "submission_id",
             "accepted_at",
             "eligible_at",
-            "archive_sha256",
+            "archive_ciphertext_sha256",
             "bundle_sha256",
             "bundle_path",
             "license",
@@ -138,10 +138,10 @@ def validate_manifest(
         if parse_utc_milliseconds(declared_eligible) > generated:
             raise ManifestError(f"{submission_id}: embargo had not expired at generation")
 
-        archive_sha256 = string_value(entry["archive_sha256"], "archive_sha256")
-        if SHA256.fullmatch(archive_sha256) is None:
-            raise ManifestError(f"{submission_id}: archive_sha256 is not lowercase SHA-256")
-        if archive_sha256 != trusted["archive_sha256"]:
+        archive_ciphertext_sha256 = string_value(entry["archive_ciphertext_sha256"], "archive_ciphertext_sha256")
+        if SHA256.fullmatch(archive_ciphertext_sha256) is None:
+            raise ManifestError(f"{submission_id}: archive_ciphertext_sha256 is not lowercase SHA-256")
+        if archive_ciphertext_sha256 != trusted["archive_ciphertext_sha256"]:
             raise ManifestError(f"{submission_id}: archive digest differs from trusted State")
         bundle_sha256 = string_value(entry["bundle_sha256"], "bundle_sha256")
         if SHA256.fullmatch(bundle_sha256) is None:

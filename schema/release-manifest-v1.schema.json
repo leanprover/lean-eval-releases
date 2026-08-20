@@ -34,7 +34,7 @@
         "submission_id",
         "accepted_at",
         "eligible_at",
-        "archive_sha256",
+        "archive_ciphertext_sha256",
         "bundle_sha256",
         "bundle_path",
         "license"
@@ -46,7 +46,7 @@
         },
         "accepted_at": { "$ref": "#/$defs/timestamp" },
         "eligible_at": { "$ref": "#/$defs/timestamp" },
-        "archive_sha256": { "$ref": "#/$defs/sha256" },
+        "archive_ciphertext_sha256": { "$ref": "#/$defs/sha256" },
         "bundle_sha256": { "$ref": "#/$defs/sha256" },
         "bundle_path": {
           "type": "string",

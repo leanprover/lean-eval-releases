@@ -26,6 +26,13 @@ and
 The latter is the exact handoff the State materializer must produce for a
 publication workflow; callers may not synthesize it from the proposed release.
 
+`archive_ciphertext_sha256` is the lowercase SHA-256 of the exact encrypted
+archive ciphertext blob bytes stored in the audit repository. It is copied
+from the archive sidecar's `sha256_ciphertext`; it is not the digest of the
+plaintext tar stream, sidecar JSON, Git tree, decrypted contents, or repacked
+publication bundle. The separately named `bundle_sha256` covers the exact
+published `sources/<submission-id>.tar.gz` bytes.
+
 Publication remains disabled until the source-license language, contributor
 rights, replay decryption boundary, provenance format, and restore drill are
 reviewed. The code here implements and tests the embargo calculation and

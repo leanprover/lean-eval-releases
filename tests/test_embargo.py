@@ -48,7 +48,7 @@ class ManifestTests(unittest.TestCase):
     TRUSTED_SUBMISSIONS = {
         SUBMISSION_ID: {
             "accepted_at": "2026-08-20T06:07:08.000Z",
-            "archive_sha256": "a" * 64,
+            "archive_ciphertext_sha256": "a" * 64,
         }
     }
 
@@ -62,7 +62,7 @@ class ManifestTests(unittest.TestCase):
                     "submission_id": self.SUBMISSION_ID,
                     "accepted_at": "2026-08-20T06:07:08.000Z",
                     "eligible_at": "2026-10-20T06:07:08.000Z",
-                    "archive_sha256": "a" * 64,
+                    "archive_ciphertext_sha256": "a" * 64,
                     "bundle_sha256": "b" * 64,
                     "bundle_path": f"sources/{self.SUBMISSION_ID}.tar.gz",
                     "license": "Apache-2.0",
@@ -135,6 +135,45 @@ class ManifestTests(unittest.TestCase):
         }
         with self.assertRaisesRegex(ManifestError, "schema version 1"):
             load_state_snapshot(snapshot)
+
+    def test_ambiguous_archive_digest_field_is_rejected(self) -> None:
+        snapshot = {
+            "schema_version": 1,
+            "submissions": {
+                self.SUBMISSION_ID: {
+                    "accepted_at": "2026-08-20T06:07:08.000Z",
+                    "archive_sha256": "a" * 64,
+                }
+            },
+        }
+        with self.assertRaisesRegex(ManifestError, "fields are not canonical"):
+            load_state_snapshot(snapshot)
+
+        manifest = self.manifest()
+        entries = manifest["entries"]
+        assert isinstance(entries, list)
+        assert isinstance(entries[0], dict)
+        digest = entries[0].pop("archive_ciphertext_sha256")
+        entries[0]["archive_sha256"] = digest
+        with self.assertRaisesRegex(ManifestError, "fields do not match"):
+            validate_manifest(
+                manifest,
+                trusted_as_of=self.TRUSTED_AS_OF,
+                trusted_submissions=self.TRUSTED_SUBMISSIONS,
+            )
+
+    def test_ciphertext_digest_must_match_state(self) -> None:
+        manifest = self.manifest()
+        entries = manifest["entries"]
+        assert isinstance(entries, list)
+        assert isinstance(entries[0], dict)
+        entries[0]["archive_ciphertext_sha256"] = "c" * 64
+        with self.assertRaisesRegex(ManifestError, "archive digest differs"):
+            validate_manifest(
+                manifest,
+                trusted_as_of=self.TRUSTED_AS_OF,
+                trusted_submissions=self.TRUSTED_SUBMISSIONS,
+            )
 
     def test_refuses_impossible_release_date_and_unsafe_submission_id(self) -> None:
         manifest = self.manifest()
