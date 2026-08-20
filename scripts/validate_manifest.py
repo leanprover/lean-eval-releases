@@ -37,7 +37,11 @@ def string_value(value: Any, label: str) -> str:
 
 def load_state_snapshot(value: Any) -> dict[str, dict[str, str]]:
     snapshot = object_value(value, "State acceptance snapshot")
-    if set(snapshot) != {"schema_version", "submissions"} or snapshot["schema_version"] != 1:
+    if (
+        set(snapshot) != {"schema_version", "submissions"}
+        or snapshot["schema_version"] != 1
+        or isinstance(snapshot["schema_version"], bool)
+    ):
         raise ManifestError("State acceptance snapshot fields do not match schema version 1")
     submissions = object_value(snapshot["submissions"], "State acceptance submissions")
     trusted: dict[str, dict[str, str]] = {}

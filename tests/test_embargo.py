@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-import pathlib
 import hashlib
+import pathlib
 import sys
 import tempfile
 import unittest
@@ -9,7 +9,11 @@ import unittest
 sys.path.insert(0, str(pathlib.Path(__file__).parents[1] / "scripts"))
 
 from embargo import eligible_at, is_eligible  # noqa: E402
-from validate_manifest import ManifestError, validate_manifest  # noqa: E402
+from validate_manifest import (  # noqa: E402
+    ManifestError,
+    load_state_snapshot,
+    validate_manifest,
+)
 
 
 class EmbargoTests(unittest.TestCase):
@@ -122,6 +126,14 @@ class ManifestTests(unittest.TestCase):
                 trusted_as_of=self.TRUSTED_AS_OF,
                 trusted_submissions=self.TRUSTED_SUBMISSIONS,
             )
+
+    def test_state_snapshot_version_is_not_boolean(self) -> None:
+        snapshot = {
+            "schema_version": True,
+            "submissions": self.TRUSTED_SUBMISSIONS,
+        }
+        with self.assertRaisesRegex(ManifestError, "schema version 1"):
+            load_state_snapshot(snapshot)
 
     def test_refuses_impossible_release_date_and_unsafe_submission_id(self) -> None:
         manifest = self.manifest()
