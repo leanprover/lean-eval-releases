@@ -22,7 +22,7 @@ authenticated intake.
 The machine-readable contracts are
 [`schema/release-manifest-v1.schema.json`](schema/release-manifest-v1.schema.json)
 and
-[`schema/state-acceptance-snapshot-v1.schema.json`](schema/state-acceptance-snapshot-v1.schema.json).
+[`schema/release-acceptance-snapshot-v1.schema.json`](schema/release-acceptance-snapshot-v1.schema.json).
 The latter is the exact handoff the State materializer must produce for a
 publication workflow; callers may not synthesize it from the proposed release.
 

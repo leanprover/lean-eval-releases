@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://lean-lang.org/schemas/lean-eval/state-acceptance-snapshot-v1.schema.json",
-  "title": "lean-eval trusted State acceptance snapshot",
+  "$id": "https://lean-lang.org/schemas/lean-eval/release-acceptance-snapshot-v1.schema.json",
+  "title": "LeanEval release acceptance snapshot v1",
   "type": "object",
   "additionalProperties": false,
   "required": ["schema_version", "submissions"],
@@ -19,13 +19,9 @@
         "properties": {
           "accepted_at": {
             "type": "string",
-            "format": "date-time",
             "pattern": "^(?!0000-)[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z$"
           },
-          "archive_sha256": {
-            "type": "string",
-            "pattern": "^[0-9a-f]{64}$"
-          }
+          "archive_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
         }
       }
     }
