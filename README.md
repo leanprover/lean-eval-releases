@@ -11,6 +11,12 @@ has no such day, it clamps to that month's final day. For example, a submission
 accepted at `2026-12-31T12:00:00.000Z` becomes eligible at
 `2027-02-28T12:00:00.000Z`.
 
+The validator refuses self-declared clocks and provenance: `generated_at` must
+equal the workflow-supplied trusted UTC instant, acceptance time and archive
+digest must match a trusted State materialization, release IDs contain the real
+generation date, identities cannot escape the canonical bundle path, and each
+bundle's bytes must match its digest.
+
 Publication remains disabled until the source-license language, contributor
 rights, replay decryption boundary, provenance format, and restore drill are
 reviewed. The code here implements and tests the embargo calculation and
@@ -18,5 +24,8 @@ manifest validation only; it does not decrypt or publish source.
 
 ```bash
 python -m unittest discover -s tests -v
-python scripts/validate_manifest.py path/to/release-manifest.json
+python scripts/validate_manifest.py path/to/release-manifest.json \
+  --trusted-as-of "$TRUSTED_UTC_NOW" \
+  --state-acceptance-snapshot path/to/trusted-state-export.json \
+  --bundle-root path/to/release-tree
 ```
