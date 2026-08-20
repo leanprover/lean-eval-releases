@@ -17,6 +17,13 @@ digest must match a trusted State materialization, release IDs contain the real
 generation date, identities cannot escape the canonical bundle path, and each
 bundle's bytes must match its digest.
 
+The machine-readable contracts are
+[`schema/release-manifest-v1.schema.json`](schema/release-manifest-v1.schema.json)
+and
+[`schema/state-acceptance-snapshot-v1.schema.json`](schema/state-acceptance-snapshot-v1.schema.json).
+The latter is the exact handoff the State materializer must produce for a
+publication workflow; callers may not synthesize it from the proposed release.
+
 Publication remains disabled until the source-license language, contributor
 rights, replay decryption boundary, provenance format, and restore drill are
 reviewed. The code here implements and tests the embargo calculation and

@@ -1,0 +1,59 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://lean-lang.org/schemas/lean-eval/release-manifest-v1.schema.json",
+  "title": "lean-eval delayed source release manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "release_id", "generated_at", "entries"],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "release_id": {
+      "type": "string",
+      "pattern": "^lean-eval-[0-9]{4}-[0-9]{2}-[0-9]{2}$"
+    },
+    "generated_at": { "$ref": "#/$defs/timestamp" },
+    "entries": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/entry" }
+    }
+  },
+  "$defs": {
+    "timestamp": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "^(?!0000-)[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z$"
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "entry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "submission_id",
+        "accepted_at",
+        "eligible_at",
+        "archive_sha256",
+        "bundle_sha256",
+        "bundle_path",
+        "license"
+      ],
+      "properties": {
+        "submission_id": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_-]{2,127}$"
+        },
+        "accepted_at": { "$ref": "#/$defs/timestamp" },
+        "eligible_at": { "$ref": "#/$defs/timestamp" },
+        "archive_sha256": { "$ref": "#/$defs/sha256" },
+        "bundle_sha256": { "$ref": "#/$defs/sha256" },
+        "bundle_path": {
+          "type": "string",
+          "pattern": "^sources/[a-z][a-z0-9_-]{2,127}\\.tar\\.gz$"
+        },
+        "license": { "const": "Apache-2.0" }
+      }
+    }
+  }
+}
