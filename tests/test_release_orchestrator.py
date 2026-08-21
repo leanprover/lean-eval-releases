@@ -8,13 +8,12 @@ import unittest
 
 sys.path.insert(0, str(pathlib.Path(__file__).parents[1] / "scripts"))
 
-from release_orchestrator import (  # noqa: E402
+from release_orchestrator import (
     ReleaseError,
     canonical_release_path,
     plan_next,
     validate_release_queue,
 )
-
 
 ROOT = pathlib.Path(__file__).parents[1]
 
@@ -119,6 +118,28 @@ class ReleaseOrchestratorTests(unittest.TestCase):
         self.task(queue)["production_metadata"] = {"notes": "bad\u0000text"}
         with self.assertRaisesRegex(ReleaseError, "control-free"):
             validate_release_queue(queue)
+
+    def test_schema_references_are_document_local(self) -> None:
+        schemas = sorted((ROOT / "schema").glob("*.json"))
+        self.assertTrue(schemas)
+        for schema in schemas:
+            with self.subTest(schema=schema.name):
+                pending: list[object] = [
+                    json.loads(schema.read_text(encoding="utf-8"))
+                ]
+                while pending:
+                    current = pending.pop()
+                    if isinstance(current, dict):
+                        reference = current.get("$ref")
+                        if reference is not None:
+                            self.assertIsInstance(reference, str)
+                            self.assertTrue(
+                                reference.startswith("#/"),
+                                f"{schema.name} has a non-local $ref: {reference}",
+                            )
+                        pending.extend(current.values())
+                    elif isinstance(current, list):
+                        pending.extend(current)
 
 
 if __name__ == "__main__":

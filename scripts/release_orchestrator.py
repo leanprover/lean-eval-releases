@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Validate State release work and build one provider-neutral preparation plan."""
 
 from __future__ import annotations
