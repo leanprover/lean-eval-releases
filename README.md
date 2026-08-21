@@ -22,7 +22,8 @@ authenticated intake.
 The machine-readable contracts are
 [`schema/release-manifest-v1.schema.json`](schema/release-manifest-v1.schema.json),
 [`schema/release-queue-v1.schema.json`](schema/release-queue-v1.schema.json),
-[`schema/release-plan-v1.schema.json`](schema/release-plan-v1.schema.json), and
+[`schema/release-plan-v1.schema.json`](schema/release-plan-v1.schema.json),
+[`schema/release-metadata-v1.schema.json`](schema/release-metadata-v1.schema.json), and
 [`schema/release-acceptance-snapshot-v1.schema.json`](schema/release-acceptance-snapshot-v1.schema.json).
 The latter is the exact handoff the State materializer must produce for a
 publication workflow; callers may not synthesize it from the proposed release.
@@ -49,6 +50,45 @@ plan carries the exact archive and result provenance, canonical
 It never generates event identity or time, unwraps a key, decrypts an archive,
 writes this repository, or marks a release complete.
 
+`scripts/reconstruct_release.py` takes one execution plan, the corresponding
+already-decrypted `source.tar.gz`, the trusted State acceptance snapshot, and
+a trusted as-of time. It publishes nothing. It selects only the bytes actually
+used by evaluation: `source/Submission.lean` and regular UTF-8 `.lean` files
+beneath `source/Submission/`. Other repository files are deliberately omitted.
+Links, devices, traversal, duplicate members, decompression-size abuse,
+non-UTF-8 Lean files, output overwrite, early release, and State/provenance
+mismatches fail closed.
+
+The deterministic reconstruction contains both the stable public result path
+and a source-only transport bundle:
+
+```text
+releases/YYYY/MM/<result_id>/
+  Submission.lean
+  Submission/**/*.lean
+  metadata.json
+  LICENSE
+sources/<submission-id>.tar.gz
+release-manifest.json
+```
+
+The manifest is unique by `result_id`, since one submission may solve several
+problems. `release_tree_sha256` is SHA-256 over the domain
+`lean-eval-release-tree-v1\0` followed by compact UTF-8 JSON containing the
+byte-sorted `(path, size, file SHA-256)` projection of the exact result
+directory. File modes, gzip time, tar ownership, and ordering are normalized.
+The same inputs and trusted time therefore produce identical bundle and tree
+digests. `tests/fixtures/release-tree-digest-v1.json` freezes a
+language-neutral byte/hash vector for this domain-separated projection.
+
+The manual `Reconstruct one synthetic staging release` workflow exercises this
+boundary in the protected `release-staging` environment with harmless source.
+It has read-only repository permission, receives no OIDC or secret, uploads no
+artifact, writes neither Git nor State, and leaves publication disabled. A
+later credentialed workflow must first verify the pinned ciphertext digest,
+consume exactly one `lean-eval-release` unwrap capability, decrypt it, and only
+then invoke this provider-neutral reconstruction tool.
+
 Publication remains disabled until the one-submission unwrap path and a
 single-submission decrypt/reconstruction check are complete. The contributor
 acknowledgement and Apache-2.0 release choice are fixed by the approved rollout
@@ -65,4 +105,10 @@ python scripts/validate_manifest.py path/to/release-manifest.json \
 python scripts/release_orchestrator.py path/to/release-queue.json \
   --trusted-as-of "$TRUSTED_UTC_NOW" \
   --output /tmp/release-plan.json
+
+python scripts/reconstruct_release.py /tmp/release-plan.json \
+  --plaintext-tar /tmp/source.tar.gz \
+  --trusted-as-of "$TRUSTED_UTC_NOW" \
+  --state-acceptance-snapshot path/to/trusted-state-export.json \
+  --output-root /tmp/reconstructed-release
 ```

@@ -289,6 +289,7 @@ def plan_next(queue_value: Any, trusted_as_of: str) -> dict[str, Any]:
                 "encrypted": True,
             },
             "release": {
+                "accepted_at": task["accepted_at"],
                 "eligible_at": task["release_at"],
                 "path": release_path,
                 "license": "Apache-2.0",

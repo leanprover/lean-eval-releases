@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "submissions": {
+    "0198abcd-0000-7000-8000-000000000002": {
+      "accepted_at": "2026-08-20T06:07:05.000Z",
+      "archive_repository": "leanprover/lean-eval-audit",
+      "archive_commit": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "archive_path": "archives/01/0198abcd-0000-7000-8000-000000000002.tar.age",
+      "archive_ciphertext_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+    }
+  }
+}

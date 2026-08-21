@@ -6,11 +6,13 @@ import pathlib
 import sys
 import tempfile
 import unittest
+from typing import ClassVar
 
 sys.path.insert(0, str(pathlib.Path(__file__).parents[1] / "scripts"))
 
-from embargo import eligible_at, is_eligible  # noqa: E402
-from validate_manifest import (  # noqa: E402
+from embargo import eligible_at, is_eligible
+from release_tree import tree_digest
+from validate_manifest import (
     ManifestError,
     load_state_snapshot,
     validate_manifest,
@@ -45,8 +47,9 @@ class EmbargoTests(unittest.TestCase):
 
 class ManifestTests(unittest.TestCase):
     SUBMISSION_ID = "018f7777-2ea8-7f55-9f7c-4f099ef55e4e"
+    RESULT_ID = "r2_" + "d" * 64
     TRUSTED_AS_OF = "2026-10-21T00:00:00.000Z"
-    TRUSTED_SUBMISSIONS = {
+    TRUSTED_SUBMISSIONS: ClassVar[dict[str, dict[str, str]]] = {
         SUBMISSION_ID: {
             "accepted_at": "2026-08-20T06:07:08.000Z",
             "archive_repository": "leanprover/lean-eval-audit",
@@ -63,6 +66,7 @@ class ManifestTests(unittest.TestCase):
             "generated_at": "2026-10-21T00:00:00.000Z",
             "entries": [
                 {
+                    "result_id": self.RESULT_ID,
                     "submission_id": self.SUBMISSION_ID,
                     "accepted_at": "2026-08-20T06:07:08.000Z",
                     "eligible_at": "2026-10-20T06:07:08.000Z",
@@ -72,6 +76,8 @@ class ManifestTests(unittest.TestCase):
                     "archive_ciphertext_sha256": "a" * 64,
                     "bundle_sha256": "b" * 64,
                     "bundle_path": f"sources/{self.SUBMISSION_ID}.tar.gz",
+                    "release_tree_sha256": "e" * 64,
+                    "release_path": f"releases/2026/10/{self.RESULT_ID}",
                     "license": "Apache-2.0",
                 }
             ],
@@ -249,11 +255,17 @@ class ManifestTests(unittest.TestCase):
             sources.mkdir()
             bundle = sources / f"{self.SUBMISSION_ID}.tar.gz"
             bundle.write_bytes(b"bundle bytes")
+            release = root / "releases" / "2026" / "10" / self.RESULT_ID
+            release.mkdir(parents=True)
+            (release / "Submission.lean").write_text("example", encoding="utf-8")
+            (release / "metadata.json").write_text("{}\n", encoding="utf-8")
+            (release / "LICENSE").write_text("Apache-2.0\n", encoding="utf-8")
             manifest = self.manifest()
             entries = manifest["entries"]
             assert isinstance(entries, list)
             assert isinstance(entries[0], dict)
             entries[0]["bundle_sha256"] = hashlib.sha256(b"bundle bytes").hexdigest()
+            entries[0]["release_tree_sha256"] = tree_digest(release)
             self.assertEqual(
                 validate_manifest(
                     manifest,
@@ -273,6 +285,47 @@ class ManifestTests(unittest.TestCase):
                     trusted_submissions=self.TRUSTED_SUBMISSIONS,
                     bundle_root=root,
                 )
+
+    def test_release_tree_digest_and_allowlist_are_enforced(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = pathlib.Path(temporary)
+            sources = root / "sources"
+            sources.mkdir()
+            bundle = sources / f"{self.SUBMISSION_ID}.tar.gz"
+            bundle.write_bytes(b"bundle bytes")
+            release = root / "releases" / "2026" / "10" / self.RESULT_ID
+            release.mkdir(parents=True)
+            (release / "Submission.lean").write_text("example", encoding="utf-8")
+            (release / "metadata.json").write_text("{}\n", encoding="utf-8")
+            (release / "LICENSE").write_text("Apache-2.0\n", encoding="utf-8")
+            manifest = self.manifest()
+            entry = manifest["entries"][0]
+            entry["bundle_sha256"] = hashlib.sha256(b"bundle bytes").hexdigest()
+            entry["release_tree_sha256"] = tree_digest(release)
+            (release / "secret.txt").write_text("must not publish", encoding="utf-8")
+            with self.assertRaisesRegex(ManifestError, "file set is not canonical"):
+                validate_manifest(
+                    manifest,
+                    trusted_as_of=self.TRUSTED_AS_OF,
+                    trusted_submissions=self.TRUSTED_SUBMISSIONS,
+                    bundle_root=root,
+                )
+
+    def test_manifest_is_unique_by_result_not_submission(self) -> None:
+        manifest = self.manifest()
+        first = manifest["entries"][0]
+        second = copy.deepcopy(first)
+        second["result_id"] = "r2_" + "f" * 64
+        second["release_path"] = f"releases/2026/10/{second['result_id']}"
+        manifest["entries"].append(second)
+        self.assertEqual(
+            validate_manifest(
+                manifest,
+                trusted_as_of=self.TRUSTED_AS_OF,
+                trusted_submissions=self.TRUSTED_SUBMISSIONS,
+            ),
+            2,
+        )
         manifest = self.manifest()
         entries = manifest["entries"]
         assert isinstance(entries, list)

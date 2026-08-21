@@ -50,6 +50,7 @@ class ReleaseOrchestratorTests(unittest.TestCase):
             request["release"]["path"],
             canonical_release_path(task["result_id"], task["release_at"]),
         )
+        self.assertEqual(request["release"]["accepted_at"], task["accepted_at"])
         self.assertEqual(request["release"]["license"], "Apache-2.0")
 
     def test_empty_and_not_due_are_nonexecuting(self) -> None:

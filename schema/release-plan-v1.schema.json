@@ -103,8 +103,9 @@
             "release": {
               "type": "object",
               "additionalProperties": false,
-              "required": ["eligible_at", "path", "license"],
+              "required": ["accepted_at", "eligible_at", "path", "license"],
               "properties": {
+                "accepted_at": { "$ref": "#/$defs/timestamp" },
                 "eligible_at": { "$ref": "#/$defs/timestamp" },
                 "path": {
                   "type": "string",

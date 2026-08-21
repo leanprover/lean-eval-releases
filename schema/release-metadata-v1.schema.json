@@ -1,0 +1,54 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://lean-lang.org/schemas/lean-eval/release-metadata-v1.schema.json",
+  "title": "LeanEval published result metadata v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "generated_at",
+    "result",
+    "submission",
+    "archive",
+    "release",
+    "source_files"
+  ],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "generated_at": { "$ref": "release-queue-v1.schema.json#/$defs/timestamp" },
+    "result": {
+      "$ref": "release-plan-v1.schema.json#/oneOf/2/properties/request/properties/result"
+    },
+    "submission": {
+      "$ref": "release-plan-v1.schema.json#/oneOf/2/properties/request/properties/submission"
+    },
+    "archive": {
+      "$ref": "release-plan-v1.schema.json#/oneOf/2/properties/request/properties/archive"
+    },
+    "release": {
+      "$ref": "release-plan-v1.schema.json#/oneOf/2/properties/request/properties/release"
+    },
+    "source_files": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 1024,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["path", "size_bytes", "sha256"],
+        "properties": {
+          "path": {
+            "type": "string",
+            "pattern": "^(?:Submission\\.lean|Submission/(?:[^/]+/)*[^/]+\\.lean)$"
+          },
+          "size_bytes": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 8388608
+          },
+          "sha256": { "$ref": "release-queue-v1.schema.json#/$defs/digest" }
+        }
+      }
+    }
+  }
+}
