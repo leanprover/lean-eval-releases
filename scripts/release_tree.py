@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import pathlib
+import stat
 from collections.abc import Iterable
 
 DOMAIN = b"lean-eval-release-tree-v1\0"
@@ -26,6 +27,8 @@ def _regular_file(root: pathlib.Path, relative: pathlib.PurePosixPath) -> pathli
         raise TreeError(f"release file does not exist: {relative.as_posix()}") from error
     if not resolved.is_relative_to(root) or not resolved.is_file():
         raise TreeError(f"release path is not a regular in-tree file: {relative.as_posix()}")
+    if stat.S_IMODE(resolved.stat().st_mode) != 0o644:
+        raise TreeError(f"release file mode is not 0644: {relative.as_posix()}")
     return resolved
 
 

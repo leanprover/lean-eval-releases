@@ -8,6 +8,7 @@ import hashlib
 import json
 import pathlib
 import re
+import stat
 import sys
 from typing import Any
 
@@ -129,8 +130,19 @@ def validate_manifest(
     if release_date != generated.date():
         raise ManifestError("release_id date must equal generated_at date")
     entries = manifest["entries"]
-    if not isinstance(entries, list):
-        raise ManifestError("entries must be an array")
+    if not isinstance(entries, list) or not entries:
+        raise ManifestError("entries must be a nonempty array")
+
+    root: pathlib.Path | None = None
+    if bundle_root is not None:
+        if bundle_root.is_symlink():
+            raise ManifestError("bundle root must not be a symlink")
+        try:
+            root = bundle_root.resolve(strict=True)
+        except OSError as error:
+            raise ManifestError("bundle root does not exist") from error
+        if not root.is_dir():
+            raise ManifestError("bundle root must be a regular directory")
 
     seen: set[str] = set()
     for index, raw_entry in enumerate(entries):
@@ -213,8 +225,7 @@ def validate_manifest(
             raise ManifestError(
                 f"{result_id}: release_tree_sha256 is not lowercase SHA-256"
             )
-        if bundle_root is not None:
-            root = bundle_root.resolve()
+        if root is not None:
             absolute_bundle = root / bundle_path
             relative_parts = pathlib.PurePosixPath(bundle_path).parts
             cursor = root
@@ -228,7 +239,14 @@ def validate_manifest(
                 raise ManifestError(f"{submission_id}: bundle path does not exist") from error
             if has_symlink or not resolved_bundle.is_relative_to(root):
                 raise ManifestError(f"{submission_id}: bundle path must not traverse a symlink")
-            if not resolved_bundle.is_file() or file_sha256(resolved_bundle) != bundle_sha256:
+            if (
+                not resolved_bundle.is_file()
+                or stat.S_IMODE(resolved_bundle.stat().st_mode) != 0o644
+            ):
+                raise ManifestError(
+                    f"{submission_id}: bundle must be a regular mode-0644 file"
+                )
+            if file_sha256(resolved_bundle) != bundle_sha256:
                 raise ManifestError(f"{submission_id}: bundle bytes do not match bundle_sha256")
             release_root = root.joinpath(*pathlib.PurePosixPath(release_path).parts)
             release_cursor = root
@@ -264,7 +282,7 @@ def main(argv: list[str] | None = None) -> int:
             json.loads(args.manifest.read_text(encoding="utf-8")),
             trusted_as_of=args.trusted_as_of,
             trusted_submissions=load_state_snapshot(state),
-            bundle_root=args.bundle_root.resolve(),
+            bundle_root=args.bundle_root,
         )
     except (OSError, UnicodeError, json.JSONDecodeError, ManifestError, ValueError) as error:
         print(f"error: {error}", file=sys.stderr)

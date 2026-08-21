@@ -93,6 +93,16 @@ class ManifestTests(unittest.TestCase):
             1,
         )
 
+    def test_empty_manifest_is_rejected(self) -> None:
+        manifest = self.manifest()
+        manifest["entries"] = []
+        with self.assertRaisesRegex(ManifestError, "nonempty array"):
+            validate_manifest(
+                manifest,
+                trusted_as_of=self.TRUSTED_AS_OF,
+                trusted_submissions=self.TRUSTED_SUBMISSIONS,
+            )
+
     def test_refuses_early_release(self) -> None:
         manifest = self.manifest()
         manifest["release_id"] = "lean-eval-2026-10-20"
@@ -279,6 +289,53 @@ class ManifestTests(unittest.TestCase):
             bundle.rename(target)
             bundle.symlink_to(target)
             with self.assertRaisesRegex(ManifestError, "symlink"):
+                validate_manifest(
+                    manifest,
+                    trusted_as_of=self.TRUSTED_AS_OF,
+                    trusted_submissions=self.TRUSTED_SUBMISSIONS,
+                    bundle_root=root,
+                )
+
+    def test_rejects_symlink_root_and_executable_release_bytes(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            base = pathlib.Path(temporary)
+            root = base / "real"
+            sources = root / "sources"
+            sources.mkdir(parents=True)
+            bundle = sources / f"{self.SUBMISSION_ID}.tar.gz"
+            bundle.write_bytes(b"bundle bytes")
+            release = root / "releases" / "2026" / "10" / self.RESULT_ID
+            release.mkdir(parents=True)
+            submission = release / "Submission.lean"
+            submission.write_text("example", encoding="utf-8")
+            (release / "metadata.json").write_text("{}\n", encoding="utf-8")
+            (release / "LICENSE").write_text("Apache-2.0\n", encoding="utf-8")
+            manifest = self.manifest()
+            entry = manifest["entries"][0]
+            entry["bundle_sha256"] = hashlib.sha256(b"bundle bytes").hexdigest()
+            entry["release_tree_sha256"] = tree_digest(release)
+
+            root_link = base / "root-link"
+            root_link.symlink_to(root, target_is_directory=True)
+            with self.assertRaisesRegex(ManifestError, "bundle root.*symlink"):
+                validate_manifest(
+                    manifest,
+                    trusted_as_of=self.TRUSTED_AS_OF,
+                    trusted_submissions=self.TRUSTED_SUBMISSIONS,
+                    bundle_root=root_link,
+                )
+
+            bundle.chmod(0o755)
+            with self.assertRaisesRegex(ManifestError, "mode-0644"):
+                validate_manifest(
+                    manifest,
+                    trusted_as_of=self.TRUSTED_AS_OF,
+                    trusted_submissions=self.TRUSTED_SUBMISSIONS,
+                    bundle_root=root,
+                )
+            bundle.chmod(0o644)
+            submission.chmod(0o755)
+            with self.assertRaisesRegex(ManifestError, "file mode is not 0644"):
                 validate_manifest(
                     manifest,
                     trusted_as_of=self.TRUSTED_AS_OF,
