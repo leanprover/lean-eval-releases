@@ -224,6 +224,21 @@ class ReconstructionTests(unittest.TestCase):
                 value = json.loads(schema.read_text(encoding="utf-8"))
                 self.assertEqual(value["$schema"], "https://json-schema.org/draft/2020-12/schema")
 
+                pending: list[object] = [value]
+                while pending:
+                    current = pending.pop()
+                    if isinstance(current, dict):
+                        reference = current.get("$ref")
+                        if reference is not None:
+                            self.assertIsInstance(reference, str)
+                            self.assertTrue(
+                                reference.startswith("#/"),
+                                f"{schema.name} has a non-local $ref: {reference}",
+                            )
+                        pending.extend(current.values())
+                    elif isinstance(current, list):
+                        pending.extend(current)
+
     def test_release_tree_digest_language_neutral_vector(self) -> None:
         vector = json.loads(
             (ROOT / "tests/fixtures/release-tree-digest-v1.json").read_text(
