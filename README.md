@@ -20,8 +20,9 @@ Submission identities are canonical lowercase UUIDv7 values allocated at
 authenticated intake.
 
 The machine-readable contracts are
-[`schema/release-manifest-v1.schema.json`](schema/release-manifest-v1.schema.json)
-and
+[`schema/release-manifest-v1.schema.json`](schema/release-manifest-v1.schema.json),
+[`schema/release-queue-v1.schema.json`](schema/release-queue-v1.schema.json),
+[`schema/release-plan-v1.schema.json`](schema/release-plan-v1.schema.json), and
 [`schema/release-acceptance-snapshot-v1.schema.json`](schema/release-acceptance-snapshot-v1.schema.json).
 The latter is the exact handoff the State materializer must produce for a
 publication workflow; callers may not synthesize it from the proposed release.
@@ -40,11 +41,19 @@ issue-derived name or contain absolute or traversal components. A publisher
 retrieves that path at the pinned commit and verifies the ciphertext bytes
 against `archive_ciphertext_sha256` before any decryption.
 
-Publication remains disabled until the source-license language, contributor
-rights, replay decryption boundary, provenance format, and release
-reconstruction path are reviewed. The code here implements and tests the
-embargo calculation and manifest validation only; it does not decrypt or
-publish source.
+`scripts/release_orchestrator.py` validates the State-owned release queue,
+recomputes result identity, archive path, consent, and the two-calendar-month
+boundary, and selects the lexicographically first due result. Its execution
+plan carries the exact archive and result provenance, canonical
+`releases/YYYY/MM/<result_id>` path, and a `release.started` transition body.
+It never generates event identity or time, unwraps a key, decrypts an archive,
+writes this repository, or marks a release complete.
+
+Publication remains disabled until the one-submission unwrap path and a
+single-submission decrypt/reconstruction check are complete. The contributor
+acknowledgement and Apache-2.0 release choice are fixed by the approved rollout
+decision; this disabled tooling does not itself establish that a particular
+archive may be released.
 
 ```bash
 python -m unittest discover -s tests -v
@@ -52,4 +61,8 @@ python scripts/validate_manifest.py path/to/release-manifest.json \
   --trusted-as-of "$TRUSTED_UTC_NOW" \
   --state-acceptance-snapshot path/to/trusted-state-export.json \
   --bundle-root path/to/release-tree
+
+python scripts/release_orchestrator.py path/to/release-queue.json \
+  --trusted-as-of "$TRUSTED_UTC_NOW" \
+  --output /tmp/release-plan.json
 ```

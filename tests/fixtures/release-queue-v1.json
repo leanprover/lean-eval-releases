@@ -1,0 +1,32 @@
+{
+  "environment": "production",
+  "schema_version": 1,
+  "source_digest": "e50cb280f727339010f25537c08c19f62dafdb0ec2e6af6f034b649f77eb87e5",
+  "source_event_count": 12,
+  "tasks": [
+    {
+      "accepted_at": "2026-08-20T06:07:05.000Z",
+      "archive_ciphertext_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "archive_commit": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "archive_path": "archives/01/0198abcd-0000-7000-8000-000000000002.tar.age",
+      "archive_repository": "leanprover/lean-eval-audit",
+      "attempt": 1,
+      "declared_model": "Example Model",
+      "event_id": "0198abcd-0000-7000-8000-00000000000c",
+      "occurred_at": "2026-10-20T06:07:05.001Z",
+      "owner_login": "kim-em",
+      "problem_id": "two_plus_two",
+      "production_metadata": {},
+      "publication_choice": "scheduled",
+      "reason_code": "provider_error",
+      "release_at": "2026-10-20T06:07:05.000Z",
+      "result_commit": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      "result_id": "r2_80f02f892fb0b90474675aa0b572252a8758faf74b95400521e9da724583931f",
+      "result_tree_digest": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "retryable": true,
+      "statement_revision": 1,
+      "status": "failed",
+      "submission_id": "0198abcd-0000-7000-8000-000000000002"
+    }
+  ]
+}
