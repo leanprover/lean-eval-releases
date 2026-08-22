@@ -34,16 +34,17 @@ publication bundle. The separately named `bundle_sha256` covers the exact
 published `sources/<submission-id>.tar.gz` bytes.
 
 The immutable archive locator consists of `archive_repository`,
-`archive_commit`, and `archive_path`. The v1 path is exactly
+`archive_commit`, and `archive_path`. The schema-version-1 path is exactly
 `archives/<first-two-UUID-hex>/<submission-id>.tar.age`; it cannot use a legacy
 issue-derived name or contain absolute or traversal components. A publisher
 retrieves that path at the pinned commit and verifies the ciphertext bytes
 against `archive_ciphertext_sha256` before any decryption.
 
 Publication remains disabled until the source-license language, contributor
-rights, replay decryption boundary, provenance format, and restore drill are
-reviewed. The code here implements and tests the embargo calculation and
-manifest validation only; it does not decrypt or publish source.
+rights, replay decryption boundary, provenance format, and release
+reconstruction path are reviewed. The code here implements and tests the
+embargo calculation and manifest validation only; it does not decrypt or
+publish source.
 
 ```bash
 python -m unittest discover -s tests -v
