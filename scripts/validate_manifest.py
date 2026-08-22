@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Validate a delayed-source release against trusted State and bundle bytes."""
 
 from __future__ import annotations
@@ -9,12 +8,15 @@ import hashlib
 import json
 import pathlib
 import re
+import stat
 import sys
 from typing import Any
 
 from embargo import eligible_at, parse_utc_milliseconds
+from release_tree import TreeError, tree_digest
 
 SHA256 = re.compile(r"[0-9a-f]{64}")
+RESULT_ID = re.compile(r"r2_[0-9a-f]{64}")
 REPOSITORY = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")
 COMMIT = re.compile(r"[0-9a-f]{40}")
 RELEASE_ID = re.compile(r"lean-eval-(?P<date>[0-9]{4}-[0-9]{2}-[0-9]{2})")
@@ -128,13 +130,25 @@ def validate_manifest(
     if release_date != generated.date():
         raise ManifestError("release_id date must equal generated_at date")
     entries = manifest["entries"]
-    if not isinstance(entries, list):
-        raise ManifestError("entries must be an array")
+    if not isinstance(entries, list) or not entries:
+        raise ManifestError("entries must be a nonempty array")
+
+    root: pathlib.Path | None = None
+    if bundle_root is not None:
+        if bundle_root.is_symlink():
+            raise ManifestError("bundle root must not be a symlink")
+        try:
+            root = bundle_root.resolve(strict=True)
+        except OSError as error:
+            raise ManifestError("bundle root does not exist") from error
+        if not root.is_dir():
+            raise ManifestError("bundle root must be a regular directory")
 
     seen: set[str] = set()
     for index, raw_entry in enumerate(entries):
         entry = object_value(raw_entry, f"entries[{index}]")
         fields = {
+            "result_id",
             "submission_id",
             "accepted_at",
             "eligible_at",
@@ -144,16 +158,21 @@ def validate_manifest(
             "archive_ciphertext_sha256",
             "bundle_sha256",
             "bundle_path",
+            "release_tree_sha256",
+            "release_path",
             "license",
         }
         if set(entry) != fields:
             raise ManifestError(f"entries[{index}] fields do not match schema version 1")
+        result_id = string_value(entry["result_id"], "result_id")
+        if RESULT_ID.fullmatch(result_id) is None:
+            raise ManifestError(f"entries[{index}].result_id is not canonical")
+        if result_id in seen:
+            raise ManifestError(f"duplicate result_id {result_id}")
+        seen.add(result_id)
         submission_id = string_value(entry["submission_id"], "submission_id")
         if SUBMISSION_ID.fullmatch(submission_id) is None:
             raise ManifestError(f"entries[{index}].submission_id is not canonical")
-        if submission_id in seen:
-            raise ManifestError(f"duplicate submission_id {submission_id}")
-        seen.add(submission_id)
 
         trusted = trusted_submissions.get(submission_id)
         if trusted is None:
@@ -192,8 +211,21 @@ def validate_manifest(
         bundle_path = string_value(entry["bundle_path"], "bundle_path")
         if bundle_path != f"sources/{submission_id}.tar.gz":
             raise ManifestError(f"{submission_id}: bundle_path is not canonical")
-        if bundle_root is not None:
-            root = bundle_root.resolve()
+        release_path = string_value(entry["release_path"], "release_path")
+        eligible_instant = parse_utc_milliseconds(declared_eligible)
+        expected_release_path = (
+            f"releases/{eligible_instant.year:04d}/{eligible_instant.month:02d}/{result_id}"
+        )
+        if release_path != expected_release_path:
+            raise ManifestError(f"{result_id}: release_path is not canonical")
+        release_tree_sha256 = string_value(
+            entry["release_tree_sha256"], "release_tree_sha256"
+        )
+        if SHA256.fullmatch(release_tree_sha256) is None:
+            raise ManifestError(
+                f"{result_id}: release_tree_sha256 is not lowercase SHA-256"
+            )
+        if root is not None:
             absolute_bundle = root / bundle_path
             relative_parts = pathlib.PurePosixPath(bundle_path).parts
             cursor = root
@@ -207,8 +239,31 @@ def validate_manifest(
                 raise ManifestError(f"{submission_id}: bundle path does not exist") from error
             if has_symlink or not resolved_bundle.is_relative_to(root):
                 raise ManifestError(f"{submission_id}: bundle path must not traverse a symlink")
-            if not resolved_bundle.is_file() or file_sha256(resolved_bundle) != bundle_sha256:
+            if (
+                not resolved_bundle.is_file()
+                or stat.S_IMODE(resolved_bundle.stat().st_mode) != 0o644
+            ):
+                raise ManifestError(
+                    f"{submission_id}: bundle must be a regular mode-0644 file"
+                )
+            if file_sha256(resolved_bundle) != bundle_sha256:
                 raise ManifestError(f"{submission_id}: bundle bytes do not match bundle_sha256")
+            release_root = root.joinpath(*pathlib.PurePosixPath(release_path).parts)
+            release_cursor = root
+            release_has_symlink = False
+            for part in pathlib.PurePosixPath(release_path).parts:
+                release_cursor = release_cursor / part
+                release_has_symlink = release_has_symlink or release_cursor.is_symlink()
+            if release_has_symlink:
+                raise ManifestError(f"{result_id}: release path must not traverse a symlink")
+            try:
+                actual_tree_digest = tree_digest(release_root)
+            except (OSError, TreeError) as error:
+                raise ManifestError(f"{result_id}: release tree is not canonical: {error}") from error
+            if actual_tree_digest != release_tree_sha256:
+                raise ManifestError(
+                    f"{result_id}: release tree bytes do not match release_tree_sha256"
+                )
         if entry["license"] != "Apache-2.0":
             raise ManifestError(f"{submission_id}: license must be Apache-2.0")
     return len(entries)
@@ -227,7 +282,7 @@ def main(argv: list[str] | None = None) -> int:
             json.loads(args.manifest.read_text(encoding="utf-8")),
             trusted_as_of=args.trusted_as_of,
             trusted_submissions=load_state_snapshot(state),
-            bundle_root=args.bundle_root.resolve(),
+            bundle_root=args.bundle_root,
         )
     except (OSError, UnicodeError, json.JSONDecodeError, ManifestError, ValueError) as error:
         print(f"error: {error}", file=sys.stderr)

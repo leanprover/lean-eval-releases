@@ -1,0 +1,73 @@
+name: Reconstruct one synthetic staging release
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm_publication_disabled:
+        description: Confirm this smoke must not publish or write State
+        required: true
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  reconstruct:
+    environment: release-staging
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Require the publication-disabled acknowledgement
+        env:
+          CONFIRM_PUBLICATION_DISABLED: ${{ inputs.confirm_publication_disabled }}
+        run: test "$CONFIRM_PUBLICATION_DISABLED" = true
+      # actions/checkout pinned to v7.0.1.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      # actions/setup-python pinned to v7.0.0.
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: '3.11.10'
+      - name: Validate release tooling
+        run: python -m unittest discover -s tests -v
+      - name: Build one due execution plan
+        run: |
+          python scripts/release_orchestrator.py \
+            tests/fixtures/release-queue-v1.json \
+            --trusted-as-of 2026-10-20T06:07:05.000Z \
+            --output "$RUNNER_TEMP/release-plan.json"
+      - name: Build a harmless synthetic decrypted archive
+        run: |
+          mkdir -p "$RUNNER_TEMP/archive/source/Submission"
+          printf '%s\n' 'import Mathlib' 'example : 2 + 2 = 4 := by norm_num' \
+            > "$RUNNER_TEMP/archive/source/Submission.lean"
+          printf '%s\n' 'def helper : Nat := 4' \
+            > "$RUNNER_TEMP/archive/source/Submission/Helper.lean"
+          printf '%s\n' 'must not be published' \
+            > "$RUNNER_TEMP/archive/source/private-note.txt"
+          tar --sort=name --mtime='UTC 1970-01-01' --owner=0 --group=0 --numeric-owner \
+            -C "$RUNNER_TEMP/archive" -czf "$RUNNER_TEMP/source.tar.gz" source
+      - name: Reconstruct without publishing
+        run: |
+          python scripts/reconstruct_release.py \
+            "$RUNNER_TEMP/release-plan.json" \
+            --plaintext-tar "$RUNNER_TEMP/source.tar.gz" \
+            --trusted-as-of 2026-10-20T06:07:05.000Z \
+            --state-acceptance-snapshot tests/fixtures/release-acceptance-snapshot-v1.json \
+            --output-root "$RUNNER_TEMP/reconstructed"
+          python scripts/validate_manifest.py \
+            "$RUNNER_TEMP/reconstructed/release-manifest.json" \
+            --trusted-as-of 2026-10-20T06:07:05.000Z \
+            --state-acceptance-snapshot tests/fixtures/release-acceptance-snapshot-v1.json \
+            --bundle-root "$RUNNER_TEMP/reconstructed"
+      - name: Verify the exact public file allowlist
+        run: |
+          release_path='releases/2026/10/r2_80f02f892fb0b90474675aa0b572252a8758faf74b95400521e9da724583931f'
+          test -f "$RUNNER_TEMP/reconstructed/$release_path/Submission.lean"
+          test -f "$RUNNER_TEMP/reconstructed/$release_path/Submission/Helper.lean"
+          test -f "$RUNNER_TEMP/reconstructed/$release_path/metadata.json"
+          test -f "$RUNNER_TEMP/reconstructed/$release_path/LICENSE"
+          test ! -e "$RUNNER_TEMP/reconstructed/$release_path/private-note.txt"
+          test -z "$(git status --porcelain)"
