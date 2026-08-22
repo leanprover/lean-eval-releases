@@ -42,7 +42,7 @@ def string_value(value: Any, label: str) -> str:
 
 
 def canonical_archive_path(submission_id: str) -> str:
-    """Return the only v1 audit-repository path for a submission ciphertext."""
+    """Return the only schema-version-1 audit-repository path for a submission ciphertext."""
     return f"archives/{submission_id.replace('-', '')[:2]}/{submission_id}.tar.age"
 
 

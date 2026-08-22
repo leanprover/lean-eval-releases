@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://lean-lang.org/schemas/lean-eval/release-acceptance-snapshot-v1.schema.json",
-  "title": "LeanEval release acceptance snapshot v1",
+  "title": "LeanEval release acceptance snapshot schema version 1",
   "type": "object",
   "additionalProperties": false,
   "required": ["schema_version", "submissions"],

@@ -61,7 +61,7 @@ TASK_FIELDS = {
 
 
 class ReleaseError(ValueError):
-    """A release queue or preparation plan violates release v1."""
+    """A release queue or preparation plan violates release schema version 1."""
 
 
 def _object(value: Any, label: str) -> dict[str, Any]:
