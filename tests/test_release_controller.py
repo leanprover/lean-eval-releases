@@ -15,6 +15,7 @@ from scripts.release_controller import (
     capability_digest,
     prepare_unwrap,
     recover_running,
+    staging_smoke_plan,
     started_event,
     terminal_event,
     unwrap_identity,
@@ -89,6 +90,25 @@ class ReleaseControllerTests(unittest.TestCase):
         self.assertNotIn("upload-artifact", workflow)
         self.assertNotIn("actions/download-artifact", workflow)
 
+    def test_staging_release_smoke_is_exact_decrypt_only_and_source_artifact_free(self) -> None:
+        workflow = (
+            ROOT / ".github/workflows/credentialed-release-staging-smoke.yml"
+        ).read_text(encoding="utf-8")
+        self.assertIn("environment: release-staging", workflow)
+        self.assertIn("repository: leanprover/lean-eval-state-staging", workflow)
+        self.assertIn("repository: leanprover/lean-eval-audit", workflow)
+        self.assertIn("ref: ${{ steps.plan.outputs.archive_commit }}", workflow)
+        self.assertIn("secrets.STAGING_STATE_READ_KEY", workflow)
+        self.assertIn("secrets.AUDIT_READ_KEY", workflow)
+        self.assertIn("lean-eval-archive-unwrap-staging", workflow)
+        self.assertIn("staging-smoke-plan", workflow)
+        self.assertIn("sha256sum", workflow)
+        self.assertNotIn("RELEASE_PUBLISH_KEY", workflow)
+        self.assertNotIn("state-event", workflow)
+        self.assertNotIn("git push", workflow)
+        self.assertNotIn("upload-artifact", workflow)
+        self.assertNotIn("reconstruct_release.py", workflow)
+
     def request(self) -> dict[str, object]:
         return prepare_unwrap(
             self.plan,
@@ -115,6 +135,24 @@ class ReleaseControllerTests(unittest.TestCase):
         self.assertEqual(capability["expires_at"], "2026-10-20T06:12:05.000Z")
         self.assertEqual(capability["max_uses"], 1)
         self.assertEqual(capability["archive_commit"], "b" * 40)
+
+    def test_staging_smoke_selects_one_scheduled_submission_without_changing_embargo(self) -> None:
+        queue = json.loads(
+            (ROOT / "tests/fixtures/release-queue-v1.json").read_text(encoding="utf-8")
+        )
+        submission_id = queue["tasks"][0]["submission_id"]
+        with self.assertRaisesRegex(ControllerError, "staging release queue"):
+            staging_smoke_plan(queue, submission_id)
+        queue["environment"] = "staging"
+        plan = staging_smoke_plan(queue, submission_id)
+        self.assertEqual(plan["kind"], "execution")
+        self.assertEqual(plan["request"]["submission"]["submission_id"], submission_id)
+        self.assertEqual(
+            plan["request"]["release"]["eligible_at"],
+            queue["tasks"][0]["release_at"],
+        )
+        with self.assertRaisesRegex(ControllerError, "exactly one"):
+            staging_smoke_plan(queue, "0198abcd-0000-7000-8000-000000000099")
 
     def test_prepare_unwrap_rejects_each_binding_layer(self) -> None:
         changed = copy.deepcopy(self.sidecar)

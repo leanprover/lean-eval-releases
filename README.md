@@ -124,6 +124,14 @@ The protected `release-production` environment contains only:
 The workflow receives no archive writer, results writer, intake, OAuth, GitHub
 App, KMS, DynamoDB, or general AWS credential.
 
+`Prove one credentialed staging release unwrap` is the non-publishing launch
+gate for this boundary. Given an accepted staging submission, it derives the
+exact queued release from validated staging State, checks out the pinned audit
+commit with separate read-only keys, consumes one staging release-purpose
+capability, drops AWS and OIDC authority, and verifies the decrypted tarball
+against the private sidecar. It neither reconstructs before the embargo nor
+writes State or this repository, and it uploads no artifact.
+
 Publication remains disabled until the production credentials and a
 single-submission decrypt/reconstruction check are complete. The contributor
 acknowledgement and Apache-2.0 release choice are fixed by the approved rollout

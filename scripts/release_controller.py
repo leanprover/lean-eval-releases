@@ -29,6 +29,8 @@ from release_orchestrator import (
     RESULT_ID,
     UUID7,
     ReleaseError,
+    plan_next,
+    validate_release_queue,
 )
 from release_tree import tree_digest
 
@@ -375,6 +377,28 @@ def prepare_unwrap(
     }
 
 
+def staging_smoke_plan(queue_value: Any, submission_id: str) -> dict[str, Any]:
+    """Build an unwrap-only staging plan for one scheduled accepted result.
+
+    This deliberately does not make a release due.  The staging workflow may
+    use the plan only to prove the release-purpose key boundary and plaintext
+    archive digest; normal reconstruction still enforces the real embargo.
+    """
+    try:
+        queue = validate_release_queue(queue_value)
+    except (ReleaseError, ValueError, TypeError) as error:
+        raise ControllerError(str(error)) from error
+    if queue["environment"] != "staging":
+        raise ControllerError("staging smoke requires the staging release queue")
+    _match(UUID7, submission_id, "staging submission_id")
+    matches = [
+        task for task in queue["tasks"] if task["submission_id"] == submission_id
+    ]
+    if len(matches) != 1:
+        raise ControllerError("staging submission must have exactly one queueable release")
+    return plan_next(queue, matches[0]["release_at"])
+
+
 def unwrap_identity(request_value: Any, response_value: Any, metadata_value: Any) -> bytes:
     request = _object(request_value, "unwrap request")
     _fields(request, UNWRAP_FIELDS, "unwrap request")
@@ -608,6 +632,11 @@ def main(argv: list[str] | None = None) -> int:
     recover.add_argument("--trusted-now", required=True)
     recover.add_argument("--output", required=True, type=pathlib.Path)
 
+    staging = commands.add_parser("staging-smoke-plan")
+    staging.add_argument("--queue", required=True, type=pathlib.Path)
+    staging.add_argument("--submission-id", required=True)
+    staging.add_argument("--output", required=True, type=pathlib.Path)
+
     args = parser.parse_args(argv)
     try:
         if args.command == "prepare-unwrap":
@@ -632,6 +661,14 @@ def main(argv: list[str] | None = None) -> int:
                     _read(args.domain, "State domain view"),
                     args.release_root.resolve(),
                     args.trusted_now,
+                ),
+            )
+        elif args.command == "staging-smoke-plan":
+            _write(
+                args.output,
+                staging_smoke_plan(
+                    _read(args.queue, "staging release queue"),
+                    args.submission_id,
                 ),
             )
         elif args.kind == "started":
