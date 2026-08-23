@@ -142,6 +142,9 @@ jobs:
           {
             echo "kind=$kind"
             echo "trusted_now=$trusted_now"
+            if [ "$kind" = execution ]; then
+              echo "archive_commit=$(jq -r .request.archive.archive_commit "$RUNNER_TEMP/release-plan.json")"
+            fi
           } >> "$GITHUB_OUTPUT"
 
       - name: Append release.started with compare-and-swap push
@@ -175,7 +178,20 @@ jobs:
             python state/scripts/state.py --root state validate
           done
 
-      - name: Fetch exact immutable audit object
+      # This read-only key reaches only the private audit repository. Checking
+      # out the State-pinned SHA avoids granting the controller an API token.
+      - name: Check out the exact immutable audit commit
+        if: steps.plan.outputs.kind == 'execution'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: leanprover/lean-eval-audit
+          ref: ${{ steps.plan.outputs.archive_commit }}
+          path: audit
+          fetch-depth: 1
+          persist-credentials: false
+          ssh-key: ${{ secrets.AUDIT_READ_KEY }}
+
+      - name: Read exact immutable audit object
         if: steps.plan.outputs.kind == 'execution'
         run: |
           set -euo pipefail
@@ -183,18 +199,13 @@ jobs:
           archive_commit=$(jq -r .request.archive.archive_commit "$RUNNER_TEMP/release-plan.json")
           archive_path=$(jq -r .request.archive.archive_path "$RUNNER_TEMP/release-plan.json")
           test "$archive_repository" = leanprover/lean-eval-audit
-          git init --quiet "$RUNNER_TEMP/audit"
-          git -C "$RUNNER_TEMP/audit" remote add origin \
-            https://github.com/leanprover/lean-eval-audit.git
-          git -C "$RUNNER_TEMP/audit" fetch --quiet --depth=1 origin "$archive_commit"
-          test "$(git -C "$RUNNER_TEMP/audit" rev-parse FETCH_HEAD)" = "$archive_commit"
-          git -C "$RUNNER_TEMP/audit" checkout --quiet --detach FETCH_HEAD
-          test -f "$RUNNER_TEMP/audit/$archive_path"
+          test "$(git -C audit rev-parse HEAD)" = "$archive_commit"
+          test -f "audit/$archive_path"
           sidecar_path="${archive_path%.tar.age}.json"
-          test -f "$RUNNER_TEMP/audit/$sidecar_path"
-          cp "$RUNNER_TEMP/audit/$archive_path" "$RUNNER_TEMP/archive.tar.age"
-          cp "$RUNNER_TEMP/audit/$sidecar_path" "$RUNNER_TEMP/archive-sidecar.json"
-          rm -rf "$RUNNER_TEMP/audit"
+          test -f "audit/$sidecar_path"
+          cp "audit/$archive_path" "$RUNNER_TEMP/archive.tar.age"
+          cp "audit/$sidecar_path" "$RUNNER_TEMP/archive-sidecar.json"
+          rm -rf audit
 
       - name: Install checksum-pinned age 1.3.1
         if: steps.plan.outputs.kind == 'execution'

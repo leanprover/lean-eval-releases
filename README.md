@@ -112,6 +112,8 @@ opt-out ordered before `release.started` is not executable work.
 
 The protected `release-production` environment contains only:
 
+- `AUDIT_READ_KEY`, a read-only deploy key scoped only to the private audit
+  repository;
 - `RELEASE_PUBLISH_KEY`, whose public deploy key is the only automatic bypass
   on this repository's append-only publication branch;
 - `PRODUCTION_STATE_CONTROLLER_KEY`, whose public deploy key can update only
