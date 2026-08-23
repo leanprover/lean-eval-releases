@@ -1,0 +1,396 @@
+name: Publish due source release
+
+on:
+  schedule:
+    - cron: '23 4 * * *'
+  workflow_dispatch:
+    inputs:
+      confirm_publication:
+        description: Confirm one due production release may be published
+        required: true
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: lean-eval-release-controller-production
+  cancel-in-progress: false
+
+jobs:
+  publish-one:
+    if: >-
+      vars.PUBLICATION_ENABLED == 'true' &&
+      (github.event_name == 'schedule' || inputs.confirm_publication == true)
+    environment: release-production
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      # actions/checkout pinned to v7.0.1. The deploy key is scoped only to
+      # this public repository and is the ruleset's publication bypass.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: true
+          ssh-key: ${{ secrets.RELEASE_PUBLISH_KEY }}
+
+      # The separate deploy key reaches only private production State.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: leanprover/lean-eval-state
+          ref: main
+          path: state
+          persist-credentials: true
+          ssh-key: ${{ secrets.PRODUCTION_STATE_CONTROLLER_KEY }}
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: '3.11.10'
+
+      - name: Validate controller and materialize exact production State
+        run: |
+          set -euo pipefail
+          test "$(jq -r .environment state/state.json)" = production
+          python -m unittest discover -s tests -v
+          python state/scripts/state.py --root state validate
+          python state/scripts/state.py --root state materialize \
+            --output "$RUNNER_TEMP/state-views"
+
+      - name: Classify an interrupted release before selecting new work
+        id: recovery
+        run: |
+          set -euo pipefail
+          python scripts/release_controller.py recover \
+            --domain "$RUNNER_TEMP/state-views/domain.json" \
+            --release-root . \
+            --trusted-now "$(date --utc +%Y-%m-%dT%H:%M:%S.000Z)" \
+            --output "$RUNNER_TEMP/release-recovery.json"
+          echo "kind=$(jq -r .kind "$RUNNER_TEMP/release-recovery.json")" >> "$GITHUB_OUTPUT"
+
+      - name: Reconcile an interrupted release into State
+        if: steps.recovery.outputs.kind == 'failed' || steps.recovery.outputs.kind == 'published'
+        env:
+          RECOVERY_KIND: ${{ steps.recovery.outputs.kind }}
+        run: |
+          set -euo pipefail
+          jq .started_event "$RUNNER_TEMP/release-recovery.json" \
+            > "$RUNNER_TEMP/release-started-event.json"
+          if [ "$RECOVERY_KIND" = published ]; then
+            release_path=$(jq -r .release_path "$RUNNER_TEMP/release-recovery.json")
+            tree_digest=$(jq -r .tree_digest "$RUNNER_TEMP/release-recovery.json")
+            repository_commit=$(git log --diff-filter=A --format=%H -1 -- "$release_path")
+            test "$repository_commit" != ""
+            git show "$repository_commit:release-manifest.json" \
+              > "$RUNNER_TEMP/recovered-manifest.json"
+            generated_at=$(jq -r .generated_at "$RUNNER_TEMP/recovered-manifest.json")
+            python scripts/validate_manifest.py "$RUNNER_TEMP/recovered-manifest.json" \
+              --trusted-as-of "$generated_at" \
+              --state-acceptance-snapshot \
+                "$RUNNER_TEMP/state-views/release-acceptance-snapshot.json" \
+              --bundle-root .
+            test "$(jq -r --arg path "$release_path" \
+              '.entries[] | select(.release_path == $path) | .release_tree_sha256' \
+              "$RUNNER_TEMP/recovered-manifest.json")" = "$tree_digest"
+            python scripts/release_controller.py state-event published \
+              --started-event "$RUNNER_TEMP/release-started-event.json" \
+              --trusted-now "$(date --utc +%Y-%m-%dT%H:%M:%S.000Z)" \
+              --repository-commit "$repository_commit" \
+              --tree-digest "$tree_digest" \
+              --release-path "$release_path" \
+              --output "$RUNNER_TEMP/release-recovered-event.json"
+          else
+            python scripts/release_controller.py state-event failed \
+              --started-event "$RUNNER_TEMP/release-started-event.json" \
+              --trusted-now "$(date --utc +%Y-%m-%dT%H:%M:%S.000Z)" \
+              --reason-code controller_interrupted \
+              --retryable true \
+              --output "$RUNNER_TEMP/release-recovered-event.json"
+          fi
+          event_id=$(jq -r .event_id "$RUNNER_TEMP/release-recovered-event.json")
+          python state/scripts/state.py --root state append \
+            "$RUNNER_TEMP/release-recovered-event.json"
+          event_path=$(find state/events -type f -name "$event_id.json" -print -quit)
+          test -n "$event_path"
+          git -C state config user.name lean-eval-release-controller
+          git -C state config user.email lean-eval-release-controller@users.noreply.github.com
+          git -C state add "${event_path#state/}"
+          git -C state commit -m "Recover interrupted release $event_id"
+          for attempt in 1 2 3 4 5; do
+            if git -C state push origin HEAD:main; then break; fi
+            test "$attempt" -lt 5
+            git -C state fetch origin main
+            git -C state rebase origin/main
+            python state/scripts/state.py --root state validate
+          done
+
+      - name: Plan at the trusted workflow clock
+        if: steps.recovery.outputs.kind == 'none'
+        id: plan
+        run: |
+          set -euo pipefail
+          trusted_now=$(date --utc +%Y-%m-%dT%H:%M:%S.000Z)
+          python scripts/release_orchestrator.py \
+            "$RUNNER_TEMP/state-views/release-queue.json" \
+            --trusted-as-of "$trusted_now" \
+            --output "$RUNNER_TEMP/release-plan.json"
+          kind=$(jq -r .kind "$RUNNER_TEMP/release-plan.json")
+          case "$kind" in
+            execution|empty|not_due) ;;
+            *) echo "release planner returned an unknown kind" >&2; exit 1 ;;
+          esac
+          {
+            echo "kind=$kind"
+            echo "trusted_now=$trusted_now"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Append release.started with compare-and-swap push
+        if: steps.plan.outputs.kind == 'execution'
+        id: started
+        env:
+          TRUSTED_NOW: ${{ steps.plan.outputs.trusted_now }}
+        run: |
+          set -euo pipefail
+          python scripts/release_controller.py state-event started \
+            --plan "$RUNNER_TEMP/release-plan.json" \
+            --trusted-now "$TRUSTED_NOW" \
+            --output "$RUNNER_TEMP/release-started-event.json"
+          event_id=$(jq -r .event_id "$RUNNER_TEMP/release-started-event.json")
+          python state/scripts/state.py --root state append \
+            "$RUNNER_TEMP/release-started-event.json"
+          git -C state config user.name lean-eval-release-controller
+          git -C state config user.email lean-eval-release-controller@users.noreply.github.com
+          event_path=$(find state/events -type f -name "$event_id.json" -print -quit)
+          test -n "$event_path"
+          git -C state add "${event_path#state/}"
+          git -C state commit -m "Start release $event_id"
+          for attempt in 1 2 3 4 5; do
+            if git -C state push origin HEAD:main; then
+              echo "recorded=true" >> "$GITHUB_OUTPUT"
+              break
+            fi
+            test "$attempt" -lt 5
+            git -C state fetch origin main
+            git -C state rebase origin/main
+            python state/scripts/state.py --root state validate
+          done
+
+      - name: Fetch exact immutable audit object
+        if: steps.plan.outputs.kind == 'execution'
+        run: |
+          set -euo pipefail
+          archive_repository=$(jq -r .request.archive.archive_repository "$RUNNER_TEMP/release-plan.json")
+          archive_commit=$(jq -r .request.archive.archive_commit "$RUNNER_TEMP/release-plan.json")
+          archive_path=$(jq -r .request.archive.archive_path "$RUNNER_TEMP/release-plan.json")
+          test "$archive_repository" = leanprover/lean-eval-audit
+          git init --quiet "$RUNNER_TEMP/audit"
+          git -C "$RUNNER_TEMP/audit" remote add origin \
+            https://github.com/leanprover/lean-eval-audit.git
+          git -C "$RUNNER_TEMP/audit" fetch --quiet --depth=1 origin "$archive_commit"
+          test "$(git -C "$RUNNER_TEMP/audit" rev-parse FETCH_HEAD)" = "$archive_commit"
+          git -C "$RUNNER_TEMP/audit" checkout --quiet --detach FETCH_HEAD
+          test -f "$RUNNER_TEMP/audit/$archive_path"
+          sidecar_path="${archive_path%.tar.age}.json"
+          test -f "$RUNNER_TEMP/audit/$sidecar_path"
+          cp "$RUNNER_TEMP/audit/$archive_path" "$RUNNER_TEMP/archive.tar.age"
+          cp "$RUNNER_TEMP/audit/$sidecar_path" "$RUNNER_TEMP/archive-sidecar.json"
+          rm -rf "$RUNNER_TEMP/audit"
+
+      - name: Install checksum-pinned age 1.3.1
+        if: steps.plan.outputs.kind == 'execution'
+        run: |
+          set -euo pipefail
+          curl --proto '=https' --tlsv1.2 --fail --silent --show-error --location \
+            https://github.com/FiloSottile/age/releases/download/v1.3.1/age-v1.3.1-linux-amd64.tar.gz \
+            --output "$RUNNER_TEMP/age.tar.gz"
+          echo "bdc69c09cbdd6cf8b1f333d372a1f58247b3a33146406333e30c0f26e8f51377  $RUNNER_TEMP/age.tar.gz" \
+            | sha256sum --check --strict
+          tar --extract --gzip --file "$RUNNER_TEMP/age.tar.gz" --directory "$RUNNER_TEMP"
+          install -m 0555 "$RUNNER_TEMP/age/age" "$RUNNER_TEMP/age-bin"
+          test "$($RUNNER_TEMP/age-bin --version)" = v1.3.1
+          rm -rf "$RUNNER_TEMP/age" "$RUNNER_TEMP/age.tar.gz"
+
+      - name: Build one five-minute release capability
+        if: steps.plan.outputs.kind == 'execution'
+        id: unwrap_request
+        run: |
+          set -euo pipefail
+          trusted_now=$(date --utc +%Y-%m-%dT%H:%M:%S.000Z)
+          python scripts/release_controller.py prepare-unwrap \
+            --plan "$RUNNER_TEMP/release-plan.json" \
+            --sidecar "$RUNNER_TEMP/archive-sidecar.json" \
+            --ciphertext "$RUNNER_TEMP/archive.tar.age" \
+            --trusted-now "$trusted_now" \
+            --output "$RUNNER_TEMP/unwrap-request.json"
+
+      - name: Assume the production Invoke-only release role
+        if: steps.plan.outputs.kind == 'execution'
+        uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c
+        with:
+          role-to-assume: ${{ vars.AWS_RELEASE_UNWRAP_ROLE_ARN }}
+          aws-region: us-east-1
+          role-session-name: lean-eval-release-controller
+          mask-aws-account-id: true
+
+      - name: Consume capability, drop AWS authority, and decrypt locally
+        if: steps.plan.outputs.kind == 'execution'
+        run: |
+          set -euo pipefail
+          cleanup() {
+            unset AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN
+            unset ACTIONS_ID_TOKEN_REQUEST_TOKEN ACTIONS_ID_TOKEN_REQUEST_URL
+            {
+              echo 'AWS_ACCESS_KEY_ID='
+              echo 'AWS_SECRET_ACCESS_KEY='
+              echo 'AWS_SESSION_TOKEN='
+              echo 'ACTIONS_ID_TOKEN_REQUEST_TOKEN='
+              echo 'ACTIONS_ID_TOKEN_REQUEST_URL='
+            } >> "$GITHUB_ENV"
+            rm -f "$RUNNER_TEMP/identity.age" "$RUNNER_TEMP/unwrap-response.json" \
+              "$RUNNER_TEMP/unwrap-metadata.json" "$RUNNER_TEMP/unwrap-request.json"
+          }
+          trap cleanup EXIT
+          aws lambda invoke \
+            --function-name lean-eval-archive-unwrap-production \
+            --qualifier live \
+            --cli-binary-format raw-in-base64-out \
+            --payload "fileb://$RUNNER_TEMP/unwrap-request.json" \
+            "$RUNNER_TEMP/unwrap-response.json" > "$RUNNER_TEMP/unwrap-metadata.json"
+          env -u AWS_ACCESS_KEY_ID -u AWS_SECRET_ACCESS_KEY -u AWS_SESSION_TOKEN \
+            python scripts/release_controller.py unwrap-identity \
+              --request "$RUNNER_TEMP/unwrap-request.json" \
+              --response "$RUNNER_TEMP/unwrap-response.json" \
+              --metadata "$RUNNER_TEMP/unwrap-metadata.json" \
+              --output "$RUNNER_TEMP/identity.age"
+          unset AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN
+          unset ACTIONS_ID_TOKEN_REQUEST_TOKEN ACTIONS_ID_TOKEN_REQUEST_URL
+          "$RUNNER_TEMP/age-bin" --decrypt --identity "$RUNNER_TEMP/identity.age" \
+            --output "$RUNNER_TEMP/source.tar.gz" "$RUNNER_TEMP/archive.tar.age"
+          cleanup
+          trap - EXIT
+
+      - name: Reconstruct and validate the exact public allowlist
+        if: steps.plan.outputs.kind == 'execution'
+        id: reconstruct
+        run: |
+          set -euo pipefail
+          unset ACTIONS_ID_TOKEN_REQUEST_TOKEN ACTIONS_ID_TOKEN_REQUEST_URL
+          trusted_now=$(date --utc +%Y-%m-%dT%H:%M:%S.000Z)
+          python scripts/reconstruct_release.py \
+            "$RUNNER_TEMP/release-plan.json" \
+            --plaintext-tar "$RUNNER_TEMP/source.tar.gz" \
+            --trusted-as-of "$trusted_now" \
+            --state-acceptance-snapshot \
+              "$RUNNER_TEMP/state-views/release-acceptance-snapshot.json" \
+            --output-root "$RUNNER_TEMP/reconstructed"
+          python scripts/validate_manifest.py \
+            "$RUNNER_TEMP/reconstructed/release-manifest.json" \
+            --trusted-as-of "$trusted_now" \
+            --state-acceptance-snapshot \
+              "$RUNNER_TEMP/state-views/release-acceptance-snapshot.json" \
+            --bundle-root "$RUNNER_TEMP/reconstructed"
+          rm -f "$RUNNER_TEMP/source.tar.gz" "$RUNNER_TEMP/archive.tar.age" \
+            "$RUNNER_TEMP/archive-sidecar.json"
+
+      - name: Publish one append-only release commit
+        if: steps.plan.outputs.kind == 'execution'
+        id: publish
+        run: |
+          set -euo pipefail
+          result_id=$(jq -r .request.result.result_id "$RUNNER_TEMP/release-plan.json")
+          release_path=$(jq -r .request.release.path "$RUNNER_TEMP/release-plan.json")
+          submission_id=$(jq -r .request.submission.submission_id "$RUNNER_TEMP/release-plan.json")
+          test ! -e "$release_path"
+          test ! -e "sources/$submission_id.tar.gz"
+          mkdir -p "$(dirname "$release_path")" sources
+          cp -a "$RUNNER_TEMP/reconstructed/$release_path" "$release_path"
+          cp "$RUNNER_TEMP/reconstructed/sources/$submission_id.tar.gz" \
+            "sources/$submission_id.tar.gz"
+          cp "$RUNNER_TEMP/reconstructed/release-manifest.json" release-manifest.json
+          python scripts/validate_manifest.py release-manifest.json \
+            --trusted-as-of "$(jq -r .generated_at release-manifest.json)" \
+            --state-acceptance-snapshot \
+              "$RUNNER_TEMP/state-views/release-acceptance-snapshot.json" \
+            --bundle-root .
+          tree_digest=$(jq -r --arg result "$result_id" \
+            '.entries[] | select(.result_id == $result) | .release_tree_sha256' \
+            release-manifest.json)
+          test "$tree_digest" != null
+          git config user.name lean-eval-release-controller
+          git config user.email lean-eval-release-controller@users.noreply.github.com
+          git add "$release_path" "sources/$submission_id.tar.gz" release-manifest.json
+          git diff --cached --check
+          git commit -m "Publish delayed source $result_id"
+          git push origin HEAD:main
+          {
+            echo "repository_commit=$(git rev-parse HEAD)"
+            echo "tree_digest=$tree_digest"
+            echo "release_path=$release_path"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Build and append release.published
+        if: steps.publish.outputs.repository_commit != ''
+        id: terminal
+        env:
+          REPOSITORY_COMMIT: ${{ steps.publish.outputs.repository_commit }}
+          TREE_DIGEST: ${{ steps.publish.outputs.tree_digest }}
+          RELEASE_PATH: ${{ steps.publish.outputs.release_path }}
+        run: |
+          set -euo pipefail
+          python scripts/release_controller.py state-event published \
+            --started-event "$RUNNER_TEMP/release-started-event.json" \
+            --trusted-now "$(date --utc +%Y-%m-%dT%H:%M:%S.000Z)" \
+            --repository-commit "$REPOSITORY_COMMIT" \
+            --tree-digest "$TREE_DIGEST" \
+            --release-path "$RELEASE_PATH" \
+            --output "$RUNNER_TEMP/release-terminal-event.json"
+          event_id=$(jq -r .event_id "$RUNNER_TEMP/release-terminal-event.json")
+          python state/scripts/state.py --root state append \
+            "$RUNNER_TEMP/release-terminal-event.json"
+          event_path=$(find state/events -type f -name "$event_id.json" -print -quit)
+          test -n "$event_path"
+          git -C state add "${event_path#state/}"
+          git -C state commit -m "Record published release $event_id"
+          for attempt in 1 2 3 4 5; do
+            if git -C state push origin HEAD:main; then
+              touch "$RUNNER_TEMP/release-terminal-recorded"
+              break
+            fi
+            test "$attempt" -lt 5
+            git -C state fetch origin main
+            git -C state rebase origin/main
+            python state/scripts/state.py --root state validate
+          done
+
+      - name: Record a retryable failure if publication did not occur
+        if: always() && steps.started.outputs.recorded == 'true' && steps.publish.outputs.repository_commit == ''
+        run: |
+          set -euo pipefail
+          python scripts/release_controller.py state-event failed \
+            --started-event "$RUNNER_TEMP/release-started-event.json" \
+            --trusted-now "$(date --utc +%Y-%m-%dT%H:%M:%S.000Z)" \
+            --reason-code controller_failed \
+            --retryable true \
+            --output "$RUNNER_TEMP/release-failed-event.json"
+          event_id=$(jq -r .event_id "$RUNNER_TEMP/release-failed-event.json")
+          python state/scripts/state.py --root state append \
+            "$RUNNER_TEMP/release-failed-event.json"
+          event_path=$(find state/events -type f -name "$event_id.json" -print -quit)
+          test -n "$event_path"
+          git -C state add "${event_path#state/}"
+          git -C state commit -m "Record failed release $event_id"
+          for attempt in 1 2 3 4 5; do
+            if git -C state push origin HEAD:main; then break; fi
+            test "$attempt" -lt 5
+            git -C state fetch origin main
+            git -C state rebase origin/main
+            python state/scripts/state.py --root state validate
+          done
+
+      - name: Remove controller scratch
+        if: always()
+        run: |
+          rm -rf "$RUNNER_TEMP/reconstructed" "$RUNNER_TEMP/state-views"
+          rm -f "$RUNNER_TEMP"/release-*.json "$RUNNER_TEMP"/unwrap-*.json \
+            "$RUNNER_TEMP"/identity.age "$RUNNER_TEMP"/source.tar.gz \
+            "$RUNNER_TEMP"/archive.tar.age "$RUNNER_TEMP"/archive-sidecar.json

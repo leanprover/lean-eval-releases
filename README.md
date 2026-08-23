@@ -89,11 +89,44 @@ later credentialed workflow must first verify the pinned ciphertext digest,
 consume exactly one `lean-eval-release` unwrap capability, decrypt it, and only
 then invoke this provider-neutral reconstruction tool.
 
-Publication remains disabled until the one-submission unwrap path and a
+`Publish due source release` is the credentialed production controller. Its
+daily schedule is inert unless the repository variable `PUBLICATION_ENABLED`
+is exactly `true`; a manual run additionally requires an explicit confirmation.
+It materializes the private production State repository through a read/write
+deploy key scoped only to that repository, selects at most one due result,
+appends `release.started` with a non-forced compare-and-swap push, retrieves the
+exact audit commit, and verifies the schema-version-3 sidecar, KMS envelope,
+and ciphertext bytes agree. It then assumes only the production release
+Lambda-invoker role, consumes one five-minute `lean-eval-release` capability,
+drops AWS authority before decryption, reconstructs the allowlisted public
+tree, and publishes with a second deploy key scoped only to this repository.
+The terminal State event pins the exact release commit, path, and tree digest.
+
+No plaintext or identity artifact is uploaded. A pre-publication failure is
+recorded as retryable. If a runner disappears after `release.started`, the next
+scheduled controller run waits one hour, then either records a retryable
+interruption or proves an already-published tree and records
+`release.published`; this closes the push-succeeded/callback-lost ambiguity.
+Owner publication changes are folded into the State-owned release queue, so an
+opt-out ordered before `release.started` is not executable work.
+
+The protected `release-production` environment contains only:
+
+- `RELEASE_PUBLISH_KEY`, whose public deploy key is the only automatic bypass
+  on this repository's append-only publication branch;
+- `PRODUCTION_STATE_CONTROLLER_KEY`, whose public deploy key can update only
+  production State through its validator and non-forced pushes; and
+- non-secret `AWS_RELEASE_UNWRAP_ROLE_ARN`, which can invoke only the immutable
+  production unwrap Lambda alias.
+
+The workflow receives no archive writer, results writer, intake, OAuth, GitHub
+App, KMS, DynamoDB, or general AWS credential.
+
+Publication remains disabled until the production credentials and a
 single-submission decrypt/reconstruction check are complete. The contributor
 acknowledgement and Apache-2.0 release choice are fixed by the approved rollout
-decision; this disabled tooling does not itself establish that a particular
-archive may be released.
+decision; eligibility and current consent still come only from validated
+State.
 
 ```bash
 python -m unittest discover -s tests -v
