@@ -57,6 +57,14 @@ CONTROLLER_RELEASE_TRANSITIONS = {
     "release.published": ({"running"}, "published"),
     "release.failed": ({"running"}, "failed"),
 }
+STATE_TRANSITION_PLAN_FIELDS = {
+    "schema_version",
+    "protected_state_head",
+    "event_path",
+    "status_path",
+    "status_before_sha256",
+    "status_after",
+}
 
 SIDECAR_REQUIRED_FIELDS = {
     "schema_version",
@@ -287,12 +295,9 @@ def _git(
         raise ControllerError("State Git inspection failed closed") from error
 
 
-def stage_release_state_transition(
-    state_root: pathlib.Path,
-    event_value: Any,
-    protected_state_head: str,
-) -> dict[str, Any]:
-    """Stage exactly one release event and its targeted status replacement."""
+def _state_root_at_head(
+    state_root: pathlib.Path, protected_state_head: str
+) -> pathlib.Path:
     root = state_root.resolve(strict=True)
     if state_root.is_symlink() or not root.is_dir():
         raise ControllerError("State root must be a regular directory")
@@ -305,6 +310,90 @@ def stage_release_state_transition(
     head = _git(root, "rev-parse", "HEAD").stdout.decode("ascii").strip()
     if head != protected_state_head:
         raise ControllerError("State checkout moved from the protected State head")
+    return root
+
+
+def verify_staged_release_state_transition(
+    state_root: pathlib.Path,
+    event_value: Any,
+    plan_value: Any,
+) -> None:
+    """Reassert one exact two-path State transition immediately before commit."""
+    plan = _object(plan_value, "State transition plan")
+    _fields(plan, STATE_TRANSITION_PLAN_FIELDS, "State transition plan")
+    if plan["schema_version"] != 1 or isinstance(plan["schema_version"], bool):
+        raise ControllerError("State transition plan schema_version is invalid")
+    protected_state_head = _match(
+        COMMIT, plan["protected_state_head"], "protected State head"
+    )
+    root = _state_root_at_head(state_root, protected_state_head)
+    event = _object(event_value, "release transition event")
+    subject = _match(RESULT_ID, event.get("subject_id"), "release transition subject")
+    relative_status = result_release_status_path(subject)
+    try:
+        status_before_raw = _git(
+            root,
+            "show",
+            f"{protected_state_head}:{relative_status.as_posix()}",
+        ).stdout
+        status_before = json.loads(status_before_raw.decode("utf-8"))
+    except (UnicodeError, json.JSONDecodeError) as error:
+        raise ControllerError(
+            "protected targeted result release status is unreadable"
+        ) from error
+    if status_before_raw != canonical_json(status_before).encode("utf-8"):
+        raise ControllerError(
+            "protected targeted result release status is not byte-canonical"
+        )
+    expected_plan = plan_release_state_transition(
+        status_before, event, protected_state_head
+    )
+    if plan != expected_plan:
+        raise ControllerError(
+            "State transition plan does not match the event and protected State head"
+        )
+
+    relative_event = pathlib.PurePosixPath(plan["event_path"])
+    staged = {
+        line
+        for line in _git(root, "diff", "--cached", "--name-only", "--")
+        .stdout.decode("utf-8")
+        .splitlines()
+        if line
+    }
+    expected_paths = {relative_event.as_posix(), relative_status.as_posix()}
+    if staged != expected_paths:
+        raise ControllerError(
+            "State transition cached diff is not the exact event/status pair"
+        )
+    expected_raw = {
+        relative_event: canonical_json(event).encode("utf-8"),
+        relative_status: canonical_json(plan["status_after"]).encode("utf-8"),
+    }
+    for relative, raw in expected_raw.items():
+        if _git(root, "show", f":{relative.as_posix()}").stdout != raw:
+            raise ControllerError(
+                "State transition cached bytes are not the expected canonical bytes"
+            )
+    unstaged = _git(
+        root,
+        "diff",
+        "--name-only",
+        "--",
+        relative_event.as_posix(),
+        relative_status.as_posix(),
+    ).stdout
+    if unstaged:
+        raise ControllerError("State transition paths changed after staging")
+
+
+def stage_release_state_transition(
+    state_root: pathlib.Path,
+    event_value: Any,
+    protected_state_head: str,
+) -> dict[str, Any]:
+    """Stage exactly one release event and its targeted status replacement."""
+    root = _state_root_at_head(state_root, protected_state_head)
     dirty = _git(
         root,
         "status",
@@ -365,24 +454,7 @@ def stage_release_state_transition(
     event_path.write_bytes(event_raw)
     status_path.write_bytes(status_after_raw)
     _git(root, "add", "--", relative_event.as_posix(), relative_status.as_posix())
-    staged = {
-        line
-        for line in _git(root, "diff", "--cached", "--name-only", "--")
-        .stdout.decode("utf-8")
-        .splitlines()
-        if line
-    }
-    expected = {relative_event.as_posix(), relative_status.as_posix()}
-    if staged != expected:
-        raise ControllerError(
-            f"State transition staged unexpected paths: {sorted(staged ^ expected)}"
-        )
-    for relative, expected_raw in (
-        (relative_event, event_raw),
-        (relative_status, status_after_raw),
-    ):
-        if _git(root, "show", f":{relative.as_posix()}").stdout != expected_raw:
-            raise ControllerError("staged State transition bytes are not canonical")
+    verify_staged_release_state_transition(root, event, plan)
     return plan
 
 
@@ -927,6 +999,11 @@ def main(argv: list[str] | None = None) -> int:
     transition.add_argument("--protected-state-head", required=True)
     transition.add_argument("--output", required=True, type=pathlib.Path)
 
+    verify_transition = commands.add_parser("verify-staged-state-transition")
+    verify_transition.add_argument("--state-root", required=True, type=pathlib.Path)
+    verify_transition.add_argument("--event", required=True, type=pathlib.Path)
+    verify_transition.add_argument("--plan", required=True, type=pathlib.Path)
+
     args = parser.parse_args(argv)
     try:
         if args.command == "prepare-unwrap":
@@ -972,6 +1049,12 @@ def main(argv: list[str] | None = None) -> int:
                 args.protected_state_head,
             )
             _write(args.output, plan)
+        elif args.command == "verify-staged-state-transition":
+            verify_staged_release_state_transition(
+                args.state_root,
+                _read(args.event, "release transition event"),
+                _read(args.plan, "State transition plan"),
+            )
         elif args.kind == "started":
             if args.plan is None:
                 raise ControllerError("started event requires --plan")

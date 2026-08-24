@@ -53,8 +53,13 @@ missing, noncanonical, dirty, or head-mismatched document, requires its current
 status and release-event marker to match the new event's causation, and stages
 exactly two paths: the immutable event and the replacement targeted status.
 The State validator checks that pair against the complete event graph before
-Git creates one commit. A normal, non-forced push is the only retry boundary;
-the workflow never rebases a prepared transition onto a different State head.
+Git creates one commit. Immediately after validation and before the commit, a
+separate verification command re-derives the transition from the protected
+head, reasserts that the cached diff contains only those two paths, compares
+both cached blobs with their expected canonical bytes, and rejects any
+post-staging worktree change. A normal, non-forced push is the only retry
+boundary; the workflow never rebases a prepared transition onto a different
+State head.
 
 The resulting sequence is:
 
