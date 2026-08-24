@@ -136,6 +136,7 @@ jobs:
             echo "- release controller source: \`$GITHUB_SHA\`"
             echo '- exact production release role trust proved in account `161072922960`'
             echo '- the session was restricted to caller identity only'
-            echo '- AWS credentials and the GitHub OIDC request handle were discarded before the authority-bearing job ended'
-            echo '- publication remained disabled; no Lambda, archive, State, Git, or artifact operation occurred'
+            echo '- AWS credentials and the GitHub OIDC request handle were discarded from the final repository-authored process'
+            echo '- only the pinned credential action cleanup remained in the authority-bearing job'
+            echo '- the publication latch was observed disabled; no Lambda, archive, State, Git, or artifact operation occurred'
           } >> "$GITHUB_STEP_SUMMARY"

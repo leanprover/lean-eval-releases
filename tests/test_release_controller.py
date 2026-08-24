@@ -497,6 +497,17 @@ class ReleaseControllerTests(unittest.TestCase):
         self.assertIn("export AWS_EC2_METADATA_DISABLED=true", workflow)
         self.assertIn("AWS authority survived cleanup", workflow)
         self.assertIn("  summarize:\n    needs: oidc-trust\n    permissions: {}", workflow)
+        self.assertEqual(workflow.count("\n      - "), 5)
+        self.assertEqual(
+            re.findall(r"^      - name: (.+)$", workflow, re.MULTILINE),
+            [
+                "Require an exact protected publication-disabled dispatch",
+                "Require the publication latch and role boundary",
+                "Assume only the production release Invoke role",
+                "Prove exact caller identity and discard all authority handles",
+                "Record a source-free trust proof",
+            ],
+        )
         for forbidden in (
             "actions/checkout",
             "repository:",
@@ -559,6 +570,17 @@ class ReleaseControllerTests(unittest.TestCase):
                 "  summarize:\n    needs: oidc-trust\n    permissions: {}",
                 candidate,
             )
+            self.assertEqual(candidate.count("\n      - "), 5)
+            self.assertEqual(
+                re.findall(r"^      - name: (.+)$", candidate, re.MULTILINE),
+                [
+                    "Require an exact protected publication-disabled dispatch",
+                    "Require the publication latch and role boundary",
+                    "Assume only the production release Invoke role",
+                    "Prove exact caller identity and discard all authority handles",
+                    "Record a source-free trust proof",
+                ],
+            )
 
         validate_closed_boundary(workflow)
         hostile_changes = (
@@ -579,6 +601,11 @@ class ReleaseControllerTests(unittest.TestCase):
                 "      - name: Record a source-free trust proof",
                 "      - uses: actions/checkout@" + "0" * 40 + "\n"
                 "      - name: Record a source-free trust proof",
+            ),
+            (
+                "      - name: Prove exact caller identity and discard all authority handles",
+                "      - run: env\n"
+                "      - name: Prove exact caller identity and discard all authority handles",
             ),
             (
                 "lean-eval-release-unwrap-invoker-production",
