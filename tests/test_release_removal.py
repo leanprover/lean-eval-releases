@@ -5,7 +5,6 @@ import json
 import os
 import pathlib
 import stat
-import subprocess
 import sys
 import tempfile
 import textwrap
@@ -18,6 +17,7 @@ sys.path.insert(0, str(ROOT / "tests"))
 
 import plan_release_removal as planner_module
 import release_removal as removal_module
+import test_plan_release_removal as planner_tests
 from classify_release_publication import (
     PublicationClassificationError,
     classify_existing_publication_history,
@@ -33,7 +33,6 @@ from release_removal import (
     verify_cas_precondition,
     verify_staged_release_containment,
 )
-import test_plan_release_removal as planner_tests
 
 BUNDLE_PATH = planner_tests.BUNDLE_PATH
 EVENT_1 = planner_tests.EVENT_1
@@ -263,7 +262,8 @@ class ReleaseRemovalQualificationTests(unittest.TestCase):
                 self.assertFalse((fixture["release_root"] / "release-manifest.json").exists())
                 cas = finalize_state_corrections(
                     plan,
-                    binding,
+                    fixture["release_root"],
+                    binding["commit"],
                     self._identities((RESULT_1,)),
                     state_root,
                     fixture["state_commit"],
@@ -276,7 +276,8 @@ class ReleaseRemovalQualificationTests(unittest.TestCase):
                     verify_cas_precondition(cas, "f" * 40)
                 resumed = finalize_state_corrections(
                     plan,
-                    binding,
+                    fixture["release_root"],
+                    binding["commit"],
                     self._identities((RESULT_1,)),
                     state_root,
                     fixture["state_commit"],
@@ -307,14 +308,16 @@ class ReleaseRemovalQualificationTests(unittest.TestCase):
                 )
                 staged = stage_state_corrections(
                     plan,
-                    binding,
+                    fixture["release_root"],
+                    binding["commit"],
                     self._identities((RESULT_1,)),
                     fixture["state_root"],
                     fixture["state_commit"],
                 )
                 cas = finalize_state_corrections(
                     plan,
-                    binding,
+                    fixture["release_root"],
+                    binding["commit"],
                     self._identities((RESULT_1,)),
                     fixture["state_root"],
                     fixture["state_commit"],
@@ -322,6 +325,68 @@ class ReleaseRemovalQualificationTests(unittest.TestCase):
                 )
             self.assertEqual(cas["tree"], staged["staged_tree"])
             self.assertFalse(cas["idempotent_resume"])
+
+    def test_state_finalizer_rejects_consumer_drift_before_execution(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            fixture, plan = self._fixture(pathlib.Path(directory))
+            with self._contract_patch(fixture):
+                binding = finalize_release_containment(
+                    plan, fixture["release_root"], message="Remove erroneous release"
+                )
+                stage_state_corrections(
+                    plan,
+                    fixture["release_root"],
+                    binding["commit"],
+                    self._identities((RESULT_1,)),
+                    fixture["state_root"],
+                    fixture["state_commit"],
+                )
+                (fixture["state_root"] / "scripts" / "validate_state.py").write_text(
+                    "raise SystemExit('drifted tool executed')\n", encoding="utf-8"
+                )
+                with self.assertRaisesRegex(
+                    ReleaseRemovalError, "executable, unstaged, or untracked drift"
+                ):
+                    finalize_state_corrections(
+                        plan,
+                        fixture["release_root"],
+                        binding["commit"],
+                        self._identities((RESULT_1,)),
+                        fixture["state_root"],
+                        fixture["state_commit"],
+                        message="Record release removal",
+                    )
+            self.assertEqual(
+                self.git(fixture["state_root"], "rev-parse", "HEAD"),
+                fixture["state_commit"],
+            )
+
+    def test_state_finalizer_rejects_unplanned_protected_head_before_mutation(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            fixture, plan = self._fixture(pathlib.Path(directory))
+            with self._contract_patch(fixture):
+                binding = finalize_release_containment(
+                    plan, fixture["release_root"], message="Remove erroneous release"
+                )
+                state_head = self.git(fixture["state_root"], "rev-parse", "HEAD")
+                with self.assertRaisesRegex(
+                    ReleaseRemovalError, "protected State head differs"
+                ):
+                    finalize_state_corrections(
+                        plan,
+                        fixture["release_root"],
+                        binding["commit"],
+                        self._identities((RESULT_1,)),
+                        fixture["state_root"],
+                        "f" * 40,
+                        message="Record release removal",
+                    )
+            self.assertEqual(
+                self.git(fixture["state_root"], "rev-parse", "HEAD"), state_head
+            )
+            self.assertEqual(
+                self.git(fixture["state_root"], "status", "--porcelain"), ""
+            )
 
     def test_shared_bundle_and_unrelated_manifest_entry_are_preserved(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -356,33 +421,59 @@ class ReleaseRemovalQualificationTests(unittest.TestCase):
                 results=(RESULT_1, RESULT_2),
                 classification="confidentiality_incident",
             )
+            base = self.git(fixture["release_root"], "rev-parse", "HEAD")
+            with self.assertRaisesRegex(
+                ReleaseRemovalError, "requires explicit synthetic fixture mode"
+            ):
+                finalize_release_containment(
+                    plan,
+                    fixture["release_root"],
+                    message="Build synthetic sanitized tree",
+                )
+            self.assertEqual(
+                self.git(fixture["release_root"], "rev-parse", "HEAD"), base
+            )
+            self.assertEqual(
+                self.git(fixture["release_root"], "status", "--porcelain"), ""
+            )
             binding = finalize_release_containment(
-                plan, fixture["release_root"], message="Build synthetic sanitized tree"
+                plan,
+                fixture["release_root"],
+                message="Build synthetic sanitized tree",
+                synthetic_confidentiality_qualification=True,
             )
             self.assertEqual(binding["semantics"], "synthetic_target_tree_only")
-            with self.assertRaisesRegex(ReleaseRemovalError, "approved real cleanup"):
-                complete_removal_events(
-                    plan, binding, self._identities((RESULT_1, RESULT_2))
-                )
-            unmarked = {**binding, "synthetic_fixture_attestation": None}
-            with self.assertRaisesRegex(ReleaseRemovalError, "harmless-fixture marker"):
+            self.assertTrue(binding["push_prohibited"])
+            self.assertFalse(binding["remote_update_permitted"])
+            self.assertNotIn("ref", binding)
+            self.assertNotIn("push_mode", binding)
+            self.assertFalse(binding["history_cleanup_verified"])
+            self.assertEqual(
+                binding["prohibition_reason"],
+                "synthetic_target_tree_is_not_history_cleanup",
+            )
+            with self.assertRaisesRegex(
+                ReleaseRemovalError, "requires explicit synthetic fixture mode"
+            ):
                 complete_removal_events(
                     plan,
-                    unmarked,
+                    fixture["release_root"],
+                    binding["commit"],
                     self._identities((RESULT_1, RESULT_2)),
-                    synthetic_confidentiality_qualification=True,
                 )
             with self.assertRaisesRegex(ReleaseRemovalError, "full incident"):
                 complete_removal_events(
                     plan,
-                    binding,
+                    fixture["release_root"],
+                    binding["commit"],
                     self._identities((RESULT_1,)),
                     synthetic_confidentiality_qualification=True,
                 )
             with self.assertRaisesRegex(ReleaseRemovalError, "canonical subject order"):
                 complete_removal_events(
                     plan,
-                    binding,
+                    fixture["release_root"],
+                    binding["commit"],
                     list(reversed(self._identities((RESULT_1, RESULT_2)))),
                     synthetic_confidentiality_qualification=True,
                 )
@@ -394,14 +485,31 @@ class ReleaseRemovalQualificationTests(unittest.TestCase):
             with self.assertRaisesRegex(ReleaseRemovalError, "UUIDv7 timestamp"):
                 complete_removal_events(
                     plan,
-                    binding,
+                    fixture["release_root"],
+                    binding["commit"],
                     mismatched_time,
                     synthetic_confidentiality_qualification=True,
                 )
             with self._contract_patch(fixture):
+                staged = stage_state_corrections(
+                    plan,
+                    fixture["release_root"],
+                    binding["commit"],
+                    self._identities((RESULT_1, RESULT_2)),
+                    fixture["state_root"],
+                    fixture["state_commit"],
+                    synthetic_confidentiality_qualification=True,
+                )
+                self.assertTrue(staged["push_prohibited"])
+                self.assertFalse(staged["remote_update_permitted"])
+                self.assertEqual(
+                    staged["prohibition_reason"],
+                    "synthetic_state_semantics_are_not_incident_evidence",
+                )
                 cas = finalize_state_corrections(
                     plan,
-                    binding,
+                    fixture["release_root"],
+                    binding["commit"],
                     self._identities((RESULT_1, RESULT_2)),
                     fixture["state_root"],
                     fixture["state_commit"],
@@ -410,7 +518,8 @@ class ReleaseRemovalQualificationTests(unittest.TestCase):
                 )
                 resumed = finalize_state_corrections(
                     plan,
-                    binding,
+                    fixture["release_root"],
+                    binding["commit"],
                     self._identities((RESULT_1, RESULT_2)),
                     fixture["state_root"],
                     fixture["state_commit"],
@@ -420,6 +529,13 @@ class ReleaseRemovalQualificationTests(unittest.TestCase):
             self.assertEqual(len(cas["event_paths"]), 2)
             self.assertEqual(len(cas["status_paths"]), 2)
             self.assertTrue(cas["synthetic_confidentiality_qualification"])
+            self.assertTrue(cas["push_prohibited"])
+            self.assertFalse(cas["remote_update_permitted"])
+            self.assertNotIn("expected_remote_head", cas)
+            self.assertNotIn("ref", cas)
+            self.assertNotIn("push_mode", cas)
+            with self.assertRaisesRegex(ReleaseRemovalError, "push-prohibited"):
+                verify_cas_precondition(cas, fixture["state_commit"])
             self.assertTrue(resumed["idempotent_resume"])
             self.assertEqual(resumed["commit"], cas["commit"])
             events = [
@@ -434,6 +550,86 @@ class ReleaseRemovalQualificationTests(unittest.TestCase):
                 {event["payload"]["removal_repository_tree"] for event in events},
                 {binding["tree"]},
             )
+
+    def test_state_apis_reject_forged_binding_and_reverify_release_checkout(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            fixture, plan = self._fixture(pathlib.Path(directory))
+            with self._contract_patch(fixture):
+                binding = finalize_release_containment(
+                    plan,
+                    fixture["release_root"],
+                    message="Remove erroneous release",
+                )
+            with self.assertRaisesRegex(ReleaseRemovalError, "path must be a pathlib.Path"):
+                complete_removal_events(
+                    plan,
+                    binding,  # type: ignore[arg-type]
+                    binding["commit"],
+                    self._identities((RESULT_1,)),
+                )
+
+            self.git(
+                fixture["release_root"],
+                "remote",
+                "set-url",
+                "origin",
+                "https://github.com/example/forged-release.git",
+            )
+            with self.assertRaisesRegex(ReleaseRemovalError, "origin is not exact upstream"):
+                complete_removal_events(
+                    plan,
+                    fixture["release_root"],
+                    binding["commit"],
+                    self._identities((RESULT_1,)),
+                )
+            self.git(
+                fixture["release_root"],
+                "remote",
+                "set-url",
+                "origin",
+                f"https://github.com/{RELEASE_REPOSITORY}.git",
+            )
+            self.git(
+                fixture["release_root"],
+                "commit",
+                "--allow-empty",
+                "-m",
+                "Unreviewed descendant",
+            )
+            with self.assertRaisesRegex(ReleaseRemovalError, "checkout is not at"):
+                complete_removal_events(
+                    plan,
+                    fixture["release_root"],
+                    binding["commit"],
+                    self._identities((RESULT_1,)),
+                )
+
+    def test_state_event_preparation_detects_release_binding_change(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            fixture, plan = self._fixture(pathlib.Path(directory))
+            with self._contract_patch(fixture):
+                binding = finalize_release_containment(
+                    plan,
+                    fixture["release_root"],
+                    message="Remove erroneous release",
+                )
+            changed = {**binding, "tree": "f" * 40}
+            with (
+                mock.patch.object(
+                    removal_module,
+                    "verify_release_containment_commit",
+                    side_effect=[binding, changed],
+                ),
+                self.assertRaisesRegex(
+                    ReleaseRemovalError, "binding changed during State preparation"
+                ),
+            ):
+                complete_removal_events(
+                    plan,
+                    fixture["release_root"],
+                    binding["commit"],
+                    self._identities((RESULT_1,)),
+                )
 
     def test_removed_release_history_refuses_republication(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -484,11 +680,13 @@ class ReleaseRemovalQualificationTests(unittest.TestCase):
     def test_publication_latch_must_remain_disabled(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             fixture, plan = self._fixture(pathlib.Path(directory))
-            with mock.patch.dict(os.environ, {"PUBLICATION_ENABLED": "true"}):
-                with self.assertRaisesRegex(
+            with (
+                mock.patch.dict(os.environ, {"PUBLICATION_ENABLED": "true"}),
+                self.assertRaisesRegex(
                     ReleaseRemovalError, "must remain absent or exactly false"
-                ):
-                    stage_release_containment(plan, fixture["release_root"])
+                ),
+            ):
+                stage_release_containment(plan, fixture["release_root"])
 
 
 if __name__ == "__main__":

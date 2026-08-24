@@ -39,7 +39,6 @@ from release_controller import canonical_json, parse_timestamp
 from release_orchestrator import COMMIT, DIGEST, RESULT_ID, UUID7
 from release_tree import tree_digest
 
-
 MAX_PLAN_BYTES = 8 * 1024 * 1024
 MAX_IDENTITIES_BYTES = 128 * 1024
 MAX_INCIDENT_RESULTS = 128
@@ -180,7 +179,12 @@ def _git_text(root: pathlib.Path, *arguments: str) -> str:
 
 
 def _repository(root_value: pathlib.Path, label: str) -> pathlib.Path:
-    root = root_value.resolve(strict=True)
+    if not isinstance(root_value, pathlib.Path):
+        raise ReleaseRemovalError(f"{label} path must be a pathlib.Path")
+    try:
+        root = root_value.resolve(strict=True)
+    except OSError as error:
+        raise ReleaseRemovalError(f"{label} is unavailable") from error
     if root_value.is_symlink() or not root.is_dir():
         raise ReleaseRemovalError(f"{label} must be a regular directory")
     top = pathlib.Path(_git_text(root, "rev-parse", "--show-toplevel")).resolve()
@@ -197,6 +201,50 @@ def _clean(root: pathlib.Path, label: str) -> None:
 def _publication_disabled() -> None:
     if os.environ.get("PUBLICATION_ENABLED") not in {None, "", "false"}:
         raise ReleaseRemovalError("PUBLICATION_ENABLED must remain absent or exactly false")
+
+
+def _require_synthetic_confidentiality_fixture(
+    root: pathlib.Path,
+    plan: dict[str, Any],
+    enabled: bool,
+) -> str | None:
+    if plan["classification"] != "confidentiality_incident":
+        if enabled:
+            raise ReleaseRemovalError(
+                "synthetic confidentiality mode requires a confidentiality plan"
+            )
+        return None
+    if not enabled:
+        raise ReleaseRemovalError(
+            "confidentiality release mutation requires explicit synthetic fixture mode; "
+            "real history-cleanup verification is not implemented"
+        )
+    base = plan["base"]["commit"]
+    entry = _git(
+        root,
+        "ls-tree",
+        base,
+        "--",
+        SYNTHETIC_FIXTURE_MARKER,
+    ).stdout.decode("utf-8").strip().split()
+    raw = _git(
+        root,
+        "show",
+        f"{base}:{SYNTHETIC_FIXTURE_MARKER}",
+        check=False,
+    )
+    if (
+        len(entry) < 4
+        or entry[0] != "100644"
+        or entry[1] != "blob"
+        or raw.returncode != 0
+        or raw.stdout != SYNTHETIC_FIXTURE_BYTES
+    ):
+        raise ReleaseRemovalError(
+            "synthetic confidentiality qualification requires the exact tracked "
+            "harmless-fixture marker in the planned base"
+        )
+    return _sha256(raw.stdout)
 
 
 def _head_tree(root: pathlib.Path) -> tuple[str, str]:
@@ -636,7 +684,12 @@ def _remove_release_directory(root: pathlib.Path, relative: str) -> None:
     directory.rmdir()
 
 
-def stage_release_containment(plan_value: Any, release_root: pathlib.Path) -> dict[str, Any]:
+def stage_release_containment(
+    plan_value: Any,
+    release_root: pathlib.Path,
+    *,
+    synthetic_confidentiality_qualification: bool = False,
+) -> dict[str, Any]:
     """Apply and stage only the exact containment paths from a reviewed plan."""
     plan = _validate_plan(plan_value)
     _publication_disabled()
@@ -645,6 +698,9 @@ def stage_release_containment(plan_value: Any, release_root: pathlib.Path) -> di
         _repository_root(root, EXPECTED_RELEASE_REPOSITORY)
     except Exception as error:
         raise ReleaseRemovalError("release repository origin is not exact upstream") from error
+    _require_synthetic_confidentiality_fixture(
+        root, plan, synthetic_confidentiality_qualification
+    )
     _clean(root, "release repository")
     head, tree = _head_tree(root)
     if (head, tree) != (plan["base"]["commit"], plan["base"]["tree"]):
@@ -662,12 +718,20 @@ def stage_release_containment(plan_value: Any, release_root: pathlib.Path) -> di
         assert replacement is not None
         (root / "release-manifest.json").write_bytes(replacement)
     _git(root, "add", "-A", "--", *sorted(expected))
-    return verify_staged_release_containment(plan, root)
+    return verify_staged_release_containment(
+        plan,
+        root,
+        synthetic_confidentiality_qualification=(
+            synthetic_confidentiality_qualification
+        ),
+    )
 
 
 def verify_staged_release_containment(
     plan_value: Any,
     release_root: pathlib.Path,
+    *,
+    synthetic_confidentiality_qualification: bool = False,
 ) -> dict[str, Any]:
     """Verify the cached diff is exactly the plan-derived containment tree."""
     plan = _validate_plan(plan_value)
@@ -677,6 +741,9 @@ def verify_staged_release_containment(
         _repository_root(root, EXPECTED_RELEASE_REPOSITORY)
     except Exception as error:
         raise ReleaseRemovalError("release repository origin is not exact upstream") from error
+    synthetic_attestation = _require_synthetic_confidentiality_fixture(
+        root, plan, synthetic_confidentiality_qualification
+    )
     head, tree = _head_tree(root)
     if (head, tree) != (plan["base"]["commit"], plan["base"]["tree"]):
         raise ReleaseRemovalError("release checkout moved from the planned base")
@@ -700,7 +767,8 @@ def verify_staged_release_containment(
         or _git(root, "ls-files", "--others", "--exclude-standard").stdout
     ):
         raise ReleaseRemovalError("release repository has an unstaged or untracked change")
-    return {
+    synthetic = plan["classification"] == "confidentiality_incident"
+    result = {
         "schema_version": 1,
         "kind": "release_containment_stage",
         "visibility": "private",
@@ -715,8 +783,18 @@ def verify_staged_release_containment(
             if plan["classification"] == "confidentiality_incident"
             else "forward_deletion"
         ),
+        "synthetic_fixture_attestation": synthetic_attestation,
+        "push_prohibited": synthetic,
         "live_refs_mutated": False,
     }
+    if synthetic:
+        result.update(
+            remote_update_permitted=False,
+            prohibition_reason="synthetic_target_tree_is_not_history_cleanup",
+        )
+    else:
+        result.update(remote_update_permitted=True)
+    return result
 
 
 def _expected_release_stage_from_base(
@@ -765,20 +843,52 @@ def finalize_release_containment(
     release_root: pathlib.Path,
     *,
     message: str,
+    synthetic_confidentiality_qualification: bool = False,
 ) -> dict[str, Any]:
     """Create or recognize the exact local release containment commit."""
     plan = _validate_plan(plan_value)
+    _publication_disabled()
     root = _repository(release_root, "release repository")
+    try:
+        _repository_root(root, EXPECTED_RELEASE_REPOSITORY)
+    except Exception as error:
+        raise ReleaseRemovalError("release repository origin is not exact upstream") from error
+    # Qualify confidentiality semantics before inspecting an index that this
+    # function may commit.  The lower-level stage and verify functions repeat
+    # this check independently; this top-level gate ensures every path to
+    # _commit is dominated by the explicit harmless-fixture qualification.
+    _require_synthetic_confidentiality_fixture(
+        root, plan, synthetic_confidentiality_qualification
+    )
     head = _git_text(root, "rev-parse", "HEAD")
     if head == plan["base"]["commit"]:
         if not _git(root, "diff", "--cached", "--name-only", "--").stdout:
-            stage_release_containment(plan, root)
-        staged = verify_staged_release_containment(plan, root)
+            stage_release_containment(
+                plan,
+                root,
+                synthetic_confidentiality_qualification=(
+                    synthetic_confidentiality_qualification
+                ),
+            )
+        staged = verify_staged_release_containment(
+            plan,
+            root,
+            synthetic_confidentiality_qualification=(
+                synthetic_confidentiality_qualification
+            ),
+        )
         commit = _commit(root, message)
     else:
         commit = head
         staged = None
-    binding = verify_release_containment_commit(plan, root, commit)
+    binding = verify_release_containment_commit(
+        plan,
+        root,
+        commit,
+        synthetic_confidentiality_qualification=(
+            synthetic_confidentiality_qualification
+        ),
+    )
     if staged is not None and binding["tree"] != staged["staged_tree"]:
         raise ReleaseRemovalError("release commit tree differs from the verified index")
     return binding
@@ -788,6 +898,8 @@ def verify_release_containment_commit(
     plan_value: Any,
     release_root: pathlib.Path,
     commit: str,
+    *,
+    synthetic_confidentiality_qualification: bool = False,
 ) -> dict[str, Any]:
     """Bind an already-landed local containment commit for State resumption."""
     plan = _validate_plan(plan_value)
@@ -797,6 +909,9 @@ def verify_release_containment_commit(
         _repository_root(root, EXPECTED_RELEASE_REPOSITORY)
     except Exception as error:
         raise ReleaseRemovalError("release repository origin is not exact upstream") from error
+    synthetic_attestation = _require_synthetic_confidentiality_fixture(
+        root, plan, synthetic_confidentiality_qualification
+    )
     _match(COMMIT, commit, "release containment commit")
     _clean(root, "release repository")
     if _git_text(root, "rev-parse", "HEAD") != commit:
@@ -820,31 +935,47 @@ def verify_release_containment_commit(
         elif present.returncode == 0:
             raise ReleaseRemovalError("containment commit retains a deleted path")
     tree = _git_text(root, "rev-parse", f"{commit}^{{tree}}")
-    marker = _git(root, "show", f"{commit}:{SYNTHETIC_FIXTURE_MARKER}", check=False)
-    synthetic_attestation = (
-        _sha256(SYNTHETIC_FIXTURE_BYTES)
-        if marker.returncode == 0 and marker.stdout == SYNTHETIC_FIXTURE_BYTES
-        else None
-    )
-    return {
+    if synthetic_attestation is not None:
+        marker = _git(
+            root, "show", f"{commit}:{SYNTHETIC_FIXTURE_MARKER}", check=False
+        )
+        if marker.returncode != 0 or marker.stdout != SYNTHETIC_FIXTURE_BYTES:
+            raise ReleaseRemovalError(
+                "synthetic harmless-fixture marker did not survive containment"
+            )
+    result = {
         "schema_version": 1,
         "kind": "release_containment_binding",
         "visibility": "private",
         "incident_id": plan["incident_id"],
         "classification": plan["classification"],
-        "expected_remote_head": plan["base"]["commit"],
+        "base_commit": plan["base"]["commit"],
         "commit": commit,
         "tree": tree,
-        "ref": "refs/heads/main",
-        "push_mode": "non_forced_fast_forward_exact_base",
         "semantics": (
             "synthetic_target_tree_only"
             if plan["classification"] == "confidentiality_incident"
             else "forward_deletion"
         ),
         "synthetic_fixture_attestation": synthetic_attestation,
+        "history_cleanup_verified": False,
         "live_refs_mutated": False,
     }
+    if plan["classification"] == "confidentiality_incident":
+        result.update(
+            push_prohibited=True,
+            remote_update_permitted=False,
+            prohibition_reason="synthetic_target_tree_is_not_history_cleanup",
+        )
+    else:
+        result.update(
+            expected_remote_head=plan["base"]["commit"],
+            ref="refs/heads/main",
+            push_mode="non_forced_fast_forward_exact_base",
+            push_prohibited=False,
+            remote_update_permitted=True,
+        )
+    return result
 
 
 def _identity_map(value: Any, subjects: list[str]) -> dict[str, dict[str, str]]:
@@ -879,6 +1010,44 @@ def _identity_map(value: Any, subjects: list[str]) -> dict[str, dict[str, str]]:
 
 def complete_removal_events(
     plan_value: Any,
+    release_root: pathlib.Path,
+    release_commit: str,
+    identities_value: Any,
+    *,
+    synthetic_confidentiality_qualification: bool = False,
+) -> list[dict[str, Any]]:
+    """Reverify release Git state, then complete every incident skeleton."""
+    binding = verify_release_containment_commit(
+        plan_value,
+        release_root,
+        release_commit,
+        synthetic_confidentiality_qualification=(
+            synthetic_confidentiality_qualification
+        ),
+    )
+    events = _complete_removal_events_preverified(
+        plan_value,
+        binding,
+        identities_value,
+        synthetic_confidentiality_qualification=(
+            synthetic_confidentiality_qualification
+        ),
+    )
+    reverified = verify_release_containment_commit(
+        plan_value,
+        release_root,
+        release_commit,
+        synthetic_confidentiality_qualification=(
+            synthetic_confidentiality_qualification
+        ),
+    )
+    if reverified != binding:
+        raise ReleaseRemovalError("release containment binding changed during State preparation")
+    return events
+
+
+def _complete_removal_events_preverified(
+    plan_value: Any,
     release_binding_value: Any,
     identities_value: Any,
     *,
@@ -891,7 +1060,7 @@ def complete_removal_events(
         binding.get("kind") != "release_containment_binding"
         or binding.get("incident_id") != plan["incident_id"]
         or binding.get("classification") != plan["classification"]
-        or binding.get("expected_remote_head") != plan["base"]["commit"]
+        or binding.get("base_commit") != plan["base"]["commit"]
     ):
         raise ReleaseRemovalError("release containment binding differs from the plan")
     commit = _match(COMMIT, binding.get("commit"), "release containment commit")
@@ -1107,6 +1276,48 @@ def _verify_materialized_statuses(
 
 def stage_state_corrections(
     plan_value: Any,
+    release_root: pathlib.Path,
+    release_commit: str,
+    identities_value: Any,
+    state_root: pathlib.Path,
+    protected_state_head: str,
+    *,
+    synthetic_confidentiality_qualification: bool = False,
+) -> dict[str, Any]:
+    """Reverify release Git state, then stage one atomic State correction."""
+    binding = verify_release_containment_commit(
+        plan_value,
+        release_root,
+        release_commit,
+        synthetic_confidentiality_qualification=(
+            synthetic_confidentiality_qualification
+        ),
+    )
+    staged = _stage_state_corrections_preverified(
+        plan_value,
+        binding,
+        identities_value,
+        state_root,
+        protected_state_head,
+        synthetic_confidentiality_qualification=(
+            synthetic_confidentiality_qualification
+        ),
+    )
+    reverified = verify_release_containment_commit(
+        plan_value,
+        release_root,
+        release_commit,
+        synthetic_confidentiality_qualification=(
+            synthetic_confidentiality_qualification
+        ),
+    )
+    if reverified != binding:
+        raise ReleaseRemovalError("release containment binding changed during State staging")
+    return staged
+
+
+def _stage_state_corrections_preverified(
+    plan_value: Any,
     release_binding_value: Any,
     identities_value: Any,
     state_root: pathlib.Path,
@@ -1130,7 +1341,7 @@ def stage_state_corrections(
         raise ReleaseRemovalError("State checkout is not at the protected State head")
     _verify_state_contract(root, protected_state_head, plan)
     _verify_published_state_events(root, protected_state_head, plan)
-    events = complete_removal_events(
+    events = _complete_removal_events_preverified(
         plan,
         release_binding_value,
         identities_value,
@@ -1166,7 +1377,7 @@ def stage_state_corrections(
     queue_sha256, statuses_sha256 = _verify_materialized_statuses(
         root, protected_state_head, statuses
     )
-    return verify_staged_state_corrections(
+    return _verify_staged_state_corrections_preverified(
         plan,
         release_binding_value,
         events,
@@ -1179,7 +1390,7 @@ def stage_state_corrections(
     )
 
 
-def verify_staged_state_corrections(
+def _verify_staged_state_corrections_preverified(
     plan_value: Any,
     release_binding_value: Any,
     events: list[dict[str, Any]],
@@ -1213,7 +1424,11 @@ def verify_staged_state_corrections(
     ):
         raise ReleaseRemovalError("State repository has an unstaged or untracked change")
     binding = _object(release_binding_value, "release containment binding")
-    return {
+    synthetic = (
+        plan["classification"] == "confidentiality_incident"
+        and synthetic_confidentiality_qualification
+    )
+    result = {
         "schema_version": 1,
         "kind": "release_removal_state_stage",
         "visibility": "private",
@@ -1230,13 +1445,22 @@ def verify_staged_state_corrections(
         "statuses_sha256": statuses_sha256,
         "release_queue_sha256": queue_sha256,
         "staged_tree": _git_text(root, "write-tree"),
-        "synthetic_confidentiality_qualification": (
-            plan["classification"] == "confidentiality_incident"
-            and synthetic_confidentiality_qualification
-        ),
+        "synthetic_confidentiality_qualification": synthetic,
         "results_repository_required": False,
         "live_refs_mutated": False,
     }
+    if synthetic:
+        result.update(
+            push_prohibited=True,
+            remote_update_permitted=False,
+            prohibition_reason="synthetic_state_semantics_are_not_incident_evidence",
+        )
+    else:
+        result.update(
+            push_prohibited=False,
+            remote_update_permitted=True,
+        )
+    return result
 
 
 def _commit_changed_paths(root: pathlib.Path, commit: str) -> set[str]:
@@ -1247,11 +1471,33 @@ def _commit_changed_paths(root: pathlib.Path, commit: str) -> set[str]:
     )
 
 
+def _verify_state_precommit_scope(
+    root: pathlib.Path, expected_paths: set[str]
+) -> None:
+    """Reject executable/worktree drift before invoking pinned State tools."""
+    staged = set(
+        _git(root, "diff", "--cached", "--name-only", "--")
+        .stdout.decode("utf-8")
+        .splitlines()
+    )
+    if staged != expected_paths:
+        raise ReleaseRemovalError("State cached diff is not the complete incident group")
+    if (
+        _git(root, "diff", "--name-only", "--").stdout
+        or _git(root, "ls-files", "--others", "--exclude-standard").stdout
+    ):
+        raise ReleaseRemovalError(
+            "State repository has executable, unstaged, or untracked drift"
+        )
+
+
 def verify_cas_precondition(cas_plan_value: Any, observed_remote_head: str) -> None:
     """Fail unless a read-only remote observation matches one exact CAS plan."""
     plan = _object(cas_plan_value, "State CAS plan")
     if plan.get("kind") != "release_removal_state_cas":
         raise ReleaseRemovalError("State CAS plan kind is invalid")
+    if plan.get("push_prohibited") is not False:
+        raise ReleaseRemovalError("this State correction is explicitly push-prohibited")
     expected = _match(COMMIT, plan.get("expected_remote_head"), "expected remote head")
     observed = _match(COMMIT, observed_remote_head, "observed remote head")
     if observed != expected:
@@ -1262,7 +1508,8 @@ def verify_cas_precondition(cas_plan_value: Any, observed_remote_head: str) -> N
 
 def finalize_state_corrections(
     plan_value: Any,
-    release_binding_value: Any,
+    release_root: pathlib.Path,
+    release_commit: str,
     identities_value: Any,
     state_root: pathlib.Path,
     protected_state_head: str,
@@ -1273,6 +1520,17 @@ def finalize_state_corrections(
     """Create or resume the one-commit State CAS without pushing it."""
     plan = _validate_plan(plan_value)
     _publication_disabled()
+    _match(COMMIT, protected_state_head, "protected State head")
+    if plan["remote_main_commits"][EXPECTED_STATE_REPOSITORY] != protected_state_head:
+        raise ReleaseRemovalError("protected State head differs from the removal plan")
+    release_binding = verify_release_containment_commit(
+        plan,
+        release_root,
+        release_commit,
+        synthetic_confidentiality_qualification=(
+            synthetic_confidentiality_qualification
+        ),
+    )
     root = _repository(state_root, "State repository")
     try:
         _repository_root(root, EXPECTED_STATE_REPOSITORY)
@@ -1281,9 +1539,9 @@ def finalize_state_corrections(
     _verify_state_contract(root, protected_state_head, plan)
     _verify_published_state_events(root, protected_state_head, plan)
     head = _git_text(root, "rev-parse", "HEAD")
-    events = complete_removal_events(
+    events = _complete_removal_events_preverified(
         plan,
-        release_binding_value,
+        release_binding,
         identities_value,
         synthetic_confidentiality_qualification=synthetic_confidentiality_qualification,
     )
@@ -1293,6 +1551,7 @@ def finalize_state_corrections(
     }
     if head == protected_state_head:
         if _git(root, "diff", "--cached", "--name-only", "--").stdout:
+            _verify_state_precommit_scope(root, expected_paths)
             statuses = {
                 _status_path(event["subject_id"]): _next_status(
                     _current_status(root, protected_state_head, event), event
@@ -1310,9 +1569,9 @@ def finalize_state_corrections(
             queue_sha256, statuses_sha256 = _verify_materialized_statuses(
                 root, protected_state_head, statuses
             )
-            stage = verify_staged_state_corrections(
+            stage = _verify_staged_state_corrections_preverified(
                 plan,
-                release_binding_value,
+                release_binding,
                 events,
                 statuses,
                 root,
@@ -1324,9 +1583,9 @@ def finalize_state_corrections(
                 ),
             )
         else:
-            stage = stage_state_corrections(
+            stage = _stage_state_corrections_preverified(
                 plan,
-                release_binding_value,
+                release_binding,
                 identities_value,
                 root,
                 protected_state_head,
@@ -1378,18 +1637,26 @@ def finalize_state_corrections(
     projection_sha256 = _qualify_public_projection(
         root, protected_state_head, commit, {event["subject_id"] for event in events}
     )
-    binding = _object(release_binding_value, "release containment binding")
-    return {
+    binding = verify_release_containment_commit(
+        plan,
+        release_root,
+        release_commit,
+        synthetic_confidentiality_qualification=(
+            synthetic_confidentiality_qualification
+        ),
+    )
+    if binding != release_binding:
+        raise ReleaseRemovalError(
+            "release containment binding changed during State finalization"
+        )
+    result = {
         "schema_version": 1,
         "kind": "release_removal_state_cas",
         "visibility": "private",
         "incident_id": plan["incident_id"],
         "classification": plan["classification"],
-        "expected_remote_head": protected_state_head,
         "commit": commit,
         "tree": _git_text(root, "rev-parse", f"{commit}^{{tree}}"),
-        "ref": "refs/heads/main",
-        "push_mode": "non_forced_fast_forward_exact_base",
         "release_repository_commit": binding["commit"],
         "release_repository_tree": binding["tree"],
         "event_paths": sorted(path for path in expected_paths if path.startswith("events/")),
@@ -1405,6 +1672,21 @@ def finalize_state_corrections(
         "results_repository_required": False,
         "live_refs_mutated": False,
     }
+    if result["synthetic_confidentiality_qualification"]:
+        result.update(
+            push_prohibited=True,
+            remote_update_permitted=False,
+            prohibition_reason="synthetic_state_semantics_are_not_incident_evidence",
+        )
+    else:
+        result.update(
+            expected_remote_head=protected_state_head,
+            ref="refs/heads/main",
+            push_mode="non_forced_fast_forward_exact_base",
+            push_prohibited=False,
+            remote_update_permitted=True,
+        )
+    return result
 
 
 def _qualify_public_projection(
@@ -1479,6 +1761,7 @@ def main(argv: list[str] | None = None) -> int:
     release.add_argument("--release-root", type=pathlib.Path, required=True)
     release.add_argument("--message", required=True)
     release.add_argument("--output", type=pathlib.Path, required=True)
+    release.add_argument("--synthetic-confidentiality-qualification", action="store_true")
     state = commands.add_parser("finalize-state")
     state.add_argument("plan", type=pathlib.Path)
     state.add_argument("--release-root", type=pathlib.Path, required=True)
@@ -1494,7 +1777,12 @@ def main(argv: list[str] | None = None) -> int:
         plan = _read_input(args.plan, "private removal plan", MAX_PLAN_BYTES)
         if args.command == "finalize-release":
             result = finalize_release_containment(
-                plan, args.release_root, message=args.message
+                plan,
+                args.release_root,
+                message=args.message,
+                synthetic_confidentiality_qualification=(
+                    args.synthetic_confidentiality_qualification
+                ),
             )
             _write_exclusive(
                 args.output,
@@ -1503,15 +1791,13 @@ def main(argv: list[str] | None = None) -> int:
                 0o600,
             )
         else:
-            release_binding = verify_release_containment_commit(
-                plan, args.release_root, args.release_commit
-            )
             identities = _read_input(
                 args.event_identities, "release.removed identities", MAX_IDENTITIES_BYTES
             )
             result = finalize_state_corrections(
                 plan,
-                release_binding,
+                args.release_root,
+                args.release_commit,
                 identities,
                 args.state_root,
                 args.protected_state_head,

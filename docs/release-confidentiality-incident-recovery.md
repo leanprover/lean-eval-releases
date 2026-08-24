@@ -175,8 +175,12 @@ every correction in the plan:
 ```
 
 `finalize-state` requires the State checkout at the exact plan-bound protected
-head and revalidates the pinned contract. It completes the whole incident group
-against one verified release commit/tree, requires unique strictly ordered
+head and revalidates the pinned contract. It does not consume a serialized
+release binding: it independently verifies the exact upstream release
+repository, checkout commit, one-parent containment diff, and resulting tree
+before State work and repeats that binding verification before returning. It
+completes the whole incident group against that verified release commit/tree,
+requires unique strictly ordered
 event identities and times, and stages every new event plus every targeted
 `views/result-release-status` replacement. Before committing, it runs the
 pinned State validator and materializer and proves removed results are absent
@@ -238,6 +242,11 @@ caches, Pages, artifacts, mirrors, GitHub Support cleanup, or prior downloads.
 It must never be cited as real-incident containment or used to restore public
 visibility. Without that explicit flag, confidentiality State finalization
 fails closed pending the approved history-cleanup procedure.
+The flag is required independently by `finalize-release` and `finalize-state`.
+Every synthetic stage and final document is marked push-prohibited, denies a
+remote update, and omits executable CAS/ref fields; the CAS precondition helper
+also rejects it. These labels do not convert the local synthetic commit into
+incident evidence.
 
 ## Required forward State correction
 
@@ -252,6 +261,12 @@ trees it also rechecks the relevant Git modes, blob IDs, and SHA-256s and parses
 the reviewed event schema to prove the closed top-level fields, system actor,
 exact payload fields, release-path grammar, and shared-path bound agree with the
 event skeleton it emits.
+
+Release-repository CI also checks out this exact State commit by immutable SHA
+and runs a full harmless publication/removal fixture through its real
+`validate_state.py`, `materialize_state.py`, and `public_projection.py` entry
+points. The smaller unit doubles remain for focused fault injection, but are
+not the compatibility evidence for the pinned production consumers.
 
 Each `required_state_corrections[].status` is `ready_after_containment`. Its
 `event_skeleton` fixes the event type, subject, cause, system actor, incident

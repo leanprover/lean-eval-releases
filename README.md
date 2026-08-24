@@ -216,7 +216,10 @@ and multi-result confidentiality scope are in
 `scripts/release_removal.py` is the non-networked second half of that operator
 boundary. It consumes the private plan, stages only its exact path set, verifies
 the Git index, and creates an ordinary local containment commit. It then
-completes every `release.removed` skeleton against that one commit and root
+independently reopens the exact upstream release checkout and rederives the
+containment commit and root tree in every State-facing API; no caller-supplied
+binding document is trusted. It completes every `release.removed` skeleton
+against that one commit and root
 tree, stages the full incident group plus every targeted release-status view,
 runs the pinned State validator/materializer/public projection, and creates one
 local State commit. Its output is a private, source-free compare-and-swap
@@ -237,6 +240,11 @@ corrections. The flag also requires the immutable harmless-fixture marker in
 the plan-bound release base, so it cannot be applied to a real production
 incident plan. `owner_retraction` also fails closed: maintainers have not yet
 decided whether that case shares this protected operator lane.
+Every synthetic release stage, containment binding, State stage, and State CAS
+sets `push_prohibited = true` and `remote_update_permitted = false` and omits
+the ref, expected remote head, and push mode needed by the ordinary CAS path.
+The CAS precondition verifier rejects such output even if a supplied observed
+head happens to match.
 
 Publication remains disabled until the production credentials and a
 single-submission decrypt/reconstruction check are complete. The contributor
