@@ -80,8 +80,8 @@ class ReleaseQualificationTests(unittest.TestCase):
         self.assertEqual(
             STATE_RELEASE_CONTRACT_TREES,
             {
-                "schema": "473e694e0d40026a7ec0ad33430ea622e3e03b66",
-                "scripts": "ab90d1a997e3bfc7292dbf1a515db1abb4278c01",
+                "schema": "3111bf02bd9983a8712425923de8fca6ba696469",
+                "scripts": "f9fe278ef1ea062bc21a3fafc7ddea7ab758a099",
             },
         )
         self.assertEqual(
@@ -94,13 +94,13 @@ class ReleaseQualificationTests(unittest.TestCase):
         )
         self.assertEqual(
             STAGING_STATE_RELEASE_CONTRACT_COMMIT,
-            "6a386bb4362b10dd8d7743e826c82f1a0011c0c3",
+            "48f8c975d725a9ac18df545653fdb2f8371c3293",
         )
         self.assertEqual(
             STAGING_STATE_RELEASE_CONTRACT_TREES,
             {
-                "schema": "95a264fb61bffcec21ae91055675baf9c9ed78fc",
-                "scripts": "41962d05ebc32821a342ae6bc9cd6c2fa88db3eb",
+                "schema": "730d44520c70fdd6da4d27e381d4e6593c5c77fe",
+                "scripts": "438693aed415474802beae32a5398fb436a4ac71",
             },
         )
 
