@@ -185,13 +185,13 @@ State schema version 1 now defines a direct, system-authored `release.removed`
 event caused by the original `release.published` event. The reviewed contract,
 materializer, public projection, compatibility behavior, and tests landed in
 `leanprover/lean-eval-state` at commit
-`940a2a4f2e042c076a37b6c14190e072b786032c`. The planner fails closed unless
+`501d237d46c7b3466a37554c1c2ceb310245a619`. The planner fails closed unless
 that exact contract commit is reachable from live protected State `main` and
 the complete State `schema/` and `scripts/` trees remain unchanged. Within those
-trees it also rechecks the relevant Git blob IDs and SHA-256s and parses the
-reviewed event schema to prove the closed top-level fields, system actor, exact
-payload fields, release-path grammar, and shared-path bound agree with the event
-skeleton it emits.
+trees it also rechecks the relevant Git modes, blob IDs, and SHA-256s and parses
+the reviewed event schema to prove the closed top-level fields, system actor,
+exact payload fields, release-path grammar, and shared-path bound agree with the
+event skeleton it emits.
 
 Each `required_state_corrections[].status` is `ready_after_containment`. Its
 `event_skeleton` fixes the event type, subject, cause, system actor, incident

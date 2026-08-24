@@ -19,6 +19,7 @@ from typing import Any
 from release_orchestrator import (
     COMMIT,
     STATE_RELEASE_CONTRACT_COMMIT,
+    STATE_RELEASE_CONTRACT_TREES,
     canonical_json_digest,
     validate_release_queue,
 )
@@ -120,6 +121,7 @@ def qualify_repository(
     root: pathlib.Path,
     expected_repository: str,
     minimum_commit: str | None = None,
+    contract_trees: dict[str, str] | None = None,
 ) -> str:
     resolved = root.resolve(strict=True)
     if root.is_symlink() or not resolved.is_dir():
@@ -165,6 +167,23 @@ def qualify_repository(
             raise QualificationError(
                 "State main does not descend from the reviewed release contract"
             ) from error
+    if contract_trees is not None:
+        if minimum_commit is None:
+            raise QualificationError("State contract trees require a contract commit")
+        for path, expected_tree in sorted(contract_trees.items()):
+            if COMMIT.fullmatch(expected_tree) is None:
+                raise QualificationError("reviewed State contract tree is invalid")
+            reviewed_tree = _git(resolved, "rev-parse", f"{minimum_commit}:{path}")
+            live_tree = _git(resolved, "rev-parse", f"{head}:{path}")
+            if reviewed_tree != expected_tree or live_tree != expected_tree:
+                raise QualificationError(
+                    f"live State {path} tree has drifted from the reviewed contract"
+                )
+            if any(
+                _git(resolved, "cat-file", "-t", tree) != "tree"
+                for tree in (reviewed_tree, live_tree)
+            ):
+                raise QualificationError(f"reviewed State {path} path is not a tree")
     return head
 
 
@@ -243,6 +262,7 @@ def main(argv: list[str] | None = None) -> int:
             args.state_root,
             contract["state"]["repository"],
             contract["state"]["minimum_contract_commit"],
+            STATE_RELEASE_CONTRACT_TREES,
         )
         qualification = build_qualification(
             contract,

@@ -100,6 +100,11 @@ class ReleaseControllerTests(unittest.TestCase):
             ),
         )
         self.assertIn("scripts/release_qualification.py", workflow)
+        self.assertIn("scripts/verify_release_state_contract.py", workflow)
+        self.assertLess(
+            workflow.index("scripts/verify_release_state_contract.py"),
+            workflow.index("state/scripts/state.py"),
+        )
         self.assertIn("--mode publication", workflow)
         self.assertIn("--controller-qualification", workflow)
         self.assertIn("--require-controller-qualification", workflow)
@@ -158,6 +163,11 @@ class ReleaseControllerTests(unittest.TestCase):
         self.assertIn('--output "$RUNNER_TEMP/state-views"', workflow)
         self.assertGreaterEqual(workflow.count("fetch-depth: 0"), 2)
         self.assertIn("scripts/release_qualification.py", workflow)
+        self.assertIn("scripts/verify_release_state_contract.py", workflow)
+        self.assertLess(
+            workflow.index("scripts/verify_release_state_contract.py"),
+            workflow.index("state/scripts/state.py"),
+        )
         self.assertIn("--mode preflight", workflow)
         self.assertEqual(workflow.count("push --dry-run --porcelain"), 1)
         self.assertIn("':(exclude)state'", workflow)
@@ -342,11 +352,13 @@ class ReleaseControllerTests(unittest.TestCase):
             (ROOT / "tests/fixtures/release-queue-v1.json").read_text(encoding="utf-8")
         )["tasks"][0]
         return {
-            "schema_version": 1,
+            "schema_version": 2,
             "result_id": task["result_id"],
             "authority_event_id": "0198abcd-0000-7000-8000-000000000006",
             "status": task["status"],
             "release_event_id": task["event_id"],
+            "release_revision": 1,
+            "supersedes_release_event_id": None,
         }
 
     def test_release_state_transition_replaces_exact_targeted_status(self) -> None:
@@ -372,6 +384,11 @@ class ReleaseControllerTests(unittest.TestCase):
         self.assertEqual(
             transition["status_after"]["release_event_id"], started["event_id"]
         )
+        self.assertEqual(transition["status_after"]["release_revision"], 2)
+        self.assertEqual(
+            transition["status_after"]["supersedes_release_event_id"],
+            self.release_status()["release_event_id"],
+        )
         self.assertEqual(
             transition["status_after"]["authority_event_id"],
             self.release_status()["authority_event_id"],
@@ -392,6 +409,11 @@ class ReleaseControllerTests(unittest.TestCase):
         self.assertEqual(terminal["status_after"]["status"], "published")
         self.assertEqual(
             terminal["status_after"]["release_event_id"], published["event_id"]
+        )
+        self.assertEqual(terminal["status_after"]["release_revision"], 3)
+        self.assertEqual(
+            terminal["status_after"]["supersedes_release_event_id"],
+            started["event_id"],
         )
 
         failed = terminal_event(
@@ -420,19 +442,54 @@ class ReleaseControllerTests(unittest.TestCase):
         mutations = []
         missing = copy.deepcopy(self.release_status())
         missing.pop("release_event_id")
-        mutations.append(missing)
+        mutations.append((missing, "fields are not canonical"))
         wrong_cause = copy.deepcopy(self.release_status())
         wrong_cause["release_event_id"] = "0198abcd-0000-7000-8000-000000000099"
-        mutations.append(wrong_cause)
+        mutations.append((wrong_cause, "cause does not match"))
         wrong_result = copy.deepcopy(self.release_status())
         wrong_result["result_id"] = "r2_" + "0" * 64
-        mutations.append(wrong_result)
+        mutations.append((wrong_result, "subject does not match"))
         running = copy.deepcopy(self.release_status())
         running["status"] = "running"
-        mutations.append(running)
-        for current in mutations:
-            with self.subTest(current=current), self.assertRaises(ControllerError):
+        mutations.append((running, "cannot follow status"))
+        legacy = copy.deepcopy(self.release_status())
+        legacy["schema_version"] = 1
+        mutations.append((legacy, "schema_version is invalid"))
+        wrong_revision = copy.deepcopy(self.release_status())
+        wrong_revision["release_revision"] = 0
+        mutations.append((wrong_revision, "revision must be positive"))
+        wrong_predecessor = copy.deepcopy(self.release_status())
+        wrong_predecessor["supersedes_release_event_id"] = (
+            "0198abcd-0000-7000-8000-000000000098"
+        )
+        mutations.append((wrong_predecessor, "must not name a predecessor"))
+        missing_predecessor = copy.deepcopy(self.release_status())
+        missing_predecessor["release_revision"] = 2
+        mutations.append((missing_predecessor, "supersedes_release_event_id"))
+        for revision in (True, -1, 9_007_199_254_740_992, "1"):
+            invalid_revision = copy.deepcopy(self.release_status())
+            invalid_revision["release_revision"] = revision
+            mutations.append((invalid_revision, "revision is invalid"))
+        invalid_initial = copy.deepcopy(self.release_status())
+        invalid_initial.update(
+            status="not_scheduled",
+            release_event_id=None,
+            release_revision=1,
+            supersedes_release_event_id=None,
+        )
+        mutations.append((invalid_initial, "revision-zero head"))
+        exhausted = copy.deepcopy(self.release_status())
+        exhausted["release_revision"] = 9_007_199_254_740_991
+        exhausted["supersedes_release_event_id"] = (
+            "0198abcd-0000-7000-8000-000000000098"
+        )
+        for current, message in mutations:
+            with self.subTest(current=current), self.assertRaisesRegex(
+                ControllerError, message
+            ):
                 plan_release_state_transition(current, started, "1" * 40)
+        with self.assertRaisesRegex(ControllerError, "revision is exhausted"):
+            plan_release_state_transition(exhausted, started, "1" * 40)
 
     def test_stages_event_and_status_from_one_exact_state_head(self) -> None:
         started = started_event(
@@ -487,6 +544,23 @@ class ReleaseControllerTests(unittest.TestCase):
             tampered = copy.deepcopy(transition["status_after"])
             tampered["status"] = "published"
             status_path.write_text(canonical_json(tampered), encoding="utf-8")
+            subprocess.run(
+                ["git", "-C", root, "add", transition["status_path"]], check=True
+            )
+            with self.assertRaisesRegex(ControllerError, "cached bytes"):
+                verify_staged_release_state_transition(root, started, transition)
+
+            status_path.write_text(
+                canonical_json(transition["status_after"]), encoding="utf-8"
+            )
+            subprocess.run(
+                ["git", "-C", root, "add", transition["status_path"]], check=True
+            )
+            tampered_revision = copy.deepcopy(transition["status_after"])
+            tampered_revision["release_revision"] += 1
+            status_path.write_text(
+                canonical_json(tampered_revision), encoding="utf-8"
+            )
             subprocess.run(
                 ["git", "-C", root, "add", transition["status_path"]], check=True
             )
