@@ -37,8 +37,10 @@ from release_orchestrator import (
     _safe_integer,
     _timestamp,
     canonical_archive_path,
+    canonical_json_digest,
     canonical_release_path,
     result_id,
+    validate_controller_binding,
 )
 from release_tree import TreeError, tree_digest
 from validate_manifest import load_state_snapshot, validate_manifest
@@ -79,9 +81,17 @@ def _validate_execution_plan(value: Any) -> dict[str, Any]:
     _safe_integer(started_payload["attempt"], "started_transition.payload.attempt", 1)
 
     request = _object(plan["request"], "request")
-    _fields(request, {"schema_version", "result", "submission", "archive", "release"}, "request")
+    request_fields = {"schema_version", "result", "submission", "archive", "release"}
+    if "controller" in request:
+        request_fields.add("controller")
+    _fields(request, request_fields, "request")
     if request["schema_version"] != 1 or isinstance(request["schema_version"], bool):
         raise ReconstructionError("request schema_version must be integer 1")
+    if "controller" in request:
+        try:
+            validate_controller_binding(request["controller"])
+        except ReleaseError as error:
+            raise ReconstructionError(str(error)) from error
 
     result = _object(request["result"], "request.result")
     _fields(
@@ -298,6 +308,15 @@ def reconstruct_one(
     if parse_utc_milliseconds(plan["request"]["release"]["eligible_at"]) > parse_utc_milliseconds(generated):
         raise ReconstructionError("release embargo has not expired at trusted_as_of")
     trusted = load_state_snapshot(state_snapshot_value)
+    controller = plan["request"].get("controller")
+    if (
+        controller is not None
+        and controller["acceptance_snapshot_sha256"]
+        != canonical_json_digest(state_snapshot_value, "acceptance-snapshot")
+    ):
+        raise ReconstructionError(
+            "controller qualification does not bind the exact acceptance snapshot"
+        )
     sources = _read_release_sources(plaintext_tar)
     if output_root.exists() or output_root.is_symlink():
         raise ReconstructionError("output root must not already exist")

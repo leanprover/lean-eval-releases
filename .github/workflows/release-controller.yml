@@ -22,6 +22,8 @@ concurrency:
 jobs:
   publish-one:
     if: >-
+      github.repository == 'leanprover/lean-eval-releases' &&
+      github.ref == 'refs/heads/main' &&
       vars.PUBLICATION_ENABLED == 'true' &&
       (github.event_name == 'schedule' || inputs.confirm_publication == true)
     environment: release-production
@@ -32,6 +34,8 @@ jobs:
       # this public repository and is the ruleset's publication bypass.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
+          ref: main
+          fetch-depth: 0
           persist-credentials: true
           ssh-key: ${{ secrets.RELEASE_PUBLISH_KEY }}
 
@@ -41,6 +45,7 @@ jobs:
           repository: leanprover/lean-eval-state
           ref: main
           path: state
+          fetch-depth: 0
           persist-credentials: true
           ssh-key: ${{ secrets.PRODUCTION_STATE_CONTROLLER_KEY }}
 
@@ -49,6 +54,8 @@ jobs:
           python-version: '3.11.10'
 
       - name: Validate controller and materialize exact production State
+        env:
+          PUBLICATION_ENABLED: ${{ vars.PUBLICATION_ENABLED }}
         run: |
           set -euo pipefail
           test "$(jq -r .environment state/state.json)" = production
@@ -56,6 +63,17 @@ jobs:
           python state/scripts/state.py --root state validate
           python state/scripts/state.py --root state materialize \
             --output "$RUNNER_TEMP/state-views"
+          python scripts/release_qualification.py \
+            --contract configuration/release-controller-credential-contract-v1.json \
+            --release-root . \
+            --state-root state \
+            --queue "$RUNNER_TEMP/state-views/release-queue.json" \
+            --acceptance-snapshot \
+              "$RUNNER_TEMP/state-views/release-acceptance-snapshot.json" \
+            --environment production \
+            --publication-enabled "$PUBLICATION_ENABLED" \
+            --mode publication \
+            --output "$RUNNER_TEMP/release-controller-qualification.json"
 
       - name: Classify an interrupted release before selecting new work
         id: recovery
@@ -133,6 +151,8 @@ jobs:
           python scripts/release_orchestrator.py \
             "$RUNNER_TEMP/state-views/release-queue.json" \
             --trusted-as-of "$trusted_now" \
+            --controller-qualification \
+              "$RUNNER_TEMP/release-controller-qualification.json" \
             --output "$RUNNER_TEMP/release-plan.json"
           kind=$(jq -r .kind "$RUNNER_TEMP/release-plan.json")
           case "$kind" in
@@ -214,11 +234,12 @@ jobs:
           curl --proto '=https' --tlsv1.2 --fail --silent --show-error --location \
             https://github.com/FiloSottile/age/releases/download/v1.3.1/age-v1.3.1-linux-amd64.tar.gz \
             --output "$RUNNER_TEMP/age.tar.gz"
-          echo "bdc69c09cbdd6cf8b1f333d372a1f58247b3a33146406333e30c0f26e8f51377  $RUNNER_TEMP/age.tar.gz" \
-            | sha256sum --check --strict
+          printf '%s  %s\n' \
+            bdc69c09cbdd6cf8b1f333d372a1f58247b3a33146406333e30c0f26e8f51377 \
+            "$RUNNER_TEMP/age.tar.gz" | sha256sum --check --strict
           tar --extract --gzip --file "$RUNNER_TEMP/age.tar.gz" --directory "$RUNNER_TEMP"
           install -m 0555 "$RUNNER_TEMP/age/age" "$RUNNER_TEMP/age-bin"
-          test "$($RUNNER_TEMP/age-bin --version)" = v1.3.1
+          test "$("$RUNNER_TEMP/age-bin" --version)" = v1.3.1
           rm -rf "$RUNNER_TEMP/age" "$RUNNER_TEMP/age.tar.gz"
 
       - name: Build one five-minute release capability

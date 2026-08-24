@@ -23,7 +23,6 @@ from scripts.release_controller import (
 )
 from scripts.release_orchestrator import plan_next
 
-
 ROOT = pathlib.Path(__file__).parents[1]
 NOW = "2026-10-20T06:07:05.000Z"
 
@@ -74,6 +73,10 @@ class ReleaseControllerTests(unittest.TestCase):
             encoding="utf-8"
         )
         self.assertIn("cron: '23 4 * * *'", workflow)
+        self.assertIn(
+            "github.repository == 'leanprover/lean-eval-releases'", workflow
+        )
+        self.assertIn("github.ref == 'refs/heads/main'", workflow)
         self.assertIn("vars.PUBLICATION_ENABLED == 'true'", workflow)
         self.assertIn("environment: release-production", workflow)
         self.assertIn("id-token: write", workflow)
@@ -81,6 +84,14 @@ class ReleaseControllerTests(unittest.TestCase):
         self.assertIn("secrets.PRODUCTION_STATE_CONTROLLER_KEY", workflow)
         self.assertIn("secrets.AUDIT_READ_KEY", workflow)
         self.assertIn("vars.AWS_RELEASE_UNWRAP_ROLE_ARN", workflow)
+        self.assertGreaterEqual(workflow.count("fetch-depth: 0"), 2)
+        self.assertIn("scripts/release_qualification.py", workflow)
+        self.assertIn("--mode publication", workflow)
+        self.assertIn("--controller-qualification", workflow)
+        self.assertIn(
+            "configuration/release-controller-credential-contract-v1.json",
+            workflow,
+        )
         self.assertIn("repository: leanprover/lean-eval-audit", workflow)
         self.assertIn("ref: ${{ steps.plan.outputs.archive_commit }}", workflow)
         self.assertIn("lean-eval-archive-unwrap-production", workflow)
@@ -99,6 +110,9 @@ class ReleaseControllerTests(unittest.TestCase):
         self.assertNotIn("schedule:", workflow)
         self.assertNotIn("pull_request:", workflow)
         self.assertNotIn("push:\n", workflow)
+        self.assertIn(
+            "github.repository == 'leanprover/lean-eval-releases'", workflow
+        )
         self.assertIn("github.ref == 'refs/heads/main'", workflow)
         self.assertIn("inputs.confirm_publication_disabled == true", workflow)
         self.assertIn("environment: release-production", workflow)
@@ -113,6 +127,9 @@ class ReleaseControllerTests(unittest.TestCase):
         self.assertIn("PUBLICATION_ENABLED must remain absent or false", workflow)
         self.assertIn("python state/scripts/state.py --root state validate", workflow)
         self.assertIn("--output \"$RUNNER_TEMP/state-views\"", workflow)
+        self.assertGreaterEqual(workflow.count("fetch-depth: 0"), 2)
+        self.assertIn("scripts/release_qualification.py", workflow)
+        self.assertIn("--mode preflight", workflow)
         self.assertEqual(workflow.count("push --dry-run --porcelain"), 1)
         self.assertIn("':(exclude)state'", workflow)
         self.assertNotIn("git commit", workflow)

@@ -17,7 +17,7 @@ from reconstruct_release import (
     ReconstructionError,
     reconstruct_one,
 )
-from release_orchestrator import plan_next
+from release_orchestrator import canonical_json_digest, plan_next
 from release_tree import DOMAIN, projected_digest
 from validate_manifest import ManifestError
 
@@ -33,6 +33,25 @@ class ReconstructionTests(unittest.TestCase):
 
     def plan(self) -> dict[str, object]:
         return plan_next(self.queue(), TRUSTED_AS_OF)
+
+    def qualified_plan(self) -> dict[str, object]:
+        queue = self.queue()
+        qualification = {
+            "schema_version": 1,
+            "environment": "production",
+            "release_repository": "leanprover/lean-eval-releases",
+            "release_commit": "a" * 40,
+            "state_repository": "leanprover/lean-eval-state",
+            "state_commit": "b" * 40,
+            "state_contract_commit": "cf1a1f0d62ebfda9c51a64c1b3b375fe26218f75",
+            "state_source_event_count": queue["source_event_count"],
+            "state_source_digest": queue["source_digest"],
+            "release_queue_sha256": canonical_json_digest(queue, "release-queue"),
+            "acceptance_snapshot_sha256": canonical_json_digest(
+                self.state(), "acceptance-snapshot"
+            ),
+        }
+        return plan_next(queue, TRUSTED_AS_OF, qualification)
 
     def state(self) -> dict[str, object]:
         return json.loads(
@@ -176,6 +195,24 @@ class ReconstructionTests(unittest.TestCase):
                     output_root=root / "state-mismatch",
                 )
             self.assertFalse((root / "state-mismatch").exists())
+
+    def test_qualified_plan_refuses_a_different_acceptance_snapshot(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = pathlib.Path(temporary)
+            archive = self.archive(root)
+            state = copy.deepcopy(self.state())
+            submission = next(iter(state["submissions"].values()))
+            submission["archive_commit"] = "d" * 40
+            with self.assertRaisesRegex(
+                ReconstructionError, "exact acceptance snapshot"
+            ):
+                reconstruct_one(
+                    plan_value=self.qualified_plan(),
+                    plaintext_tar=archive,
+                    trusted_as_of=TRUSTED_AS_OF,
+                    state_snapshot_value=state,
+                    output_root=root / "wrong-qualified-state",
+                )
 
     def test_refuses_overwrite_and_missing_submission(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

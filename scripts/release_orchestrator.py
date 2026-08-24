@@ -22,6 +22,20 @@ COMMIT = re.compile(r"[0-9a-f]{40}")
 DIGEST = re.compile(r"[0-9a-f]{64}")
 REASON = re.compile(r"[a-z][a-z0-9_]{1,63}")
 SAFE_INTEGER = 9_007_199_254_740_991
+STATE_RELEASE_CONTRACT_COMMIT = "cf1a1f0d62ebfda9c51a64c1b3b375fe26218f75"
+CONTROLLER_QUALIFICATION_FIELDS = {
+    "schema_version",
+    "environment",
+    "release_repository",
+    "release_commit",
+    "state_repository",
+    "state_commit",
+    "state_contract_commit",
+    "state_source_event_count",
+    "state_source_digest",
+    "release_queue_sha256",
+    "acceptance_snapshot_sha256",
+}
 METADATA_FIELDS = {
     "credit_identity",
     "component_models",
@@ -242,8 +256,80 @@ def validate_release_queue(value: Any) -> dict[str, Any]:
     return queue
 
 
-def plan_next(queue_value: Any, trusted_as_of: str) -> dict[str, Any]:
+def canonical_json_digest(value: Any, materialization: str) -> str:
+    domains = {
+        "release-queue": b"lean-eval-release-controller-queue-v1\0",
+        "acceptance-snapshot": b"lean-eval-release-controller-acceptance-v1\0",
+    }
+    try:
+        domain = domains[materialization]
+    except KeyError as error:
+        raise ReleaseError("controller materialization digest domain is invalid") from error
+    encoded = json.dumps(
+        value,
+        allow_nan=False,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+    return hashlib.sha256(domain + encoded).hexdigest()
+
+
+def validate_controller_binding(value: Any) -> dict[str, Any]:
+    qualification = _object(value, "controller qualification")
+    _fields(
+        qualification,
+        CONTROLLER_QUALIFICATION_FIELDS,
+        "controller qualification",
+    )
+    if (
+        qualification["schema_version"] != 1
+        or isinstance(qualification["schema_version"], bool)
+        or qualification["environment"] != "production"
+        or qualification["release_repository"]
+        != "leanprover/lean-eval-releases"
+        or qualification["state_repository"] != "leanprover/lean-eval-state"
+        or qualification["state_contract_commit"] != STATE_RELEASE_CONTRACT_COMMIT
+    ):
+        raise ReleaseError("controller qualification identity is invalid")
+    for field in ("release_commit", "state_commit"):
+        _match(COMMIT, qualification[field], f"controller qualification.{field}")
+    for field in (
+        "state_source_digest",
+        "release_queue_sha256",
+        "acceptance_snapshot_sha256",
+    ):
+        _match(DIGEST, qualification[field], f"controller qualification.{field}")
+    _safe_integer(
+        qualification["state_source_event_count"],
+        "controller qualification.state_source_event_count",
+        1,
+    )
+    return qualification
+
+
+def validate_controller_qualification(value: Any, queue: dict[str, Any]) -> dict[str, Any]:
+    qualification = validate_controller_binding(value)
+    if (
+        qualification["environment"] != queue["environment"]
+        or qualification["state_source_event_count"] != queue["source_event_count"]
+        or qualification["state_source_digest"] != queue["source_digest"]
+        or qualification["release_queue_sha256"]
+        != canonical_json_digest(queue, "release-queue")
+    ):
+        raise ReleaseError("controller qualification does not bind the exact production queue")
+    return qualification
+
+
+def plan_next(
+    queue_value: Any,
+    trusted_as_of: str,
+    controller_qualification: Any | None = None,
+) -> dict[str, Any]:
     queue = validate_release_queue(queue_value)
+    qualification = None if controller_qualification is None else (
+        validate_controller_qualification(controller_qualification, queue)
+    )
     as_of = _timestamp(trusted_as_of, "trusted_as_of")
     eligible = [task for task in queue["tasks"] if task["release_at"] <= as_of]
     if not queue["tasks"]:
@@ -257,6 +343,37 @@ def plan_next(queue_value: Any, trusted_as_of: str) -> dict[str, Any]:
     task = min(eligible, key=lambda item: item["result_id"])
     attempt = task["attempt"] + 1
     release_path = canonical_release_path(task["result_id"], task["release_at"])
+    request = {
+        "schema_version": 1,
+        "result": {
+            "result_id": task["result_id"],
+            "problem_id": task["problem_id"],
+            "statement_revision": task["statement_revision"],
+            "commit": task["result_commit"],
+            "tree_digest": task["result_tree_digest"],
+        },
+        "submission": {
+            "submission_id": task["submission_id"],
+            "owner_login": task["owner_login"],
+            "declared_model": task["declared_model"],
+            "production_metadata": task["production_metadata"],
+        },
+        "archive": {
+            "archive_repository": task["archive_repository"],
+            "archive_commit": task["archive_commit"],
+            "archive_path": task["archive_path"],
+            "archive_ciphertext_sha256": task["archive_ciphertext_sha256"],
+            "encrypted": True,
+        },
+        "release": {
+            "accepted_at": task["accepted_at"],
+            "eligible_at": task["release_at"],
+            "path": release_path,
+            "license": "Apache-2.0",
+        },
+    }
+    if qualification is not None:
+        request["controller"] = qualification
     return {
         "schema_version": 1,
         "kind": "execution",
@@ -266,35 +383,7 @@ def plan_next(queue_value: Any, trusted_as_of: str) -> dict[str, Any]:
             "causation_event_id": task["event_id"],
             "payload": {"attempt": attempt},
         },
-        "request": {
-            "schema_version": 1,
-            "result": {
-                "result_id": task["result_id"],
-                "problem_id": task["problem_id"],
-                "statement_revision": task["statement_revision"],
-                "commit": task["result_commit"],
-                "tree_digest": task["result_tree_digest"],
-            },
-            "submission": {
-                "submission_id": task["submission_id"],
-                "owner_login": task["owner_login"],
-                "declared_model": task["declared_model"],
-                "production_metadata": task["production_metadata"],
-            },
-            "archive": {
-                "archive_repository": task["archive_repository"],
-                "archive_commit": task["archive_commit"],
-                "archive_path": task["archive_path"],
-                "archive_ciphertext_sha256": task["archive_ciphertext_sha256"],
-                "encrypted": True,
-            },
-            "release": {
-                "accepted_at": task["accepted_at"],
-                "eligible_at": task["release_at"],
-                "path": release_path,
-                "license": "Apache-2.0",
-            },
-        },
+        "request": request,
     }
 
 
@@ -302,11 +391,15 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("queue", type=pathlib.Path)
     parser.add_argument("--trusted-as-of", required=True)
+    parser.add_argument("--controller-qualification", type=pathlib.Path)
     parser.add_argument("--output", required=True, type=pathlib.Path)
     args = parser.parse_args(argv)
     try:
         queue = json.loads(args.queue.read_text(encoding="utf-8"))
-        plan = plan_next(queue, args.trusted_as_of)
+        qualification = None if args.controller_qualification is None else json.loads(
+            args.controller_qualification.read_text(encoding="utf-8")
+        )
+        plan = plan_next(queue, args.trusted_as_of, qualification)
         args.output.write_text(
             json.dumps(plan, ensure_ascii=True, indent=2, sort_keys=True) + "\n",
             encoding="utf-8",
