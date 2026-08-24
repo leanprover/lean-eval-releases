@@ -51,6 +51,8 @@ RELEASE_STATUS_FIELDS = {
     "authority_event_id",
     "status",
     "release_event_id",
+    "release_revision",
+    "supersedes_release_event_id",
 }
 CONTROLLER_RELEASE_TRANSITIONS = {
     "release.started": ({"scheduled", "failed"}, "running"),
@@ -196,7 +198,7 @@ def plan_release_state_transition(
     _match(COMMIT, protected_state_head, "protected State head")
     current = _object(current_value, "current result release status")
     _fields(current, RELEASE_STATUS_FIELDS, "current result release status")
-    if current["schema_version"] != 1 or isinstance(current["schema_version"], bool):
+    if type(current["schema_version"]) is not int or current["schema_version"] != 2:
         raise ControllerError("current result release status schema_version is invalid")
     result_id = _match(
         RESULT_ID, current["result_id"], "current result release status result_id"
@@ -218,10 +220,22 @@ def plan_release_state_transition(
     }:
         raise ControllerError("current result release status is invalid")
     release_event_id = current["release_event_id"]
+    release_revision = current["release_revision"]
+    if (
+        isinstance(release_revision, bool)
+        or not isinstance(release_revision, int)
+        or not 0 <= release_revision <= MAX_SAFE_INTEGER
+    ):
+        raise ControllerError("current result release status revision is invalid")
+    predecessor = current["supersedes_release_event_id"]
     if current_status == "not_scheduled":
-        if release_event_id is not None:
+        if (
+            release_event_id is not None
+            or release_revision != 0
+            or predecessor is not None
+        ):
             raise ControllerError(
-                "not_scheduled result release status must not name a release event"
+                "not_scheduled result release status must be the revision-zero head"
             )
     else:
         _match(
@@ -229,6 +243,19 @@ def plan_release_state_transition(
             release_event_id,
             "current result release status release_event_id",
         )
+        if release_revision < 1:
+            raise ControllerError("released result status revision must be positive")
+        if release_revision == 1:
+            if predecessor is not None:
+                raise ControllerError(
+                    "first release status revision must not name a predecessor"
+                )
+        else:
+            _match(
+                UUID7,
+                predecessor,
+                "current result release status supersedes_release_event_id",
+            )
 
     event = _object(event_value, "release transition event")
     expected_event_fields = {
@@ -262,11 +289,15 @@ def plan_release_state_transition(
         )
     if event.get("actor") != {"kind": "system"}:
         raise ControllerError("release transition must be system-authored")
+    if release_revision == MAX_SAFE_INTEGER:
+        raise ControllerError("current result release status revision is exhausted")
 
     after = {
         **current,
         "status": next_status,
         "release_event_id": event_id,
+        "release_revision": release_revision + 1,
+        "supersedes_release_event_id": release_event_id,
     }
     status_path = result_release_status_path(result_id).as_posix()
     return {

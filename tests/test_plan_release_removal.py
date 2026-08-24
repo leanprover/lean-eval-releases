@@ -55,53 +55,62 @@ class ReleaseRemovalPlanTests(unittest.TestCase):
     def test_pinned_state_contract_manifest_is_exact(self) -> None:
         self.assertEqual(
             removal_module.STATE_REMOVAL_CONTRACT_COMMIT,
-            "940a2a4f2e042c076a37b6c14190e072b786032c",
+            "501d237d46c7b3466a37554c1c2ceb310245a619",
         )
         self.assertEqual(
             removal_module.STATE_REMOVAL_CONTRACT_TREES,
             {
-                "schema": "831016c5c2b63c0e38233378c7e62d690fb0fd16",
-                "scripts": "18e7abe53c981903cb92d1856125edde33bd840a",
+                "schema": "473e694e0d40026a7ec0ad33430ea622e3e03b66",
+                "scripts": "ab90d1a997e3bfc7292dbf1a515db1abb4278c01",
             },
         )
         self.assertEqual(
             removal_module.STATE_REMOVAL_CONTRACT_COMPONENTS,
             {
                 "schema/public-state-projection-v1.schema.json": (
+                    "100644",
                     "9d6c546a2139f587d1a3c8d76c1df7674c4a9759",
                     "74398c7c81dad719637bdad2e9c73974719a077beb3a1f4a503cd55bf4d93c58",
                 ),
                 "schema/public-state-projection-v2.schema.json": (
+                    "100644",
                     "fc782883787ed654bcfc69ed15241e1cadee80df",
                     "94dac7dcfbf3d322d5f72b20992e2950f8fa714641f2bb9ee6fd5b84d288a336",
                 ),
                 "schema/public-state-projection-v3.schema.json": (
+                    "100644",
                     "cfd577d818119917a6060c06abd48d24f32028aa",
                     "eea75447b8c13778b454f1313778068f9908c189724107a9e3be3635b00c5bee",
                 ),
                 "schema/state-event-v1.schema.json": (
-                    "c2b4e85ddd18b7a3d41c705cfa1454ff8f879da1",
-                    "cae8e11dad8b87997a09fa66f5500ea75a0e0b7ff4221ac14a20459cf6970589",
+                    "100644",
+                    "5b670204c86c440b56afd81f62bd097e3b399be7",
+                    "af753eb3aba7a82c6c5d7b153ea0a0e411df9aa94768772aa8b99d985b6d57cb",
                 ),
                 "schema/result-overlays-v1.schema.json": (
+                    "100644",
                     "41d4078133d6854bf8de839873a3f58e9ba1afd1",
                     "245324f32265d0476ca45e55ec5fbe2363c47da852d2641ddc292df0c5d9d474",
                 ),
                 "scripts/materialize_state.py": (
-                    "656c30abf35ec69e645602193496a765ee2de7eb",
-                    "be02b7a1e415e85d5c32cb75f230c237847cb4f08caa9e81d22d486bbe783867",
+                    "100755",
+                    "d2e4126d2b18faf9e3da938b730cea2f33faf27c",
+                    "e48186dc9c4907352a4c3c2b1da6c7d771c43d484ee818e67409a16a50ffbb6e",
                 ),
                 "scripts/public_projection.py": (
-                    "ea5a6a69ac19728b9d22016631c323821cd17383",
-                    "24b9cb91340eee08a45ccaf2e50c57827839658f0813fafeb2c1712f3f8d912a",
+                    "100755",
+                    "ff0940d0117c7783ef3c5d868247b8ef4bef9418",
+                    "2391e7574faff98763b2e8d60370f76876e8062eea5e1848a2d6a98579a0727b",
                 ),
                 "scripts/state.py": (
-                    "d11c3d4fdd9db50216a9f08abe776486db1d1160",
-                    "b43ba033eef9ab94b81b9359ea53f136d745b660cacac981593a0f60b1dbce15",
+                    "100644",
+                    "9812adf2ab40b8b8072a1cbe32e66d072844d596",
+                    "95695b4c9a4c34e5380f08c97c35547d7d7a87f4d37e7a024bbbc932d3c5d99c",
                 ),
                 "scripts/validate_state.py": (
-                    "c714c26dd84f591a885f7dbb8321337767500145",
-                    "0d26368105137b2d36fa925e7be7021148c998db2569f19a3119b1c35119c94b",
+                    "100755",
+                    "9ee1470a7d599831e15657e99a2612e00adebeae",
+                    "964c532d89ba31573fe42411bebae456945b24b63fa0d88f3d08cb9bdeb8d220",
                 ),
             },
         )
@@ -313,18 +322,29 @@ class ReleaseRemovalPlanTests(unittest.TestCase):
 
         state_initial_commit = self.git(state_root, "rev-parse", "HEAD")
         state_contract_raw: dict[str, bytes] = {}
-        for path in removal_module.STATE_REMOVAL_CONTRACT_COMPONENTS:
+        for path, (mode, _blob, _sha256) in (
+            removal_module.STATE_REMOVAL_CONTRACT_COMPONENTS.items()
+        ):
             state_contract_raw[path] = self.write_json(
                 state_root / path,
                 self.removal_schema()
                 if path == "schema/state-event-v1.schema.json"
                 else {"fixture_component": path},
             )
+            if mode == "100755":
+                (state_root / path).chmod(0o755)
         self.git(state_root, "add", ".")
         self.git(state_root, "commit", "-m", "Add release removal contract")
         state_contract_commit = self.git(state_root, "rev-parse", "HEAD")
         state_contract_components = {
             path: (
+                self.git(
+                    state_root,
+                    "ls-tree",
+                    state_contract_commit,
+                    "--",
+                    path,
+                ).split()[0],
                 self.git(state_root, "rev-parse", f"{state_contract_commit}:{path}"),
                 hashlib.sha256(raw).hexdigest(),
             )
@@ -443,6 +463,13 @@ class ReleaseRemovalPlanTests(unittest.TestCase):
         fixture["state_contract_components"] = {
             component: (
                 self.git(
+                    fixture["state_root"],
+                    "ls-tree",
+                    commit,
+                    "--",
+                    component,
+                ).split()[0],
+                self.git(
                     fixture["state_root"], "rev-parse", f"{commit}:{component}"
                 ),
                 hashlib.sha256(
@@ -553,7 +580,7 @@ class ReleaseRemovalPlanTests(unittest.TestCase):
                             "blob": blob,
                             "sha256": sha256,
                         }
-                        for path, (blob, sha256) in sorted(
+                        for path, (_mode, blob, sha256) in sorted(
                             fixture["state_contract_components"].items()
                         )
                     ],
@@ -651,10 +678,25 @@ class ReleaseRemovalPlanTests(unittest.TestCase):
             fixture = self.fixture(pathlib.Path(temporary))
             tampered = dict(fixture["state_contract_components"])
             first_path = sorted(tampered)[0]
-            tampered[first_path] = (tampered[first_path][0], "0" * 64)
+            tampered[first_path] = (
+                tampered[first_path][0],
+                tampered[first_path][1],
+                "0" * 64,
+            )
             with self.contract_patch(fixture), mock.patch.object(
                 removal_module, "STATE_REMOVAL_CONTRACT_COMPONENTS", tampered
             ), self.assertRaisesRegex(RemovalPlanError, "reviewed contract"):
+                self.call_plan(fixture)
+
+            mode_tampered = dict(fixture["state_contract_components"])
+            executable = "scripts/materialize_state.py"
+            _mode, blob, sha256 = mode_tampered[executable]
+            mode_tampered[executable] = ("100644", blob, sha256)
+            with self.contract_patch(fixture), mock.patch.object(
+                removal_module,
+                "STATE_REMOVAL_CONTRACT_COMPONENTS",
+                mode_tampered,
+            ), self.assertRaisesRegex(RemovalPlanError, "mode-100644"):
                 self.call_plan(fixture)
 
             with self.contract_patch(fixture), self.assertRaisesRegex(

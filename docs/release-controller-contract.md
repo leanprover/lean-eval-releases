@@ -23,8 +23,11 @@ Before planning work, `scripts/release_qualification.py` fails closed unless
 both local checkouts are tracked-clean, are the exact fetched `origin/main`,
 have complete history, resolve at their Git toplevel, and have the expected
 GitHub origin. Production State must also descend from
-the reviewed `release.started`, `release.published`, `release.failed`, and
-owner opt-out contract commit recorded in the credential contract. Full Git
+the reviewed `release.started`, `release.published`, `release.failed`, owner
+opt-out, monotone release-revision, and immediate-predecessor contract commit
+recorded in the credential contract. Its live `schema` and `scripts` trees must
+still equal the trees at that reviewed commit, so later data-only State commits
+remain usable while any contract-code drift fails closed. Full Git
 history is checked out because interrupted-release recovery must inspect the
 commit that first published a release path.
 
@@ -48,7 +51,10 @@ plan contains a production, publication-mode qualification.
 The controller's mutation protocol remains compare-and-swap and idempotent.
 Every controller-authored release transition first reads the exact targeted
 `views/result-release-status/<prefix>/<result-id>.json` blob from the protected
-State head. `scripts/release_controller.py stage-state-transition` refuses a
+State head. The schema-version-2 head carries a monotone `release_revision` and
+the exact immediately superseded release-event marker; every transition
+increments the revision once and atomically records the old marker as its
+predecessor. `scripts/release_controller.py stage-state-transition` refuses a
 missing, noncanonical, dirty, or head-mismatched document, requires its current
 status and release-event marker to match the new event's causation, and stages
 exactly two paths: the immutable event and the replacement targeted status.

@@ -24,7 +24,11 @@ COMMIT = re.compile(r"[0-9a-f]{40}")
 DIGEST = re.compile(r"[0-9a-f]{64}")
 REASON = re.compile(r"[a-z][a-z0-9_]{1,63}")
 SAFE_INTEGER = 9_007_199_254_740_991
-STATE_RELEASE_CONTRACT_COMMIT = "163e9314c881493e08d23baf35ff40456f9c2331"
+STATE_RELEASE_CONTRACT_COMMIT = "501d237d46c7b3466a37554c1c2ceb310245a619"
+STATE_RELEASE_CONTRACT_TREES = {
+    "schema": "473e694e0d40026a7ec0ad33430ea622e3e03b66",
+    "scripts": "ab90d1a997e3bfc7292dbf1a515db1abb4278c01",
+}
 CONTROLLER_QUALIFICATION_FIELDS = {
     "schema_version",
     "environment",

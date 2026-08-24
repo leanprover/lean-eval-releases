@@ -53,6 +53,9 @@ jobs:
         with:
           python-version: '3.11.10'
 
+      - name: Verify reviewed State code before executing it
+        run: python scripts/verify_release_state_contract.py --state-root state
+
       - name: Validate controller and materialize exact production State
         env:
           PUBLICATION_ENABLED: ${{ vars.PUBLICATION_ENABLED }}

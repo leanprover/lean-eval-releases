@@ -48,47 +48,56 @@ PRIVATE_EVIDENCE_REPOSITORIES = {
     "leanprover/lean-eval-audit",
     EXPECTED_STATE_REPOSITORY,
 }
-STATE_REMOVAL_CONTRACT_COMMIT = "940a2a4f2e042c076a37b6c14190e072b786032c"
+STATE_REMOVAL_CONTRACT_COMMIT = "501d237d46c7b3466a37554c1c2ceb310245a619"
 STATE_REMOVAL_CONTRACT_TREES = {
-    "schema": "831016c5c2b63c0e38233378c7e62d690fb0fd16",
-    "scripts": "18e7abe53c981903cb92d1856125edde33bd840a",
+    "schema": "473e694e0d40026a7ec0ad33430ea622e3e03b66",
+    "scripts": "ab90d1a997e3bfc7292dbf1a515db1abb4278c01",
 }
 STATE_REMOVAL_CONTRACT_COMPONENTS = {
     "schema/public-state-projection-v1.schema.json": (
+        "100644",
         "9d6c546a2139f587d1a3c8d76c1df7674c4a9759",
         "74398c7c81dad719637bdad2e9c73974719a077beb3a1f4a503cd55bf4d93c58",
     ),
     "schema/public-state-projection-v2.schema.json": (
+        "100644",
         "fc782883787ed654bcfc69ed15241e1cadee80df",
         "94dac7dcfbf3d322d5f72b20992e2950f8fa714641f2bb9ee6fd5b84d288a336",
     ),
     "schema/public-state-projection-v3.schema.json": (
+        "100644",
         "cfd577d818119917a6060c06abd48d24f32028aa",
         "eea75447b8c13778b454f1313778068f9908c189724107a9e3be3635b00c5bee",
     ),
     "schema/state-event-v1.schema.json": (
-        "c2b4e85ddd18b7a3d41c705cfa1454ff8f879da1",
-        "cae8e11dad8b87997a09fa66f5500ea75a0e0b7ff4221ac14a20459cf6970589",
+        "100644",
+        "5b670204c86c440b56afd81f62bd097e3b399be7",
+        "af753eb3aba7a82c6c5d7b153ea0a0e411df9aa94768772aa8b99d985b6d57cb",
     ),
     "schema/result-overlays-v1.schema.json": (
+        "100644",
         "41d4078133d6854bf8de839873a3f58e9ba1afd1",
         "245324f32265d0476ca45e55ec5fbe2363c47da852d2641ddc292df0c5d9d474",
     ),
     "scripts/materialize_state.py": (
-        "656c30abf35ec69e645602193496a765ee2de7eb",
-        "be02b7a1e415e85d5c32cb75f230c237847cb4f08caa9e81d22d486bbe783867",
+        "100755",
+        "d2e4126d2b18faf9e3da938b730cea2f33faf27c",
+        "e48186dc9c4907352a4c3c2b1da6c7d771c43d484ee818e67409a16a50ffbb6e",
     ),
     "scripts/public_projection.py": (
-        "ea5a6a69ac19728b9d22016631c323821cd17383",
-        "24b9cb91340eee08a45ccaf2e50c57827839658f0813fafeb2c1712f3f8d912a",
+        "100755",
+        "ff0940d0117c7783ef3c5d868247b8ef4bef9418",
+        "2391e7574faff98763b2e8d60370f76876e8062eea5e1848a2d6a98579a0727b",
     ),
     "scripts/state.py": (
-        "d11c3d4fdd9db50216a9f08abe776486db1d1160",
-        "b43ba033eef9ab94b81b9359ea53f136d745b660cacac981593a0f60b1dbce15",
+        "100644",
+        "9812adf2ab40b8b8072a1cbe32e66d072844d596",
+        "95695b4c9a4c34e5380f08c97c35547d7d7a87f4d37e7a024bbbc932d3c5d99c",
     ),
     "scripts/validate_state.py": (
-        "c714c26dd84f591a885f7dbb8321337767500145",
-        "0d26368105137b2d36fa925e7be7021148c998db2569f19a3119b1c35119c94b",
+        "100755",
+        "9ee1470a7d599831e15657e99a2612e00adebeae",
+        "964c532d89ba31573fe42411bebae456945b24b63fa0d88f3d08cb9bdeb8d220",
     ),
 }
 REQUEST_FIELDS = {
@@ -420,13 +429,14 @@ def _one_blob(
     *,
     label: str,
     maximum: int,
+    expected_mode: str = "100644",
 ) -> tuple[str, bytes]:
     entries = _tree_entries(root, commit, path, label=label)
     if len(entries) != 1:
         raise RemovalPlanError(f"{label} is absent or ambiguous")
     mode, object_type, object_id, actual_path = entries[0]
-    if mode != "100644" or object_type != "blob" or actual_path != path:
-        raise RemovalPlanError(f"{label} is not one mode-100644 blob")
+    if mode != expected_mode or object_type != "blob" or actual_path != path:
+        raise RemovalPlanError(f"{label} is not one mode-{expected_mode} blob")
     return object_id, _blob(root, object_id, label, maximum)
 
 
@@ -569,7 +579,7 @@ def _state_removal_contract(
             raise RemovalPlanError(f"release removal State path {path} is not a tree")
         trees.append({"path": path, "tree": expected_tree})
     components = []
-    for path, (expected_blob, expected_sha256) in sorted(
+    for path, (expected_mode, expected_blob, expected_sha256) in sorted(
         STATE_REMOVAL_CONTRACT_COMPONENTS.items()
     ):
         reviewed_blob, reviewed_raw = _one_blob(
@@ -578,6 +588,7 @@ def _state_removal_contract(
             path,
             label=f"reviewed release removal State component {path}",
             maximum=MAX_DOCUMENT_BYTES,
+            expected_mode=expected_mode,
         )
         if (
             reviewed_blob != expected_blob
@@ -593,6 +604,7 @@ def _state_removal_contract(
             path,
             label=f"live release removal State component {path}",
             maximum=MAX_DOCUMENT_BYTES,
+            expected_mode=expected_mode,
         )
         if live_blob != expected_blob or _sha256(live_raw) != expected_sha256:
             raise RemovalPlanError(

@@ -11,7 +11,14 @@ import unittest
 ROOT = pathlib.Path(__file__).parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 
-from release_orchestrator import ReleaseError, canonical_json_digest, plan_next
+import plan_release_removal as removal_module
+from release_orchestrator import (
+    STATE_RELEASE_CONTRACT_COMMIT,
+    STATE_RELEASE_CONTRACT_TREES,
+    ReleaseError,
+    canonical_json_digest,
+    plan_next,
+)
 from release_qualification import (
     QualificationError,
     build_qualification,
@@ -47,6 +54,32 @@ class ReleaseQualificationTests(unittest.TestCase):
         self.assertEqual(contract["release"]["credential"], "RELEASE_PUBLISH_KEY")
         self.assertEqual(
             contract["state"]["credential"], "PRODUCTION_STATE_CONTROLLER_KEY"
+        )
+
+    def test_state_contract_pins_are_consistent(self) -> None:
+        contract_commit = self.contract()["state"]["minimum_contract_commit"]
+        release_plan_schema = json.loads(
+            (ROOT / "schema/release-plan-v1.schema.json").read_text(encoding="utf-8")
+        )
+        schema_commit = release_plan_schema["$defs"]["controllerQualification"][
+            "properties"
+        ]["state_contract_commit"]["const"]
+        self.assertEqual(contract_commit, STATE_RELEASE_CONTRACT_COMMIT)
+        self.assertEqual(schema_commit, STATE_RELEASE_CONTRACT_COMMIT)
+        self.assertEqual(
+            removal_module.STATE_REMOVAL_CONTRACT_COMMIT,
+            STATE_RELEASE_CONTRACT_COMMIT,
+        )
+        self.assertEqual(
+            removal_module.STATE_REMOVAL_CONTRACT_TREES,
+            STATE_RELEASE_CONTRACT_TREES,
+        )
+        self.assertEqual(
+            STATE_RELEASE_CONTRACT_TREES,
+            {
+                "schema": "473e694e0d40026a7ec0ad33430ea622e3e03b66",
+                "scripts": "ab90d1a997e3bfc7292dbf1a515db1abb4278c01",
+            },
         )
 
     def test_preflight_qualification_binds_exact_materialized_inputs(self) -> None:
@@ -150,12 +183,23 @@ class ReleaseQualificationTests(unittest.TestCase):
             subprocess.run(
                 ["git", "-C", root, "config", "user.name", "Test"], check=True
             )
+            (root / "schema").mkdir()
+            (root / "schema" / "status.json").write_text("{}\n", encoding="utf-8")
+            (root / "scripts").mkdir()
+            (root / "scripts" / "validate.py").write_text("pass\n", encoding="utf-8")
             (root / "contract").write_text("one\n", encoding="utf-8")
-            subprocess.run(["git", "-C", root, "add", "contract"], check=True)
+            subprocess.run(["git", "-C", root, "add", "."], check=True)
             subprocess.run(["git", "-C", root, "commit", "-qm", "contract"], check=True)
             minimum = subprocess.check_output(
                 ["git", "-C", root, "rev-parse", "HEAD"], text=True
             ).strip()
+            contract_trees = {
+                path: subprocess.check_output(
+                    ["git", "-C", root, "rev-parse", f"{minimum}:{path}"],
+                    text=True,
+                ).strip()
+                for path in ("schema", "scripts")
+            }
             (root / "runtime").write_text("two\n", encoding="utf-8")
             subprocess.run(["git", "-C", root, "add", "runtime"], check=True)
             subprocess.run(["git", "-C", root, "commit", "-qm", "runtime"], check=True)
@@ -175,16 +219,66 @@ class ReleaseQualificationTests(unittest.TestCase):
                 ["git", "-C", root, "update-ref", "refs/remotes/origin/main", "HEAD"],
                 check=True,
             )
-            head = qualify_repository(root, "leanprover/lean-eval-state", minimum)
+            head = qualify_repository(
+                root,
+                "leanprover/lean-eval-state",
+                minimum,
+                contract_trees,
+            )
             self.assertEqual(
                 head,
                 subprocess.check_output(
                     ["git", "-C", root, "rev-parse", "HEAD"], text=True
                 ).strip(),
             )
+            drifted_trees = {**contract_trees, "schema": "0" * 40}
+            with self.assertRaisesRegex(QualificationError, "tree has drifted"):
+                qualify_repository(
+                    root,
+                    "leanprover/lean-eval-state",
+                    minimum,
+                    drifted_trees,
+                )
+            status_schema = root / "schema" / "status.json"
+            status_schema.write_text('{"drifted":true}\n', encoding="utf-8")
+            subprocess.run(["git", "-C", root, "add", "schema/status.json"], check=True)
+            subprocess.run(
+                ["git", "-C", root, "commit", "-qm", "drift schema"], check=True
+            )
+            subprocess.run(
+                ["git", "-C", root, "update-ref", "refs/remotes/origin/main", "HEAD"],
+                check=True,
+            )
+            with self.assertRaisesRegex(QualificationError, "tree has drifted"):
+                qualify_repository(
+                    root,
+                    "leanprover/lean-eval-state",
+                    minimum,
+                    contract_trees,
+                )
+            status_schema.write_text("{}\n", encoding="utf-8")
+            subprocess.run(["git", "-C", root, "add", "schema/status.json"], check=True)
+            subprocess.run(
+                ["git", "-C", root, "commit", "-qm", "restore schema"], check=True
+            )
+            subprocess.run(
+                ["git", "-C", root, "update-ref", "refs/remotes/origin/main", "HEAD"],
+                check=True,
+            )
+            head = qualify_repository(
+                root,
+                "leanprover/lean-eval-state",
+                minimum,
+                contract_trees,
+            )
             (root / "runtime").write_text("dirty\n", encoding="utf-8")
             with self.assertRaisesRegex(QualificationError, "tracked changes"):
-                qualify_repository(root, "leanprover/lean-eval-state", minimum)
+                qualify_repository(
+                    root,
+                    "leanprover/lean-eval-state",
+                    minimum,
+                    contract_trees,
+                )
 
             (root / "runtime").write_text("two\n", encoding="utf-8")
             subprocess.run(
@@ -200,7 +294,12 @@ class ReleaseQualificationTests(unittest.TestCase):
                 check=True,
             )
             with self.assertRaisesRegex(QualificationError, "origin is invalid"):
-                qualify_repository(root, "leanprover/lean-eval-state", minimum)
+                qualify_repository(
+                    root,
+                    "leanprover/lean-eval-state",
+                    minimum,
+                    contract_trees,
+                )
             subprocess.run(
                 [
                     "git",
@@ -217,18 +316,33 @@ class ReleaseQualificationTests(unittest.TestCase):
             subprocess.run(["git", "-C", root, "add", "later"], check=True)
             subprocess.run(["git", "-C", root, "commit", "-qm", "later"], check=True)
             with self.assertRaisesRegex(QualificationError, "not exact origin/main"):
-                qualify_repository(root, "leanprover/lean-eval-state", minimum)
+                qualify_repository(
+                    root,
+                    "leanprover/lean-eval-state",
+                    minimum,
+                    contract_trees,
+                )
             subprocess.run(
                 ["git", "-C", root, "update-ref", "refs/remotes/origin/main", "HEAD"],
                 check=True,
             )
             with self.assertRaisesRegex(QualificationError, "does not descend"):
-                qualify_repository(root, "leanprover/lean-eval-state", "0" * 40)
+                qualify_repository(
+                    root,
+                    "leanprover/lean-eval-state",
+                    "0" * 40,
+                    contract_trees,
+                )
 
             shallow = root / ".git" / "shallow"
             shallow.write_text(head + "\n", encoding="ascii")
             with self.assertRaisesRegex(QualificationError, "complete history"):
-                qualify_repository(root, "leanprover/lean-eval-state", minimum)
+                qualify_repository(
+                    root,
+                    "leanprover/lean-eval-state",
+                    minimum,
+                    contract_trees,
+                )
 
 
 if __name__ == "__main__":
