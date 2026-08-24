@@ -148,6 +148,10 @@ class ReleaseControllerTests(unittest.TestCase):
         self.assertNotIn("schedule:", workflow)
         self.assertNotIn("pull_request:", workflow)
         self.assertNotIn("push:\n", workflow)
+        self.assertNotIn("workflow_call:", workflow)
+        self.assertNotIn("secrets[", workflow)
+        self.assertNotIn("toJSON(secrets", workflow)
+        self.assertNotIn("secrets: inherit", workflow)
         self.assertIn("github.repository == 'leanprover/lean-eval-releases'", workflow)
         self.assertIn("github.ref == 'refs/heads/main'", workflow)
         self.assertIn("inputs.confirm_publication_disabled == true", workflow)
@@ -186,6 +190,221 @@ class ReleaseControllerTests(unittest.TestCase):
         self.assertNotIn("configure-aws-credentials", workflow)
         self.assertNotIn("aws ", workflow)
         self.assertNotIn("upload-artifact", workflow)
+
+    def test_production_audit_read_preflight_is_isolated_and_nonmutating(
+        self,
+    ) -> None:
+        workflow = (
+            ROOT
+            / ".github/workflows/verify-production-audit-read-credential.yml"
+        ).read_text(encoding="utf-8")
+        self.assertIn("workflow_dispatch:", workflow)
+        self.assertNotIn("schedule:", workflow)
+        self.assertNotIn("pull_request:", workflow)
+        self.assertNotIn("push:\n", workflow)
+        self.assertIn("DISPATCH_REPOSITORY: ${{ github.repository }}", workflow)
+        self.assertIn("DISPATCH_REF: ${{ github.ref }}", workflow)
+        self.assertIn(
+            "CONFIRM_PUBLICATION_DISABLED: ${{ inputs.confirm_publication_disabled }}",
+            workflow,
+        )
+        self.assertIn(
+            'test "$DISPATCH_REPOSITORY" = leanprover/lean-eval-releases', workflow
+        )
+        self.assertIn('test "$DISPATCH_REF" = refs/heads/main', workflow)
+        self.assertIn('test "$CONFIRM_PUBLICATION_DISABLED" = true', workflow)
+        self.assertIn("needs: authorize", workflow)
+        self.assertIn("github.repository == 'leanprover/lean-eval-releases'", workflow)
+        self.assertIn("github.ref == 'refs/heads/main'", workflow)
+        self.assertIn("inputs.confirm_publication_disabled == true", workflow)
+        self.assertIn("environment: release-production", workflow)
+        self.assertIn(
+            "group: lean-eval-release-controller-production-audit-read-preflight",
+            workflow,
+        )
+        self.assertIn("cancel-in-progress: false", workflow)
+        self.assertEqual(workflow.count("runs-on:"), 2)
+        self.assertIn("contents: read", workflow)
+        self.assertNotIn("contents: write", workflow)
+        self.assertNotIn("id-token: write", workflow)
+        self.assertEqual(
+            set(re.findall(r"secrets\.([A-Z0-9_]+)", workflow)),
+            {"AUDIT_READ_KEY"},
+        )
+        self.assertNotIn("RELEASE_PUBLISH_KEY", workflow)
+        self.assertNotIn("PRODUCTION_STATE_CONTROLLER_KEY", workflow)
+        self.assertNotIn("STAGING_STATE_READ_KEY", workflow)
+        self.assertIn("repository: leanprover/lean-eval-audit", workflow)
+        self.assertNotIn("repository: leanprover/lean-eval-state", workflow)
+        self.assertIn("PUBLICATION_ENABLED must remain absent or false", workflow)
+        self.assertIn("persist-credentials: true", workflow)
+        self.assertIn("fetch-depth: 1", workflow)
+        self.assertIn("/.audit-read-proof", workflow)
+        self.assertIn("sparse-checkout-cone-mode: false", workflow)
+        self.assertIn("filter: blob:none", workflow)
+        self.assertIn("test ! -e audit-proof/archives", workflow)
+        self.assertIn("test ! -e audit-proof/audit", workflow)
+        self.assertIn("GIT_NO_LAZY_FETCH=1", workflow)
+        self.assertIn("--batch-all-objects", workflow)
+        self.assertIn('grep -Fxq commit <<<"$object_types"', workflow)
+        self.assertIn('grep -Fxq tree <<<"$object_types"', workflow)
+        self.assertEqual(workflow.count("ls-remote --exit-code"), 1)
+        self.assertEqual(workflow.count("before=$(read_main)"), 1)
+        self.assertEqual(workflow.count("after=$(read_main)"), 1)
+        self.assertEqual(workflow.count("push --dry-run --porcelain"), 1)
+        self.assertIn(
+            "The key you are authenticating with has been marked as read only.",
+            workflow,
+        )
+        self.assertIn(
+            "ERROR: Permission to leanprover/lean-eval-audit.git denied to ",
+            workflow,
+        )
+        self.assertIn("Write access to repository not granted.", workflow)
+        push_lines = [
+            line for line in workflow.splitlines() if re.search(r"\bgit\b.*\bpush\b", line)
+        ]
+        self.assertEqual(len(push_lines), 1)
+        self.assertIn("--dry-run", push_lines[0])
+        for forbidden in (
+            "git commit",
+            "state.py",
+            "release_controller.py",
+            "release_orchestrator.py",
+            "configure-aws-credentials",
+            "aws ",
+            "upload-artifact",
+            "download-artifact",
+        ):
+            with self.subTest(forbidden=forbidden):
+                self.assertNotIn(forbidden, workflow)
+        self.assertTrue(workflow.rstrip().endswith('} >> "$GITHUB_STEP_SUMMARY"'))
+        self.assertNotIn("- exact audit main:", workflow)
+        self.assertEqual(
+            re.findall(r"^      - name: (.+)$", workflow, re.MULTILINE),
+            [
+                "Require an exact protected publication-disabled dispatch",
+                "Require the publication latch to remain off",
+                "Authenticate to audit without materializing the private corpus",
+                "Prove stable read access and denied receive-pack access",
+            ],
+        )
+        self.assertEqual(workflow.count("\n      - "), 4)
+
+        contract = json.loads(
+            (
+                ROOT
+                / "configuration/release-controller-credential-contract-v1.json"
+            ).read_text(encoding="utf-8")
+        )
+        audit_contract = contract["audit"]
+        self.assertEqual(audit_contract["credential"], "AUDIT_READ_KEY")
+        self.assertEqual(audit_contract["permission"], "contents-read")
+        self.assertIn(f"repository: {audit_contract['repository']}", workflow)
+        self.assertIn(
+            f"git@github.com:{audit_contract['repository']}.git",
+            workflow,
+        )
+
+    def test_production_audit_read_preflight_rejects_hostile_authority_drift(
+        self,
+    ) -> None:
+        workflow = (
+            ROOT
+            / ".github/workflows/verify-production-audit-read-credential.yml"
+        ).read_text(encoding="utf-8")
+
+        def validate_closed_boundary(candidate: str) -> None:
+            self.assertEqual(
+                set(re.findall(r"secrets\.([A-Z0-9_]+)", candidate)),
+                {"AUDIT_READ_KEY"},
+            )
+            self.assertIn("permissions: {}", candidate)
+            self.assertIn("    permissions:\n      contents: read", candidate)
+            self.assertNotIn("id-token: write", candidate)
+            self.assertNotIn("workflow_call:", candidate)
+            self.assertNotIn("secrets[", candidate)
+            self.assertNotIn("toJSON(secrets", candidate)
+            self.assertNotIn("secrets: inherit", candidate)
+            self.assertIn(
+                'test "$DISPATCH_REPOSITORY" = leanprover/lean-eval-releases',
+                candidate,
+            )
+            self.assertIn('test "$DISPATCH_REF" = refs/heads/main', candidate)
+            self.assertIn(
+                'test "$CONFIRM_PUBLICATION_DISABLED" = true', candidate
+            )
+            self.assertEqual(candidate.count("runs-on:"), 2)
+            self.assertEqual(candidate.count("\n      - "), 4)
+            self.assertEqual(candidate.count("uses: actions/checkout@"), 1)
+            self.assertIn("repository: leanprover/lean-eval-audit", candidate)
+            self.assertNotIn("repository: leanprover/lean-eval-state", candidate)
+            self.assertIn("fetch-depth: 1", candidate)
+            self.assertNotIn("fetch-depth: 0", candidate)
+            self.assertIn("filter: blob:none", candidate)
+            self.assertIn(
+                "sparse-checkout: |\n            /.audit-read-proof", candidate
+            )
+            self.assertIn("sparse-checkout-cone-mode: false", candidate)
+            self.assertIn("push --dry-run --porcelain", candidate)
+            self.assertNotIn("push --porcelain", candidate)
+
+        validate_closed_boundary(workflow)
+        hostile_changes = (
+            (
+                "ssh-key: ${{ secrets.AUDIT_READ_KEY }}",
+                "ssh-key: ${{ secrets.RELEASE_PUBLISH_KEY }}",
+            ),
+            (
+                "    permissions:\n      contents: read",
+                "    permissions:\n      contents: write",
+            ),
+            (
+                "    permissions:\n      contents: read",
+                "    permissions:\n      contents: read\n      id-token: write",
+            ),
+            (
+                "repository: leanprover/lean-eval-audit",
+                "repository: leanprover/lean-eval-state",
+            ),
+            (
+                "sparse-checkout: |\n            /.audit-read-proof",
+                "sparse-checkout: |\n            /archives",
+            ),
+            ("sparse-checkout-cone-mode: false", "sparse-checkout-cone-mode: true"),
+            ("filter: blob:none", "filter: blob:limit=1m"),
+            ("fetch-depth: 1", "fetch-depth: 0"),
+            ("push --dry-run --porcelain", "push --porcelain"),
+            ("    runs-on: ubuntu-latest", "    runs-on: ubuntu-latest\n    runs-on: other"),
+            (
+                "      - name: Prove stable read access and denied receive-pack access",
+                (
+                    "      - uses: actions/checkout@"
+                    "0000000000000000000000000000000000000000\n"
+                    "      - name: Prove stable read access and denied receive-pack access"
+                ),
+            ),
+            (
+                "on:\n  workflow_dispatch:",
+                "on:\n  workflow_dispatch:\n  workflow_call:",
+            ),
+            (
+                "ssh-key: ${{ secrets.AUDIT_READ_KEY }}",
+                "ssh-key: ${{ secrets['AUDIT_READ_KEY'] }}",
+            ),
+            (
+                "      - name: Prove stable read access and denied receive-pack access",
+                (
+                    "      - run: env\n"
+                    "      - name: Prove stable read access and denied receive-pack access"
+                ),
+            ),
+        )
+        for old, new in hostile_changes:
+            with self.subTest(change=new):
+                self.assertIn(old, workflow)
+                with self.assertRaises(AssertionError):
+                    validate_closed_boundary(workflow.replace(old, new, 1))
 
     def test_staging_release_smoke_is_exact_decrypt_only_and_source_artifact_free(
         self,
@@ -242,7 +461,7 @@ class ReleaseControllerTests(unittest.TestCase):
                     if reference.startswith("./"):
                         continue
                     self.assertRegex(reference, r"^[^@]+@[0-9a-f]{40}$")
-        self.assertEqual(len(references), 18)
+        self.assertEqual(len(references), 19)
 
     def request(self) -> dict[str, object]:
         return prepare_unwrap(

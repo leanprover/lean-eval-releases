@@ -152,6 +152,21 @@ key is accepted without updating either ref. The workflow has no OIDC
 permission, AWS step, audit key, release planner/controller invocation,
 artifact upload, commit, or non-dry-run push.
 
+`Verify production audit read credential` is a second manual,
+publication-disabled preflight with a deliberately separate job and credential
+boundary. Its only secret is `AUDIT_READ_KEY`; the release and State write keys
+are never referenced by that workflow. A blobless, non-cone sparse checkout
+authenticates to the private audit repository without downloading a blob or
+materializing a tracked file; commit and tree metadata still reach the runner.
+Two exact `main` upload-pack reads surround a receive-pack dry run that must
+return an explicit GitHub permission denial, proving the credential retains read
+access without write access. It shares the production controller's
+non-cancelling policy in its own preflight concurrency group, so it cannot evict
+a pending publication run. A secret-free guard fails an invalid repository,
+ref, or confirmation before the credentialed job can start. The workflow
+performs no checkout of State or release publication content and has no OIDC,
+AWS, artifact, commit, or non-dry-run push step.
+
 `Prove one credentialed staging release unwrap` is the non-publishing launch
 gate for this boundary. Given an accepted staging submission, it derives the
 exact queued release from validated staging State, checks out the pinned audit

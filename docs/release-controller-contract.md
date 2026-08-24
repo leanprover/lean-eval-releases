@@ -19,6 +19,22 @@ The environment's OIDC release-unwrapper role remains separately restricted to
 the production unwrap Lambda. Neither this contract nor the qualification tool
 creates, installs, reads, or tests an AWS credential.
 
+The production credential checks preserve those authority boundaries. The
+write-key preflight never receives `AUDIT_READ_KEY`. A separate audit-read
+workflow has one job whose only secret is `AUDIT_READ_KEY`; it never receives
+either write key. It performs a blobless sparse checkout with an intentionally
+absent path, so it authenticates Git upload-pack without downloading a blob or
+materializing a private audit file; private commit and tree metadata remain
+present on the ephemeral runner. Successful reads of the same exact audit
+`main` on both sides of a receive-pack dry run fail closed unless the push
+returns an explicit GitHub permission denial. The key persists for the remainder
+of the job and is deleted by the checkout action's post-job cleanup, so the
+proof is deliberately the job's final step. Both manual checks require the
+publication latch to remain absent or exactly `false`. A secret-free guard job
+fails an invalid repository, ref, or confirmation before the audit credentialed
+job can start. The audit preflight has a separate non-cancelling concurrency
+group, so dispatching it cannot evict a pending production controller run.
+
 Before planning work, `scripts/release_qualification.py` fails closed unless
 both local checkouts are tracked-clean, are the exact fetched `origin/main`,
 have complete history, resolve at their Git toplevel, and have the expected
