@@ -26,6 +26,7 @@ from scripts.release_controller import (
     terminal_event,
     unwrap_identity,
     uuid7,
+    verify_staged_release_state_transition,
 )
 from scripts.release_orchestrator import plan_next
 
@@ -122,7 +123,12 @@ class ReleaseControllerTests(unittest.TestCase):
         self.assertIn("jq -er .repository_commit", workflow)
         self.assertIn("jq -er --arg result", workflow)
         self.assertNotIn("git log --diff-filter=A --format=%H -1", workflow)
-        self.assertEqual(workflow.count("stage-state-transition"), 4)
+        self.assertEqual(
+            workflow.count("release_controller.py stage-state-transition"), 4
+        )
+        self.assertEqual(
+            workflow.count("release_controller.py verify-staged-state-transition"), 4
+        )
         self.assertEqual(workflow.count("--protected-main-commit"), 4)
         self.assertNotIn("state.py --root state append", workflow)
         self.assertNotIn("git -C state rebase", workflow)
@@ -475,8 +481,30 @@ class ReleaseControllerTests(unittest.TestCase):
                 json.loads(status_path.read_text(encoding="utf-8")),
                 transition["status_after"],
             )
+            verify_staged_release_state_transition(root, started, transition)
             with self.assertRaisesRegex(ControllerError, "not clean"):
                 stage_release_state_transition(root, started, head)
+
+            tampered = copy.deepcopy(transition["status_after"])
+            tampered["status"] = "published"
+            status_path.write_text(canonical_json(tampered), encoding="utf-8")
+            subprocess.run(
+                ["git", "-C", root, "add", transition["status_path"]], check=True
+            )
+            with self.assertRaisesRegex(ControllerError, "cached bytes"):
+                verify_staged_release_state_transition(root, started, transition)
+
+            status_path.write_text(
+                canonical_json(transition["status_after"]), encoding="utf-8"
+            )
+            subprocess.run(
+                ["git", "-C", root, "add", transition["status_path"]], check=True
+            )
+            extra = root / "unexpected"
+            extra.write_text("unexpected\n", encoding="utf-8")
+            subprocess.run(["git", "-C", root, "add", "unexpected"], check=True)
+            with self.assertRaisesRegex(ControllerError, "exact event/status pair"):
+                verify_staged_release_state_transition(root, started, transition)
 
     def test_interrupted_release_recovery_is_fail_closed_and_idempotent(self) -> None:
         task = copy.deepcopy(

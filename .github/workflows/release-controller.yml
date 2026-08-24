@@ -148,6 +148,10 @@ jobs:
           git -C state config user.email lean-eval-release-controller@users.noreply.github.com
           python state/scripts/state.py --root state \
             --protected-main-commit "$state_head" validate
+          python scripts/release_controller.py verify-staged-state-transition \
+            --state-root state \
+            --event "$RUNNER_TEMP/release-recovered-event.json" \
+            --plan "$RUNNER_TEMP/release-recovered-transition.json"
           git -C state commit -m "Recover interrupted release $event_id"
           test "$(git -C state rev-parse HEAD^)" = "$state_head"
           git -C state push origin HEAD:main
@@ -206,6 +210,10 @@ jobs:
           test -f "state/$status_path"
           python state/scripts/state.py --root state \
             --protected-main-commit "$state_head" validate
+          python scripts/release_controller.py verify-staged-state-transition \
+            --state-root state \
+            --event "$RUNNER_TEMP/release-started-event.json" \
+            --plan "$RUNNER_TEMP/release-started-transition.json"
           git -C state commit -m "Start release $event_id"
           test "$(git -C state rev-parse HEAD^)" = "$state_head"
           git -C state push origin HEAD:main
@@ -432,6 +440,10 @@ jobs:
           test -f "state/$status_path"
           python state/scripts/state.py --root state \
             --protected-main-commit "$state_head" validate
+          python scripts/release_controller.py verify-staged-state-transition \
+            --state-root state \
+            --event "$RUNNER_TEMP/release-terminal-event.json" \
+            --plan "$RUNNER_TEMP/release-terminal-transition.json"
           git -C state commit -m "Record published release $event_id"
           test "$(git -C state rev-parse HEAD^)" = "$state_head"
           git -C state push origin HEAD:main
@@ -460,6 +472,10 @@ jobs:
           test -f "state/$status_path"
           python state/scripts/state.py --root state \
             --protected-main-commit "$state_head" validate
+          python scripts/release_controller.py verify-staged-state-transition \
+            --state-root state \
+            --event "$RUNNER_TEMP/release-failed-event.json" \
+            --plan "$RUNNER_TEMP/release-failed-transition.json"
           git -C state commit -m "Record failed release $event_id"
           test "$(git -C state rev-parse HEAD^)" = "$state_head"
           git -C state push origin HEAD:main
