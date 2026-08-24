@@ -40,12 +40,19 @@ class PinnedStateWorkflowTests(unittest.TestCase):
         self.assertIn("repository: leanprover/lean-eval-state", workflow)
         self.assertIn(f"ref: {STATE_CONTRACT_COMMIT}", workflow)
         self.assertIn("path: .pinned-state-contract", workflow)
+        self.assertIn("environment: release-production", workflow)
+        self.assertIn(
+            "ssh-key: ${{ secrets.PRODUCTION_STATE_CONTROLLER_KEY }}", workflow
+        )
+        self.assertIn("github.event_name != 'pull_request'", workflow)
+        self.assertIn("github.ref == 'refs/heads/main'", workflow)
         self.assertIn(
             "LEAN_EVAL_PINNED_STATE_ROOT: "
             "${{ github.workspace }}/.pinned-state-contract",
             workflow,
         )
         self.assertEqual(workflow.count(f"ref: {STATE_CONTRACT_COMMIT}"), 1)
+        self.assertEqual(workflow.count("repository: leanprover/lean-eval-state"), 1)
 
 
 class PinnedStateConsumerIntegrationTests(unittest.TestCase):

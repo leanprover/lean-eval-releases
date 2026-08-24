@@ -695,7 +695,7 @@ class ReleaseControllerTests(unittest.TestCase):
                     if reference.startswith("./"):
                         continue
                     self.assertRegex(reference, r"^[^@]+@[0-9a-f]{40}$")
-        self.assertEqual(len(references), 21)
+        self.assertEqual(len(references), 23)
 
     def request(self) -> dict[str, object]:
         return prepare_unwrap(
