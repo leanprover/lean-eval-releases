@@ -213,6 +213,31 @@ post-containment commit/tree remain operator-supplied. The operator procedure
 and multi-result confidentiality scope are in
 [`docs/release-confidentiality-incident-recovery.md`](docs/release-confidentiality-incident-recovery.md).
 
+`scripts/release_removal.py` is the non-networked second half of that operator
+boundary. It consumes the private plan, stages only its exact path set, verifies
+the Git index, and creates an ordinary local containment commit. It then
+completes every `release.removed` skeleton against that one commit and root
+tree, stages the full incident group plus every targeted release-status view,
+runs the pinned State validator/materializer/public projection, and creates one
+local State commit. Its output is a private, source-free compare-and-swap
+description whose expected remote head must still match; it still contains
+incident Git locators and must not be published. The tool has no push operation
+and never checks out Results. If a State push is rejected after the release
+commit has landed, rerunning with the same plan, release commit, State checkout,
+and event-identity file recognizes the existing exact local State commit. It
+never rebases or regenerates event identities.
+
+The local confidentiality mode is deliberately labeled
+`synthetic_target_tree_only`. It proves deletion, manifest, multi-result State,
+and consumer semantics using harmless bytes; it does **not** prove that a real
+secret has been removed from Git history, refs, forks, caches, artifacts,
+mirrors, or prior downloads. Without the explicit synthetic qualification flag,
+the tool refuses to turn a confidentiality target-tree commit into State
+corrections. The flag also requires the immutable harmless-fixture marker in
+the plan-bound release base, so it cannot be applied to a real production
+incident plan. `owner_retraction` also fails closed: maintainers have not yet
+decided whether that case shares this protected operator lane.
+
 Publication remains disabled until the production credentials and a
 single-submission decrypt/reconstruction check are complete. The contributor
 acknowledgement and Apache-2.0 release choice are fixed by the approved rollout
@@ -235,4 +260,18 @@ python scripts/reconstruct_release.py /tmp/release-plan.json \
   --trusted-as-of "$TRUSTED_UTC_NOW" \
   --state-acceptance-snapshot path/to/trusted-state-export.json \
   --output-root /tmp/reconstructed-release
+
+python scripts/release_removal.py finalize-release /private/removal-plan.json \
+  --release-root /checkouts/lean-eval-releases \
+  --message "Remove erroneous source release" \
+  --output /private/release-containment-binding.json
+
+python scripts/release_removal.py finalize-state /private/removal-plan.json \
+  --release-root /checkouts/lean-eval-releases \
+  --release-commit '<verified-local-release-commit>' \
+  --state-root /checkouts/lean-eval-state \
+  --protected-state-head '<exact-plan-State-head>' \
+  --event-identities /private/removal-event-identities.json \
+  --message "Record release removal" \
+  --output /private/state-removal-cas.json
 ```
