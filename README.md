@@ -144,6 +144,19 @@ capability, drops AWS and OIDC authority, and verifies the decrypted tarball
 against the private sidecar. It neither reconstructs before the embargo nor
 writes State or this repository, and it uploads no artifact.
 
+`scripts/plan_release_removal.py` is the Git-read-only first response tool for
+an erroneous publication or confidentiality incident. From exact local
+checkouts it resolves each repository's live protected `main`, reads the
+original `release.published` event and private evidence as exact Git blobs, and
+binds them to the published Git commit/tree, canonical release-tree digest,
+public source bundle, and publication manifest. It emits a deterministic,
+source-free private containment plan with exclusive mode-0600 creation outside
+every repository; an optional explicitly redacted public projection is
+separate. It performs no deletion, commit, index/ref update, Results rewrite,
+or State write. The operator procedure, multi-result confidentiality scope, and
+intentionally unresolved State event dependency are in
+[`docs/release-confidentiality-incident-recovery.md`](docs/release-confidentiality-incident-recovery.md).
+
 Publication remains disabled until the production credentials and a
 single-submission decrypt/reconstruction check are complete. The contributor
 acknowledgement and Apache-2.0 release choice are fixed by the approved rollout
