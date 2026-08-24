@@ -7,6 +7,7 @@ import hashlib
 import json
 import pathlib
 import re
+import subprocess
 import tempfile
 import unittest
 
@@ -14,8 +15,12 @@ from scripts.release_controller import (
     ControllerError,
     archive_key_id,
     capability_digest,
+    canonical_json,
+    plan_release_state_transition,
     prepare_unwrap,
     recover_running,
+    result_release_status_path,
+    stage_release_state_transition,
     staging_smoke_plan,
     started_event,
     terminal_event,
@@ -117,6 +122,10 @@ class ReleaseControllerTests(unittest.TestCase):
         self.assertIn("jq -er .repository_commit", workflow)
         self.assertIn("jq -er --arg result", workflow)
         self.assertNotIn("git log --diff-filter=A --format=%H -1", workflow)
+        self.assertEqual(workflow.count("stage-state-transition"), 4)
+        self.assertEqual(workflow.count("--protected-main-commit"), 4)
+        self.assertNotIn("state.py --root state append", workflow)
+        self.assertNotIn("git -C state rebase", workflow)
 
     def test_production_credential_preflight_is_manual_and_nonmutating(self) -> None:
         workflow = (
@@ -321,6 +330,153 @@ class ReleaseControllerTests(unittest.TestCase):
                 "retryable": True,
             },
         )
+
+    def release_status(self) -> dict[str, object]:
+        task = json.loads(
+            (ROOT / "tests/fixtures/release-queue-v1.json").read_text(encoding="utf-8")
+        )["tasks"][0]
+        return {
+            "schema_version": 1,
+            "result_id": task["result_id"],
+            "authority_event_id": "0198abcd-0000-7000-8000-000000000006",
+            "status": task["status"],
+            "release_event_id": task["event_id"],
+        }
+
+    def test_release_state_transition_replaces_exact_targeted_status(self) -> None:
+        started = started_event(
+            self.plan,
+            NOW,
+            random_bytes=bytes(range(10)),
+        )
+        transition = plan_release_state_transition(
+            self.release_status(), started, "1" * 40
+        )
+        result_id = started["subject_id"]
+        self.assertEqual(
+            transition["status_path"],
+            result_release_status_path(result_id).as_posix(),
+        )
+        self.assertEqual(
+            transition["event_path"],
+            f"events/01/{started['event_id']}.json",
+        )
+        self.assertEqual(transition["protected_state_head"], "1" * 40)
+        self.assertEqual(transition["status_after"]["status"], "running")
+        self.assertEqual(
+            transition["status_after"]["release_event_id"], started["event_id"]
+        )
+        self.assertEqual(
+            transition["status_after"]["authority_event_id"],
+            self.release_status()["authority_event_id"],
+        )
+
+        published = terminal_event(
+            started,
+            "2026-10-20T06:07:06.000Z",
+            "published",
+            repository_commit="1" * 40,
+            tree_digest="2" * 64,
+            release_path=self.plan["request"]["release"]["path"],
+            random_bytes=bytes(range(10, 20)),
+        )
+        terminal = plan_release_state_transition(
+            transition["status_after"], published, "2" * 40
+        )
+        self.assertEqual(terminal["status_after"]["status"], "published")
+        self.assertEqual(
+            terminal["status_after"]["release_event_id"], published["event_id"]
+        )
+
+        failed = terminal_event(
+            started,
+            "2026-10-20T06:07:06.000Z",
+            "failed",
+            reason_code="provider_error",
+            retryable=True,
+            random_bytes=bytes(range(20, 30)),
+        )
+        failed_transition = plan_release_state_transition(
+            transition["status_after"], failed, "2" * 40
+        )
+        self.assertEqual(failed_transition["status_after"]["status"], "failed")
+        self.assertEqual(
+            failed_transition["status_after"]["release_event_id"],
+            failed["event_id"],
+        )
+
+    def test_release_state_transition_fails_closed_on_status_mismatch(self) -> None:
+        started = started_event(
+            self.plan,
+            NOW,
+            random_bytes=bytes(range(10)),
+        )
+        mutations = []
+        missing = copy.deepcopy(self.release_status())
+        missing.pop("release_event_id")
+        mutations.append(missing)
+        wrong_cause = copy.deepcopy(self.release_status())
+        wrong_cause["release_event_id"] = "0198abcd-0000-7000-8000-000000000099"
+        mutations.append(wrong_cause)
+        wrong_result = copy.deepcopy(self.release_status())
+        wrong_result["result_id"] = "r2_" + "0" * 64
+        mutations.append(wrong_result)
+        running = copy.deepcopy(self.release_status())
+        running["status"] = "running"
+        mutations.append(running)
+        for current in mutations:
+            with self.subTest(current=current):
+                with self.assertRaises(ControllerError):
+                    plan_release_state_transition(current, started, "1" * 40)
+
+    def test_stages_event_and_status_from_one_exact_state_head(self) -> None:
+        started = started_event(
+            self.plan,
+            NOW,
+            random_bytes=bytes(range(10)),
+        )
+        current = self.release_status()
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            relative_status = result_release_status_path(started["subject_id"])
+            status_path = root.joinpath(*relative_status.parts)
+            status_path.parent.mkdir(parents=True)
+            status_path.write_text(canonical_json(current), encoding="utf-8")
+            subprocess.run(["git", "init", "-q", "-b", "main", root], check=True)
+            subprocess.run(
+                ["git", "-C", root, "config", "user.email", "test@example.invalid"],
+                check=True,
+            )
+            subprocess.run(
+                ["git", "-C", root, "config", "user.name", "Test"], check=True
+            )
+            subprocess.run(["git", "-C", root, "add", "."], check=True)
+            subprocess.run(
+                ["git", "-C", root, "commit", "-q", "-m", "base"], check=True
+            )
+            head = subprocess.run(
+                ["git", "-C", root, "rev-parse", "HEAD"],
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout.strip()
+            transition = stage_release_state_transition(root, started, head)
+            staged = subprocess.run(
+                ["git", "-C", root, "diff", "--cached", "--name-only"],
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout.splitlines()
+            self.assertEqual(
+                staged,
+                sorted([transition["event_path"], transition["status_path"]]),
+            )
+            self.assertEqual(
+                json.loads(status_path.read_text(encoding="utf-8")),
+                transition["status_after"],
+            )
+            with self.assertRaisesRegex(ControllerError, "not clean"):
+                stage_release_state_transition(root, started, head)
 
     def test_interrupted_release_recovery_is_fail_closed_and_idempotent(self) -> None:
         task = copy.deepcopy(
