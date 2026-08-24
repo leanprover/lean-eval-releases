@@ -1,0 +1,119 @@
+name: Verify production release OIDC trust
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm_publication_disabled:
+        description: Confirm this trust-only preflight must not publish or invoke Lambda
+        required: true
+        type: boolean
+        default: false
+
+permissions: {}
+
+concurrency:
+  group: lean-eval-release-controller-production
+  cancel-in-progress: false
+
+jobs:
+  authorize:
+    permissions: {}
+    runs-on: ubuntu-latest
+    timeout-minutes: 1
+    steps:
+      - name: Require an exact protected publication-disabled dispatch
+        env:
+          CONFIRM_PUBLICATION_DISABLED: ${{ inputs.confirm_publication_disabled }}
+          DISPATCH_REF: ${{ github.ref }}
+          DISPATCH_REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          test "$DISPATCH_REPOSITORY" = leanprover/lean-eval-releases
+          test "$DISPATCH_REF" = refs/heads/main
+          test "$CONFIRM_PUBLICATION_DISABLED" = true
+
+  oidc-trust:
+    needs: authorize
+    if: >-
+      github.repository == 'leanprover/lean-eval-releases' &&
+      github.ref == 'refs/heads/main' &&
+      inputs.confirm_publication_disabled == true
+    permissions:
+      id-token: write
+    environment: release-production
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require the publication latch and role boundary
+        env:
+          CONFIGURED_ROLE_ARN: ${{ vars.AWS_RELEASE_UNWRAP_ROLE_ARN }}
+          PUBLICATION_ENABLED: ${{ vars.PUBLICATION_ENABLED }}
+        run: |
+          set -euo pipefail
+          case "$PUBLICATION_ENABLED" in
+            ""|false) ;;
+            *) echo "PUBLICATION_ENABLED must remain absent or false" >&2; exit 1 ;;
+          esac
+          test "$CONFIGURED_ROLE_ARN" = \
+            arn:aws:iam::161072922960:role/lean-eval-release-unwrap-invoker-production
+
+      - name: Assume only the production release Invoke role
+        uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c
+        with:
+          role-to-assume: ${{ vars.AWS_RELEASE_UNWRAP_ROLE_ARN }}
+          aws-region: us-east-1
+          role-duration-seconds: 900
+          role-session-name: lean-eval-release-production-oidc-preflight
+          retry-max-attempts: 4
+          allowed-account-ids: 161072922960
+          mask-aws-account-id: true
+
+      - name: Prove exact caller identity and discard all authority
+        run: |
+          set -euo pipefail
+          cleanup() {
+            unset AWS_ACCESS_KEY_ID
+            unset AWS_SECRET_ACCESS_KEY
+            unset AWS_SESSION_TOKEN
+            unset ACTIONS_ID_TOKEN_REQUEST_TOKEN
+            unset ACTIONS_ID_TOKEN_REQUEST_URL
+            {
+              echo 'AWS_ACCESS_KEY_ID='
+              echo 'AWS_SECRET_ACCESS_KEY='
+              echo 'AWS_SESSION_TOKEN='
+              echo 'ACTIONS_ID_TOKEN_REQUEST_TOKEN='
+              echo 'ACTIONS_ID_TOKEN_REQUEST_URL='
+            } >> "$GITHUB_ENV"
+            rm -f "$RUNNER_TEMP/production-release-caller-identity.json"
+          }
+          trap cleanup EXIT
+          aws sts get-caller-identity \
+            --output json > "$RUNNER_TEMP/production-release-caller-identity.json"
+          test "$(jq -er .Account "$RUNNER_TEMP/production-release-caller-identity.json")" = \
+            161072922960
+          test "$(jq -er .Arn "$RUNNER_TEMP/production-release-caller-identity.json")" = \
+            arn:aws:sts::161072922960:assumed-role/lean-eval-release-unwrap-invoker-production/lean-eval-release-production-oidc-preflight
+          user_id=$(jq -er .UserId "$RUNNER_TEMP/production-release-caller-identity.json")
+          case "$user_id" in
+            *:lean-eval-release-production-oidc-preflight) ;;
+            *) echo "unexpected STS caller UserId" >&2; exit 1 ;;
+          esac
+          cleanup
+
+      - name: Prove authority is gone
+        run: |
+          set -euo pipefail
+          test -z "${AWS_ACCESS_KEY_ID:-}"
+          test -z "${AWS_SECRET_ACCESS_KEY:-}"
+          test -z "${AWS_SESSION_TOKEN:-}"
+          test -z "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}"
+          test -z "${ACTIONS_ID_TOKEN_REQUEST_URL:-}"
+          test ! -e "$RUNNER_TEMP/production-release-caller-identity.json"
+          {
+            echo '### Production release OIDC trust preflight passed'
+            echo
+            echo "- release controller source: \`$GITHUB_SHA\`"
+            echo '- exact production release Invoke role assumed in account `161072922960`'
+            echo '- AWS credentials and the GitHub OIDC request handle were discarded'
+            echo '- publication remained disabled; no Lambda, archive, State, Git, or artifact operation occurred'
+          } >> "$GITHUB_STEP_SUMMARY"

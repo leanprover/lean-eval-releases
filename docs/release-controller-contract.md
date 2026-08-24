@@ -19,6 +19,24 @@ The environment's OIDC release-unwrapper role remains separately restricted to
 the production unwrap Lambda. Neither this contract nor the qualification tool
 creates, installs, reads, or tests an AWS credential.
 
+The manual production OIDC preflight tests only that separate trust boundary.
+An environment-free guard requires the exact upstream `main` ref and explicit
+publication-disabled confirmation before the protected `release-production`
+job can start. That job has only `id-token: write`, receives no repository
+permission or secret, requires `PUBLICATION_ENABLED` to remain absent or
+exactly `false`, and requires `AWS_RELEASE_UNWRAP_ROLE_ARN` to equal
+`arn:aws:iam::161072922960:role/lean-eval-release-unwrap-invoker-production`.
+It requests a 15-minute session; beyond the required OIDC role assumption, its
+only AWS service probe is `sts:GetCallerIdentity`. It binds the returned
+account, assumed-role ARN, and session suffix, then blanks the AWS credential
+variables and GitHub OIDC request variables before a final source-free proof
+step. It cannot invoke Lambda, inspect an archive, check out a repository,
+write State, publish, or upload an artifact. It uses the
+controller's non-cancelling production concurrency group, so the trust probe
+cannot overlap or evict a controller run. It is an after-reconciliation proof,
+not a mechanism for changing AWS trust, and must not be dispatched before the
+live trust policy is corrected and read back by an authenticated operator.
+
 The production credential checks preserve those authority boundaries. The
 write-key preflight never receives `AUDIT_READ_KEY`. A separate audit-read
 workflow has one job whose only secret is `AUDIT_READ_KEY`; it never receives

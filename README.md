@@ -167,6 +167,21 @@ ref, or confirmation before the credentialed job can start. The workflow
 performs no checkout of State or release publication content and has no OIDC,
 AWS, artifact, commit, or non-dry-run push step.
 
+`Verify production release OIDC trust` is a third manual, publication-disabled
+preflight for the production environment's release-unwrapper role. A
+secret-free job first requires an exact upstream `main` dispatch and explicit
+confirmation. The protected `release-production` job then receives only
+`id-token: write`, requires the publication latch to remain absent or `false`,
+and refuses a role variable other than the exact production release Invoke
+role. It assumes that role for 15 minutes, makes only an STS caller-identity
+probe, verifies the exact account, role, and session, and immediately discards
+both the AWS credentials and GitHub OIDC request handle. It shares the
+controller's non-cancelling concurrency group and has no repository permission,
+secret, checkout, Git operation, archive access, Lambda invocation, State
+operation, or artifact. The workflow must remain undispatched until an
+authenticated operator has reconciled and read back the live production trust
+policy.
+
 `Prove one credentialed staging release unwrap` is the non-publishing launch
 gate for this boundary. Given an accepted staging submission, it derives the
 exact queued release from validated staging State, checks out the pinned audit
