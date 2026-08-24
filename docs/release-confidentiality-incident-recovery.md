@@ -181,11 +181,11 @@ decisions remain human security/legal decisions.
 
 ## Required forward State correction
 
-State schema version 1 now defines a direct, system-authored `release.removed`
-event caused by the original `release.published` event. The reviewed contract,
-materializer, public projection, compatibility behavior, and tests landed in
-`leanprover/lean-eval-state` at commit
-`501d237d46c7b3466a37554c1c2ceb310245a619`. The planner fails closed unless
+State schema version 1 defines a direct, system-authored `release.removed`
+event caused by the original `release.published` event. The current reviewed
+contract, materializer, public projection, compatibility behavior, and tests
+are pinned to `leanprover/lean-eval-state` commit
+`a53c658a2de2188675134dc2890285fbaa17cf5a`. The planner fails closed unless
 that exact contract commit is reachable from live protected State `main` and
 the complete State `schema/` and `scripts/` trees remain unchanged. Within those
 trees it also rechecks the relevant Git modes, blob IDs, and SHA-256s and parses

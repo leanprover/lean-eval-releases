@@ -24,17 +24,17 @@ COMMIT = re.compile(r"[0-9a-f]{40}")
 DIGEST = re.compile(r"[0-9a-f]{64}")
 REASON = re.compile(r"[a-z][a-z0-9_]{1,63}")
 SAFE_INTEGER = 9_007_199_254_740_991
-STATE_RELEASE_CONTRACT_COMMIT = "501d237d46c7b3466a37554c1c2ceb310245a619"
+STATE_RELEASE_CONTRACT_COMMIT = "a53c658a2de2188675134dc2890285fbaa17cf5a"
 STATE_RELEASE_CONTRACT_TREES = {
-    "schema": "473e694e0d40026a7ec0ad33430ea622e3e03b66",
-    "scripts": "ab90d1a997e3bfc7292dbf1a515db1abb4278c01",
+    "schema": "3111bf02bd9983a8712425923de8fca6ba696469",
+    "scripts": "f9fe278ef1ea062bc21a3fafc7ddea7ab758a099",
 }
 STAGING_STATE_RELEASE_CONTRACT_COMMIT = (
-    "6a386bb4362b10dd8d7743e826c82f1a0011c0c3"
+    "48f8c975d725a9ac18df545653fdb2f8371c3293"
 )
 STAGING_STATE_RELEASE_CONTRACT_TREES = {
-    "schema": "95a264fb61bffcec21ae91055675baf9c9ed78fc",
-    "scripts": "41962d05ebc32821a342ae6bc9cd6c2fa88db3eb",
+    "schema": "730d44520c70fdd6da4d27e381d4e6593c5c77fe",
+    "scripts": "438693aed415474802beae32a5398fb436a4ac71",
 }
 CONTROLLER_QUALIFICATION_FIELDS = {
     "schema_version",
