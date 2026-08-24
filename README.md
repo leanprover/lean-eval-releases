@@ -173,10 +173,12 @@ secret-free job first requires an exact upstream `main` dispatch and explicit
 confirmation. The protected `release-production` job then receives only
 `id-token: write`, requires the publication latch to remain absent or `false`,
 and refuses a role variable other than the exact production release Invoke
-role. It assumes that role for 15 minutes, makes only an STS caller-identity
-probe, verifies the exact account, role, and session, and immediately discards
-both the AWS credentials and GitHub OIDC request handle. It shares the
-controller's non-cancelling concurrency group and has no repository permission,
+role. It assumes that role for 15 minutes under an inline session policy that
+permits only STS caller identity, verifies the exact account, role, and session,
+then removes both the AWS credentials and GitHub OIDC request handle from the
+final trust-proof process. No later repository-authored step runs in that job;
+a separate permissionless job writes the source-free summary. The workflow uses
+its own non-cancelling concurrency group and has no repository permission,
 secret, checkout, Git operation, archive access, Lambda invocation, State
 operation, or artifact. The workflow must remain undispatched until an
 authenticated operator has reconciled and read back the live production trust

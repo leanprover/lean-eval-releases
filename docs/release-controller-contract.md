@@ -26,16 +26,19 @@ job can start. That job has only `id-token: write`, receives no repository
 permission or secret, requires `PUBLICATION_ENABLED` to remain absent or
 exactly `false`, and requires `AWS_RELEASE_UNWRAP_ROLE_ARN` to equal
 `arn:aws:iam::161072922960:role/lean-eval-release-unwrap-invoker-production`.
-It requests a 15-minute session; beyond the required OIDC role assumption, its
-only AWS service probe is `sts:GetCallerIdentity`. It binds the returned
-account, assumed-role ARN, and session suffix, then blanks the AWS credential
-variables and GitHub OIDC request variables before a final source-free proof
-step. It cannot invoke Lambda, inspect an archive, check out a repository,
-write State, publish, or upload an artifact. It uses the
-controller's non-cancelling production concurrency group, so the trust probe
-cannot overlap or evict a controller run. It is an after-reconciliation proof,
-not a mechanism for changing AWS trust, and must not be dispatched before the
-live trust policy is corrected and read back by an authenticated operator.
+It requests a 15-minute session under an inline session policy that permits only
+`sts:GetCallerIdentity`. It binds the returned account, assumed-role ARN, and
+session suffix, then blanks the AWS credential variables and GitHub OIDC request
+variables in the same final repository-authored step. A negative credential
+probe confirms that no AWS authority handle remains locally. No later
+repository-authored step runs in that job; a separate job with no permissions
+writes the source-free summary. The workflow does not invoke Lambda, inspect an
+archive, check out a repository, write State, publish, or upload an artifact. It
+uses a dedicated non-cancelling concurrency group, so a pending controller run
+and an environment approval wait cannot evict or indefinitely block one
+another. It is an after-reconciliation proof, not a mechanism for changing AWS
+trust, and must not be dispatched before the live trust policy is corrected and
+read back by an authenticated operator.
 
 The production credential checks preserve those authority boundaries. The
 write-key preflight never receives `AUDIT_READ_KEY`. A separate audit-read

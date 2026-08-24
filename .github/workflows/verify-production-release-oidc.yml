@@ -12,7 +12,7 @@ on:
 permissions: {}
 
 concurrency:
-  group: lean-eval-release-controller-production
+  group: lean-eval-release-controller-production-oidc-preflight
   cancel-in-progress: false
 
 jobs:
@@ -66,9 +66,14 @@ jobs:
           role-session-name: lean-eval-release-production-oidc-preflight
           retry-max-attempts: 4
           allowed-account-ids: 161072922960
+          output-credentials: false
+          output-env-credentials: true
+          unset-current-credentials: true
+          inline-session-policy: >-
+            {"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":"sts:GetCallerIdentity","Resource":"*"}]}
           mask-aws-account-id: true
 
-      - name: Prove exact caller identity and discard all authority
+      - name: Prove exact caller identity and discard all authority handles
         run: |
           set -euo pipefail
           cleanup() {
@@ -99,21 +104,38 @@ jobs:
             *) echo "unexpected STS caller UserId" >&2; exit 1 ;;
           esac
           cleanup
-
-      - name: Prove authority is gone
-        run: |
-          set -euo pipefail
+          trap - EXIT
           test -z "${AWS_ACCESS_KEY_ID:-}"
           test -z "${AWS_SECRET_ACCESS_KEY:-}"
           test -z "${AWS_SESSION_TOKEN:-}"
           test -z "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}"
           test -z "${ACTIONS_ID_TOKEN_REQUEST_URL:-}"
           test ! -e "$RUNNER_TEMP/production-release-caller-identity.json"
+          test ! -e "$RUNNER_TEMP/no-production-aws-credentials"
+          test ! -e "$RUNNER_TEMP/no-production-aws-config"
+          export AWS_EC2_METADATA_DISABLED=true
+          export AWS_SHARED_CREDENTIALS_FILE="$RUNNER_TEMP/no-production-aws-credentials"
+          export AWS_CONFIG_FILE="$RUNNER_TEMP/no-production-aws-config"
+          if aws sts get-caller-identity >/dev/null 2>&1; then
+            echo "AWS authority survived cleanup" >&2
+            exit 1
+          fi
+
+  summarize:
+    needs: oidc-trust
+    permissions: {}
+    runs-on: ubuntu-latest
+    timeout-minutes: 1
+    steps:
+      - name: Record a source-free trust proof
+        run: |
+          set -euo pipefail
           {
             echo '### Production release OIDC trust preflight passed'
             echo
             echo "- release controller source: \`$GITHUB_SHA\`"
-            echo '- exact production release Invoke role assumed in account `161072922960`'
-            echo '- AWS credentials and the GitHub OIDC request handle were discarded'
+            echo '- exact production release role trust proved in account `161072922960`'
+            echo '- the session was restricted to caller identity only'
+            echo '- AWS credentials and the GitHub OIDC request handle were discarded before the authority-bearing job ended'
             echo '- publication remained disabled; no Lambda, archive, State, Git, or artifact operation occurred'
           } >> "$GITHUB_STEP_SUMMARY"
