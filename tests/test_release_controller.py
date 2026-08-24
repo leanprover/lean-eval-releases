@@ -590,8 +590,10 @@ class ReleaseControllerTests(unittest.TestCase):
             ),
             (
                 "      id-token: write\n    environment: release-production",
-                "      id-token: write\n      actions: write\n"
-                "    environment: release-production",
+                (
+                    "      id-token: write\n      actions: write\n"
+                    "    environment: release-production"
+                ),
             ),
             (
                 "on:\n  workflow_dispatch:",
@@ -604,8 +606,10 @@ class ReleaseControllerTests(unittest.TestCase):
             ),
             (
                 "      - name: Prove exact caller identity and discard all authority handles",
-                "      - run: env\n"
-                "      - name: Prove exact caller identity and discard all authority handles",
+                (
+                    "      - run: env\n"
+                    "      - name: Prove exact caller identity and discard all authority handles"
+                ),
             ),
             (
                 "lean-eval-release-unwrap-invoker-production",
@@ -622,8 +626,10 @@ class ReleaseControllerTests(unittest.TestCase):
             ("output-credentials: false", "output-credentials: true"),
             ("output-env-credentials: true", "output-env-credentials: false"),
             (
-                '"Effect":"Allow","Action":"sts:GetCallerIdentity",'
-                '"Resource":"*"',
+                (
+                    '"Effect":"Allow","Action":"sts:GetCallerIdentity",'
+                    '"Resource":"*"'
+                ),
                 '"Effect":"Allow","Action":"lambda:*","Resource":"*"',
             ),
             ("AWS authority survived cleanup", "AWS authority retained"),
@@ -689,7 +695,7 @@ class ReleaseControllerTests(unittest.TestCase):
                     if reference.startswith("./"):
                         continue
                     self.assertRegex(reference, r"^[^@]+@[0-9a-f]{40}$")
-        self.assertEqual(len(references), 20)
+        self.assertEqual(len(references), 23)
 
     def request(self) -> dict[str, object]:
         return prepare_unwrap(

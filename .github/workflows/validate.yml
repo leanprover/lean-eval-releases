@@ -37,7 +37,44 @@ jobs:
       - name: Lint workflows
         # Disable ambient runner linters; actionlint itself is commit-pinned.
         run: actionlint -shellcheck= -pyflakes=
-      - run: python -m unittest discover -s tests -v
+      - name: Run release tooling tests
+        run: python -m unittest discover -s tests -v
+
+  pinned-state-integration:
+    if: >-
+      github.event_name != 'pull_request' &&
+      github.repository == 'leanprover/lean-eval-releases' &&
+      github.ref == 'refs/heads/main'
+    environment: release-production
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      # PR jobs never receive this protected-environment key. On protected main,
+      # the pinned action uses it only to fetch the exact immutable State commit
+      # and removes it before any repository-owned test code runs.
+      - name: Check out the exact production State consumer contract
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: leanprover/lean-eval-state
+          ref: a53c658a2de2188675134dc2890285fbaa17cf5a
+          path: .pinned-state-contract
+          persist-credentials: false
+          ssh-key: ${{ secrets.PRODUCTION_STATE_CONTROLLER_KEY }}
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: '3.11.10'
+      - name: Run the exact pinned State consumer integration
+        env:
+          LEAN_EVAL_PINNED_STATE_ROOT: ${{ github.workspace }}/.pinned-state-contract
+        run: >-
+          python -m unittest
+          tests.test_release_removal_pinned_state.PinnedStateConsumerIntegrationTests
+          -v
 
   publication-disabled:
     runs-on: ubuntu-latest

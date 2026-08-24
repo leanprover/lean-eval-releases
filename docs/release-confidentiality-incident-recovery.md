@@ -151,6 +151,57 @@ An ordinary forward deletion removes the bytes from the current branch but not
 from existing Git history, clones, forks, caches, or previously downloaded
 copies. If the bytes are confidential, stop and use the incident procedure.
 
+### Local stage, commit, and retry qualification
+
+`scripts/release_removal.py` implements only the local, non-pushing portion of
+steps 2 through 5. `finalize-release` starts at the exact plan base, requires a
+fully clean repository, rechecks every release-tree and bundle digest, derives
+the manifest replacement from the bound base bytes, stages the exact path set,
+and verifies the index before making one local commit. It returns that commit,
+root tree, exact expected remote head, and the requirement for a normal
+non-forced fast-forward update. The tool neither observes nor changes a remote.
+
+Prepare a private event-identity document with one canonically sorted entry for
+every correction in the plan:
+
+```json
+[
+  {
+    "event_id": "<fresh-canonical-UUIDv7>",
+    "occurred_at": "<trusted-UTC-milliseconds>",
+    "subject_id": "<exact-result-id>"
+  }
+]
+```
+
+`finalize-state` requires the State checkout at the exact plan-bound protected
+head and revalidates the pinned contract. It does not consume a serialized
+release binding: it independently verifies the exact upstream release
+repository, checkout commit, one-parent containment diff, and resulting tree
+before State work and repeats that binding verification before returning. It
+completes the whole incident group against that verified release commit/tree,
+requires unique strictly ordered
+event identities and times, and stages every new event plus every targeted
+`views/result-release-status` replacement. Before committing, it runs the
+pinned State validator and materializer and proves removed results are absent
+from the release queue. After committing, it also proves the version-5 public
+projection exposes terminal `removed`, makes the public solution unavailable,
+and contains none of the checked private incident field names.
+
+Both commands require an output path outside the release and State repositories.
+The output is exclusively created without following a final symlink and with
+mode `0600`; an existing path is never overwritten.
+
+The returned State CAS description remains private because it contains incident
+Git locators; it is not a push instruction or a public summary. An operator must
+read the protected head again and compare it with `expected_remote_head` before
+using the separately reviewed protected process. A mismatch is a hard conflict:
+do not rebase and do not generate replacement events. If the release commit
+landed but the State CAS was rejected, leave the exact local State commit
+intact. Rerunning `finalize-state` with the same protected head, release commit,
+plan, and identity document verifies and returns that same commit with
+`idempotent_resume = true`.
+
 ## True-confidentiality-incident procedure
 
 Do not wait for a tooling change before containment:
@@ -179,6 +230,24 @@ History cleanup reduces repository exposure; it cannot revoke earlier clones,
 forks, downloads, mirrors, or caches. Incident classification and disclosure
 decisions remain human security/legal decisions.
 
+The tool's explicit `--synthetic-confidentiality-qualification` mode exists
+only for harmless local fixtures carrying the exact tracked
+`.lean-eval-synthetic-release-removal-fixture` marker in the plan-bound base.
+It constructs the desired current target tree and exercises atomic multi-result
+State and consumer behavior, labeling every output as synthetic. This is
+intentionally semantic falsity with respect to a
+real confidentiality incident: a forward child commit does not remove the
+published bytes from history and provides no evidence about refs, forks,
+caches, Pages, artifacts, mirrors, GitHub Support cleanup, or prior downloads.
+It must never be cited as real-incident containment or used to restore public
+visibility. Without that explicit flag, confidentiality State finalization
+fails closed pending the approved history-cleanup procedure.
+The flag is required independently by `finalize-release` and `finalize-state`.
+Every synthetic stage and final document is marked push-prohibited, denies a
+remote update, and omits executable CAS/ref fields; the CAS precondition helper
+also rejects it. These labels do not convert the local synthetic commit into
+incident evidence.
+
 ## Required forward State correction
 
 State schema version 1 defines a direct, system-authored `release.removed`
@@ -192,6 +261,12 @@ trees it also rechecks the relevant Git modes, blob IDs, and SHA-256s and parses
 the reviewed event schema to prove the closed top-level fields, system actor,
 exact payload fields, release-path grammar, and shared-path bound agree with the
 event skeleton it emits.
+
+Release-repository CI also checks out this exact State commit by immutable SHA
+and runs a full harmless publication/removal fixture through its real
+`validate_state.py`, `materialize_state.py`, and `public_projection.py` entry
+points. The smaller unit doubles remain for focused fault injection, but are
+not the compatibility evidence for the pinned production consumers.
 
 Each `required_state_corrections[].status` is `ready_after_containment`. Its
 `event_skeleton` fixes the event type, subject, cause, system actor, incident
@@ -225,8 +300,12 @@ Maintainers must still decide:
 - the public wording and stable-link behavior for erroneous versus confidential
   removals;
 - the exact approved GitHub history-cleanup/support procedure, including refs,
-  forks, caches, Pages, artifacts, mirrors, and restoration evidence; and
-- evidence repository ownership, retention, access, and disclosure policy.
+  forks, caches, Pages, artifacts, mirrors, and restoration evidence;
+- evidence repository ownership, retention, access, and disclosure policy; and
+- whether an owner-requested retraction that returns `removal_required` uses
+  this operator lane, what evidence and approval it requires, and what public
+  wording it receives. Until that decision is reviewed, the local finalizer
+  rejects `owner_retraction` rather than treating it as an erroneous publication.
 
 The current tooling restricts evidence to the production State or audit
 repository. Expanding that allowlist requires a reviewed decision that the new
