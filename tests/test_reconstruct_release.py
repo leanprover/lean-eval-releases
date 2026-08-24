@@ -39,6 +39,7 @@ class ReconstructionTests(unittest.TestCase):
         qualification = {
             "schema_version": 1,
             "environment": "production",
+            "mode": "publication",
             "release_repository": "leanprover/lean-eval-releases",
             "release_commit": "a" * 40,
             "state_repository": "leanprover/lean-eval-state",

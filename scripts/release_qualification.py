@@ -126,6 +126,10 @@ def qualify_repository(
     resolved = root.resolve(strict=True)
     if root.is_symlink() or not resolved.is_dir():
         raise QualificationError("qualified repository root must be a directory")
+    if pathlib.Path(_git(resolved, "rev-parse", "--show-toplevel")).resolve() != resolved:
+        raise QualificationError("qualified repository root is not the Git toplevel")
+    if _git(resolved, "rev-parse", "--is-shallow-repository") != "false":
+        raise QualificationError("qualified repository must have complete history")
     origin = _git(resolved, "remote", "get-url", "origin")
     match = GITHUB_ORIGIN.fullmatch(origin.removesuffix(".git"))
     if match is None or match.group(1).lower() != expected_repository.lower():
@@ -181,6 +185,7 @@ def build_qualification(
     return {
         "schema_version": 1,
         "environment": environment,
+        "mode": mode,
         "release_repository": contract["release"]["repository"],
         "release_commit": release_commit,
         "state_repository": contract["state"]["repository"],

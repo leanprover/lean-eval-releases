@@ -26,6 +26,7 @@ STATE_RELEASE_CONTRACT_COMMIT = "cf1a1f0d62ebfda9c51a64c1b3b375fe26218f75"
 CONTROLLER_QUALIFICATION_FIELDS = {
     "schema_version",
     "environment",
+    "mode",
     "release_repository",
     "release_commit",
     "state_repository",
@@ -286,6 +287,7 @@ def validate_controller_binding(value: Any) -> dict[str, Any]:
         qualification["schema_version"] != 1
         or isinstance(qualification["schema_version"], bool)
         or qualification["environment"] != "production"
+        or qualification["mode"] != "publication"
         or qualification["release_repository"]
         != "leanprover/lean-eval-releases"
         or qualification["state_repository"] != "leanprover/lean-eval-state"
@@ -392,6 +394,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("queue", type=pathlib.Path)
     parser.add_argument("--trusted-as-of", required=True)
     parser.add_argument("--controller-qualification", type=pathlib.Path)
+    parser.add_argument("--require-controller-qualification", action="store_true")
     parser.add_argument("--output", required=True, type=pathlib.Path)
     args = parser.parse_args(argv)
     try:
@@ -399,6 +402,8 @@ def main(argv: list[str] | None = None) -> int:
         qualification = None if args.controller_qualification is None else json.loads(
             args.controller_qualification.read_text(encoding="utf-8")
         )
+        if args.require_controller_qualification and qualification is None:
+            raise ReleaseError("controller qualification is required")
         plan = plan_next(queue, args.trusted_as_of, qualification)
         args.output.write_text(
             json.dumps(plan, ensure_ascii=True, indent=2, sort_keys=True) + "\n",

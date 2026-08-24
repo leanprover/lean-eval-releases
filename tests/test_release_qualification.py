@@ -73,6 +73,19 @@ class ReleaseQualificationTests(unittest.TestCase):
             qualification["acceptance_snapshot_sha256"],
             canonical_json_digest(snapshot, "acceptance-snapshot"),
         )
+        self.assertEqual(qualification["mode"], "preflight")
+        with self.assertRaisesRegex(ReleaseError, "identity is invalid"):
+            plan_next(queue, "2026-10-20T06:07:05.000Z", qualification)
+        qualification = build_qualification(
+            self.contract(),
+            queue,
+            snapshot,
+            environment="production",
+            publication_enabled="true",
+            mode="publication",
+            release_commit="a" * 40,
+            state_commit="b" * 40,
+        )
         plan = plan_next(queue, "2026-10-20T06:07:05.000Z", qualification)
         self.assertEqual(plan["request"]["controller"], qualification)
 
@@ -211,6 +224,11 @@ class ReleaseQualificationTests(unittest.TestCase):
             )
             with self.assertRaisesRegex(QualificationError, "does not descend"):
                 qualify_repository(root, "leanprover/lean-eval-state", "0" * 40)
+
+            shallow = root / ".git" / "shallow"
+            shallow.write_text(head + "\n", encoding="ascii")
+            with self.assertRaisesRegex(QualificationError, "complete history"):
+                qualify_repository(root, "leanprover/lean-eval-state", minimum)
 
 
 if __name__ == "__main__":

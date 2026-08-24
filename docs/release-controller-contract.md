@@ -21,13 +21,15 @@ creates, installs, reads, or tests an AWS credential.
 
 Before planning work, `scripts/release_qualification.py` fails closed unless
 both local checkouts are tracked-clean, are the exact fetched `origin/main`,
-and have the expected GitHub origin. Production State must also descend from
+have complete history, resolve at their Git toplevel, and have the expected
+GitHub origin. Production State must also descend from
 the reviewed `release.started`, `release.published`, `release.failed`, and
 owner opt-out contract commit recorded in the credential contract. Full Git
 history is checked out because interrupted-release recovery must inspect the
 commit that first published a release path.
 
-The source-free qualification records the exact controller and State commits,
+The source-free qualification records its `preflight` or `publication` mode,
+the exact controller and State commits,
 State event count and digest, and canonical SHA-256 digests of both State
 materializations consumed by the run: the release queue and acceptance
 snapshot. Each digest is SHA-256 over its distinct
@@ -36,10 +38,12 @@ UTF-8 JSON with lexicographically sorted object keys and no insignificant
 whitespace. A Unicode-containing test vector freezes the encoding. The
 production planner copies that closed object into the execution
 plan. Reconstruction validates the object and refuses an acceptance snapshot
-whose canonical bytes do not match the plan. The queue digest and its State
+whose canonical JSON value does not match the plan. The queue digest and its State
 source provenance are checked before planning. Synthetic and credentialed
 staging tools remain backward compatible and never create a production
-qualification.
+qualification. A preflight qualification is deliberately rejected by the
+production planner; the production workflow also asserts that an execution
+plan contains a production, publication-mode qualification.
 
 The controller's mutation protocol remains compare-and-swap and idempotent:
 
@@ -51,8 +55,13 @@ The controller's mutation protocol remains compare-and-swap and idempotent:
    digest.
 4. If publication succeeds but the terminal callback is lost, a later run
    reconstructs evidence from full release history and records
-   `release.published`; otherwise, after the recovery interval, it records one
-   retryable interruption. Re-running recovery is deterministic.
+   `release.published`. This also converges if the first run recorded a
+   retryable failure after pushing but before exporting its commit: the next
+   attempt validates the already-published tree and source against the newly
+   reconstructed allowlist, recovers its first-publishing commit, and records
+   the terminal event without overwriting the release. Otherwise, after the
+   recovery interval, it records one retryable interruption. Re-running
+   recovery is deterministic.
 
 The publication workflow must remain disabled until the rollout runbook's
 external staging and credential gates have passed and an operator deliberately

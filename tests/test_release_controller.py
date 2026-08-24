@@ -6,6 +6,7 @@ import datetime as dt
 import hashlib
 import json
 import pathlib
+import re
 import tempfile
 import unittest
 
@@ -84,10 +85,22 @@ class ReleaseControllerTests(unittest.TestCase):
         self.assertIn("secrets.PRODUCTION_STATE_CONTROLLER_KEY", workflow)
         self.assertIn("secrets.AUDIT_READ_KEY", workflow)
         self.assertIn("vars.AWS_RELEASE_UNWRAP_ROLE_ARN", workflow)
-        self.assertGreaterEqual(workflow.count("fetch-depth: 0"), 2)
+        self.assertRegex(
+            workflow,
+            re.compile(
+                r"- uses: actions/checkout@[0-9a-f]{40}\n"
+                r"        with:\n"
+                r"          ref: main\n"
+                r"          fetch-depth: 0\n"
+                r"          persist-credentials: true"
+            ),
+        )
         self.assertIn("scripts/release_qualification.py", workflow)
         self.assertIn("--mode publication", workflow)
         self.assertIn("--controller-qualification", workflow)
+        self.assertIn("--require-controller-qualification", workflow)
+        self.assertIn(".request.controller.mode", workflow)
+        self.assertIn(".request.controller.environment", workflow)
         self.assertIn(
             "configuration/release-controller-credential-contract-v1.json",
             workflow,
@@ -100,6 +113,8 @@ class ReleaseControllerTests(unittest.TestCase):
         self.assertIn("state-event failed", workflow)
         self.assertNotIn("upload-artifact", workflow)
         self.assertNotIn("actions/download-artifact", workflow)
+        self.assertIn('if [ -e "$release_path" ]', workflow)
+        self.assertIn("git log --diff-filter=A", workflow)
 
     def test_production_credential_preflight_is_manual_and_nonmutating(self) -> None:
         workflow = (
