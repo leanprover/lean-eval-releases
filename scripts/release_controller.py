@@ -34,7 +34,6 @@ from release_orchestrator import (
 )
 from release_tree import tree_digest
 
-
 ARCHIVE_KEY_ID = re.compile(r"ak1_[0-9a-f]{64}")
 ADAPTER = re.compile(r"[a-z][a-z0-9-]{0,63}-v[1-9][0-9]*")
 AGE_RECIPIENT = re.compile(r"age1[0-9a-z]{40,4090}")
@@ -205,8 +204,14 @@ def _canonical_base64(value: Any, label: str, maximum: int) -> bytes:
         decoded = base64.b64decode(raw, validate=True)
     except ValueError as error:
         raise ControllerError(f"{label} is not valid base64") from error
-    if not decoded or len(decoded) > maximum or base64.b64encode(decoded).decode("ascii") != raw:
-        raise ControllerError(f"{label} is empty, noncanonical, or exceeds its size limit")
+    if (
+        not decoded
+        or len(decoded) > maximum
+        or base64.b64encode(decoded).decode("ascii") != raw
+    ):
+        raise ControllerError(
+            f"{label} is empty, noncanonical, or exceeds its size limit"
+        )
     return decoded
 
 
@@ -236,7 +241,11 @@ def validate_sidecar(value: Any, ciphertext: bytes) -> dict[str, Any]:
         raise ControllerError("sidecar submission_public must be boolean")
     for field in ("submitter", "model"):
         value = sidecar[field]
-        if not isinstance(value, str) or not value.strip() or len(value.encode("utf-8")) > 256:
+        if (
+            not isinstance(value, str)
+            or not value.strip()
+            or len(value.encode("utf-8")) > 256
+        ):
             raise ControllerError(f"sidecar {field} is invalid")
     _bounded_integer(sidecar["size_bytes_plaintext_tar"], "sidecar plaintext size")
     _match(DIGEST, sidecar["sha256_plaintext_tar"], "sidecar plaintext digest")
@@ -244,14 +253,20 @@ def validate_sidecar(value: Any, ciphertext: bytes) -> dict[str, Any]:
         sidecar["size_bytes_ciphertext"], "sidecar ciphertext size"
     )
     if ciphertext_size != len(ciphertext):
-        raise ControllerError("sidecar ciphertext size does not match the archive bytes")
+        raise ControllerError(
+            "sidecar ciphertext size does not match the archive bytes"
+        )
     _match(DIGEST, sidecar["sha256_ciphertext"], "sidecar ciphertext digest")
     _match(COMMIT, sidecar["benchmark_commit"], "sidecar benchmark commit")
     archived_at = sidecar["archived_at"]
-    if not isinstance(archived_at, str) or re.fullmatch(
-        r"(?!0000-)[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z",
-        archived_at,
-    ) is None:
+    if (
+        not isinstance(archived_at, str)
+        or re.fullmatch(
+            r"(?!0000-)[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z",
+            archived_at,
+        )
+        is None
+    ):
         raise ControllerError("sidecar archived_at is not canonical UTC seconds")
     try:
         parsed_archive_time = dt.datetime.fromisoformat(archived_at[:-1] + "+00:00")
@@ -260,10 +275,14 @@ def validate_sidecar(value: Any, ciphertext: bytes) -> dict[str, Any]:
     if parsed_archive_time.strftime("%Y-%m-%dT%H:%M:%SZ") != archived_at:
         raise ControllerError("sidecar archived_at is not a real timestamp")
     workflow_run = sidecar["archiver_workflow_run"]
-    if not isinstance(workflow_run, str) or re.fullmatch(
-        r"https://github\.com/leanprover/lean-eval-submissions/actions/runs/[1-9][0-9]*",
-        workflow_run,
-    ) is None:
+    if (
+        not isinstance(workflow_run, str)
+        or re.fullmatch(
+            r"https://github\.com/leanprover/lean-eval-submissions/actions/runs/[1-9][0-9]*",
+            workflow_run,
+        )
+        is None
+    ):
         raise ControllerError("sidecar archiver_workflow_run is invalid")
     if "problem_ids" in sidecar:
         problems = sidecar["problem_ids"]
@@ -275,8 +294,12 @@ def validate_sidecar(value: Any, ciphertext: bytes) -> dict[str, Any]:
             or problems != sorted(problems)
             or any(PROBLEM.fullmatch(item) is None for item in problems)
         ):
-            raise ControllerError("sidecar problem_ids is not a sorted unique problem list")
-    if "evaluator_verdict" in sidecar and not isinstance(sidecar["evaluator_verdict"], dict):
+            raise ControllerError(
+                "sidecar problem_ids is not a sorted unique problem list"
+            )
+    if "evaluator_verdict" in sidecar and not isinstance(
+        sidecar["evaluator_verdict"], dict
+    ):
         raise ControllerError("sidecar evaluator_verdict must be an object")
     return sidecar
 
@@ -288,14 +311,20 @@ def validate_envelope(value: Any) -> dict[str, Any]:
         raise ControllerError("key envelope schema_version must be integer 1")
     submission_id = _match(UUID7, envelope["submission_id"], "envelope submission_id")
     _match(DIGEST, envelope["archive_ciphertext_sha256"], "envelope archive digest")
-    recipient = _match(AGE_RECIPIENT, envelope["age_recipient"], "envelope age recipient")
+    recipient = _match(
+        AGE_RECIPIENT, envelope["age_recipient"], "envelope age recipient"
+    )
     if envelope["data_key_id"] != archive_key_id(submission_id, recipient):
-        raise ControllerError("envelope data_key_id does not match submission and recipient")
+        raise ControllerError(
+            "envelope data_key_id does not match submission and recipient"
+        )
     _match(ARCHIVE_KEY_ID, envelope["data_key_id"], "envelope data_key_id")
     _match(ADAPTER, envelope["adapter"], "envelope adapter")
     wrapped = envelope["wrapped_identity"]
     if not isinstance(wrapped, str) or len(wrapped) > MAX_WRAPPED_BYTES:
-        raise ControllerError("envelope wrapped_identity exceeds its encoded size limit")
+        raise ControllerError(
+            "envelope wrapped_identity exceeds its encoded size limit"
+        )
     _canonical_base64(wrapped, "envelope wrapped_identity", MAX_WRAPPED_BYTES)
     return envelope
 
@@ -310,9 +339,10 @@ def capability_digest(value: Any) -> str:
         separators=(",", ":"),
         sort_keys=True,
     ).encode("utf-8")
-    return "uc1_" + hashlib.sha256(
-        b"lean-eval-unwrap-capability-v1\0" + canonical
-    ).hexdigest()
+    return (
+        "uc1_"
+        + hashlib.sha256(b"lean-eval-unwrap-capability-v1\0" + canonical).hexdigest()
+    )
 
 
 def prepare_unwrap(
@@ -395,11 +425,15 @@ def staging_smoke_plan(queue_value: Any, submission_id: str) -> dict[str, Any]:
         task for task in queue["tasks"] if task["submission_id"] == submission_id
     ]
     if len(matches) != 1:
-        raise ControllerError("staging submission must have exactly one queueable release")
+        raise ControllerError(
+            "staging submission must have exactly one queueable release"
+        )
     return plan_next(queue, matches[0]["release_at"])
 
 
-def unwrap_identity(request_value: Any, response_value: Any, metadata_value: Any) -> bytes:
+def unwrap_identity(
+    request_value: Any, response_value: Any, metadata_value: Any
+) -> bytes:
     request = _object(request_value, "unwrap request")
     _fields(request, UNWRAP_FIELDS, "unwrap request")
     metadata = _object(metadata_value, "Lambda metadata")
@@ -459,7 +493,9 @@ def started_event(
     except (ReleaseError, ValueError, TypeError) as error:
         raise ControllerError(str(error)) from error
     transition = plan["started_transition"]
-    occurred_at = event_timestamp(trusted_now, plan["request"]["release"]["eligible_at"])
+    occurred_at = event_timestamp(
+        trusted_now, plan["request"]["release"]["eligible_at"]
+    )
     return {
         "schema_version": 1,
         "event_id": _event_id(occurred_at, random_bytes),
@@ -490,7 +526,11 @@ def terminal_event(
     _match(UUID7, started.get("event_id"), "release.started event_id")
     subject = _match(RESULT_ID, started.get("subject_id"), "release.started subject")
     payload = _object(started.get("payload"), "release.started payload")
-    if set(payload) != {"attempt"} or type(payload["attempt"]) is not int or payload["attempt"] < 1:
+    if (
+        set(payload) != {"attempt"}
+        or type(payload["attempt"]) is not int
+        or payload["attempt"] < 1
+    ):
         raise ControllerError("release.started attempt is invalid")
     occurred_at = event_timestamp(trusted_now, started.get("occurred_at"))
     terminal_payload: dict[str, Any] = {"attempt": payload["attempt"]}
@@ -547,6 +587,9 @@ def recover_running(
         key=lambda item: (str(item.get("occurred_at")), str(item.get("result_id"))),
     )
     result_id = _match(RESULT_ID, task.get("result_id"), "release task result_id")
+    submission_id = _match(
+        UUID7, task.get("submission_id"), "release task submission_id"
+    )
     event_id = _match(UUID7, task.get("event_id"), "release task event_id")
     occurred_at = task.get("occurred_at")
     started_at = parse_timestamp(occurred_at, "release task occurred_at")
@@ -584,6 +627,7 @@ def recover_running(
             "schema_version": 1,
             "kind": "published",
             "result_id": result_id,
+            "submission_id": submission_id,
             "release_path": relative,
             "tree_digest": digest,
             "started_event": started,
@@ -643,7 +687,9 @@ def main(argv: list[str] | None = None) -> int:
             plan = _read(args.plan, "release plan")
             sidecar = _read(args.sidecar, "archive sidecar")
             ciphertext = args.ciphertext.read_bytes()
-            _write(args.output, prepare_unwrap(plan, sidecar, ciphertext, args.trusted_now))
+            _write(
+                args.output, prepare_unwrap(plan, sidecar, ciphertext, args.trusted_now)
+            )
         elif args.command == "unwrap-identity":
             result = unwrap_identity(
                 _read(args.request, "unwrap request"),
@@ -688,7 +734,9 @@ def main(argv: list[str] | None = None) -> int:
                     args.trusted_now,
                     args.kind,
                     reason_code=args.reason_code,
-                    retryable=None if args.retryable is None else args.retryable == "true",
+                    retryable=None
+                    if args.retryable is None
+                    else args.retryable == "true",
                     repository_commit=args.repository_commit,
                     tree_digest=args.tree_digest,
                     release_path=args.release_path,

@@ -6,6 +6,7 @@ import datetime as dt
 import hashlib
 import json
 import pathlib
+import re
 import tempfile
 import unittest
 
@@ -22,7 +23,6 @@ from scripts.release_controller import (
     uuid7,
 )
 from scripts.release_orchestrator import plan_next
-
 
 ROOT = pathlib.Path(__file__).parents[1]
 NOW = "2026-10-20T06:07:05.000Z"
@@ -74,6 +74,8 @@ class ReleaseControllerTests(unittest.TestCase):
             encoding="utf-8"
         )
         self.assertIn("cron: '23 4 * * *'", workflow)
+        self.assertIn("github.repository == 'leanprover/lean-eval-releases'", workflow)
+        self.assertIn("github.ref == 'refs/heads/main'", workflow)
         self.assertIn("vars.PUBLICATION_ENABLED == 'true'", workflow)
         self.assertIn("environment: release-production", workflow)
         self.assertIn("id-token: write", workflow)
@@ -81,6 +83,26 @@ class ReleaseControllerTests(unittest.TestCase):
         self.assertIn("secrets.PRODUCTION_STATE_CONTROLLER_KEY", workflow)
         self.assertIn("secrets.AUDIT_READ_KEY", workflow)
         self.assertIn("vars.AWS_RELEASE_UNWRAP_ROLE_ARN", workflow)
+        self.assertRegex(
+            workflow,
+            re.compile(
+                r"- uses: actions/checkout@[0-9a-f]{40}\n"
+                r"        with:\n"
+                r"          ref: main\n"
+                r"          fetch-depth: 0\n"
+                r"          persist-credentials: true"
+            ),
+        )
+        self.assertIn("scripts/release_qualification.py", workflow)
+        self.assertIn("--mode publication", workflow)
+        self.assertIn("--controller-qualification", workflow)
+        self.assertIn("--require-controller-qualification", workflow)
+        self.assertIn(".request.controller.mode", workflow)
+        self.assertIn(".request.controller.environment", workflow)
+        self.assertIn(
+            "configuration/release-controller-credential-contract-v1.json",
+            workflow,
+        )
         self.assertIn("repository: leanprover/lean-eval-audit", workflow)
         self.assertIn("ref: ${{ steps.plan.outputs.archive_commit }}", workflow)
         self.assertIn("lean-eval-archive-unwrap-production", workflow)
@@ -89,16 +111,22 @@ class ReleaseControllerTests(unittest.TestCase):
         self.assertIn("state-event failed", workflow)
         self.assertNotIn("upload-artifact", workflow)
         self.assertNotIn("actions/download-artifact", workflow)
+        self.assertIn("scripts/classify_release_publication.py", workflow)
+        self.assertIn("--history-only", workflow)
+        self.assertIn("publishing-manifest.json", workflow)
+        self.assertIn("jq -er .repository_commit", workflow)
+        self.assertIn("jq -er --arg result", workflow)
+        self.assertNotIn("git log --diff-filter=A --format=%H -1", workflow)
 
     def test_production_credential_preflight_is_manual_and_nonmutating(self) -> None:
         workflow = (
-            ROOT
-            / ".github/workflows/verify-production-controller-credentials.yml"
+            ROOT / ".github/workflows/verify-production-controller-credentials.yml"
         ).read_text(encoding="utf-8")
         self.assertIn("workflow_dispatch:", workflow)
         self.assertNotIn("schedule:", workflow)
         self.assertNotIn("pull_request:", workflow)
         self.assertNotIn("push:\n", workflow)
+        self.assertIn("github.repository == 'leanprover/lean-eval-releases'", workflow)
         self.assertIn("github.ref == 'refs/heads/main'", workflow)
         self.assertIn("inputs.confirm_publication_disabled == true", workflow)
         self.assertIn("environment: release-production", workflow)
@@ -112,7 +140,10 @@ class ReleaseControllerTests(unittest.TestCase):
         self.assertNotIn("secrets.AUDIT_READ_KEY", workflow)
         self.assertIn("PUBLICATION_ENABLED must remain absent or false", workflow)
         self.assertIn("python state/scripts/state.py --root state validate", workflow)
-        self.assertIn("--output \"$RUNNER_TEMP/state-views\"", workflow)
+        self.assertIn('--output "$RUNNER_TEMP/state-views"', workflow)
+        self.assertGreaterEqual(workflow.count("fetch-depth: 0"), 2)
+        self.assertIn("scripts/release_qualification.py", workflow)
+        self.assertIn("--mode preflight", workflow)
         self.assertEqual(workflow.count("push --dry-run --porcelain"), 1)
         self.assertIn("':(exclude)state'", workflow)
         self.assertNotIn("git commit", workflow)
@@ -123,7 +154,9 @@ class ReleaseControllerTests(unittest.TestCase):
         self.assertNotIn("aws ", workflow)
         self.assertNotIn("upload-artifact", workflow)
 
-    def test_staging_release_smoke_is_exact_decrypt_only_and_source_artifact_free(self) -> None:
+    def test_staging_release_smoke_is_exact_decrypt_only_and_source_artifact_free(
+        self,
+    ) -> None:
         workflow = (
             ROOT / ".github/workflows/credentialed-release-staging-smoke.yml"
         ).read_text(encoding="utf-8")
@@ -169,7 +202,9 @@ class ReleaseControllerTests(unittest.TestCase):
         self.assertEqual(capability["max_uses"], 1)
         self.assertEqual(capability["archive_commit"], "b" * 40)
 
-    def test_staging_smoke_selects_one_scheduled_submission_without_changing_embargo(self) -> None:
+    def test_staging_smoke_selects_one_scheduled_submission_without_changing_embargo(
+        self,
+    ) -> None:
         queue = json.loads(
             (ROOT / "tests/fixtures/release-queue-v1.json").read_text(encoding="utf-8")
         )
@@ -229,7 +264,9 @@ class ReleaseControllerTests(unittest.TestCase):
             "capability_digest": capability_digest(request["capability"]),
             "plaintext_identity_base64": base64.b64encode(identity).decode("ascii"),
         }
-        self.assertEqual(unwrap_identity(request, response, {"StatusCode": 200}), identity)
+        self.assertEqual(
+            unwrap_identity(request, response, {"StatusCode": 200}), identity
+        )
         changed = {**response, "request_id": "0198abcd-0000-7000-8000-000000000099"}
         with self.assertRaisesRegex(ControllerError, "exact request"):
             unwrap_identity(request, changed, {"StatusCode": 200})
@@ -240,14 +277,19 @@ class ReleaseControllerTests(unittest.TestCase):
                 {"StatusCode": 200, "FunctionError": "Unhandled"},
             )
 
-    def test_state_events_preserve_causation_attempt_and_publication_evidence(self) -> None:
+    def test_state_events_preserve_causation_attempt_and_publication_evidence(
+        self,
+    ) -> None:
         started = started_event(
             self.plan,
             NOW,
             random_bytes=bytes(range(10)),
         )
         self.assertEqual(started["event_type"], "release.started")
-        self.assertEqual(started["causation_event_id"], self.plan["started_transition"]["causation_event_id"])
+        self.assertEqual(
+            started["causation_event_id"],
+            self.plan["started_transition"]["causation_event_id"],
+        )
         self.assertEqual(started["payload"], {"attempt": 2})
 
         published = terminal_event(
@@ -271,11 +313,14 @@ class ReleaseControllerTests(unittest.TestCase):
             retryable=True,
             random_bytes=bytes(range(10, 20)),
         )
-        self.assertEqual(failed["payload"], {
-            "attempt": 2,
-            "reason_code": "provider_error",
-            "retryable": True,
-        })
+        self.assertEqual(
+            failed["payload"],
+            {
+                "attempt": 2,
+                "reason_code": "provider_error",
+                "retryable": True,
+            },
+        )
 
     def test_interrupted_release_recovery_is_fail_closed_and_idempotent(self) -> None:
         task = copy.deepcopy(
@@ -298,9 +343,9 @@ class ReleaseControllerTests(unittest.TestCase):
             self.assertEqual(failed["kind"], "failed")
             self.assertEqual(failed["reason_code"], "controller_interrupted")
 
-            release_root = root.joinpath(*(
-                f"releases/2026/10/{task['result_id']}".split("/")
-            ))
+            release_root = root.joinpath(
+                *(f"releases/2026/10/{task['result_id']}".split("/"))
+            )
             release_root.mkdir(parents=True)
             for name, content in (
                 ("Submission.lean", b"example : True := by trivial\n"),
@@ -312,7 +357,10 @@ class ReleaseControllerTests(unittest.TestCase):
                 path.chmod(0o644)
             published = recover_running(domain, root, NOW)
             self.assertEqual(published["kind"], "published")
-            self.assertEqual(published["release_path"], f"releases/2026/10/{task['result_id']}")
+            self.assertEqual(
+                published["release_path"], f"releases/2026/10/{task['result_id']}"
+            )
+            self.assertEqual(published["submission_id"], task["submission_id"])
             self.assertRegex(published["tree_digest"], r"^[0-9a-f]{64}$")
 
             recent = copy.deepcopy(domain)

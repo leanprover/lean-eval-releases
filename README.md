@@ -92,6 +92,7 @@ then invoke this provider-neutral reconstruction tool.
 `Publish due source release` is the credentialed production controller. Its
 daily schedule is inert unless the repository variable `PUBLICATION_ENABLED`
 is exactly `true`; a manual run additionally requires an explicit confirmation.
+It also refuses any repository or ref other than the exact upstream `main`.
 It materializes the private production State repository through a read/write
 deploy key scoped only to that repository, selects at most one due result,
 appends `release.started` with a non-forced compare-and-swap push, retrieves the
@@ -101,6 +102,16 @@ Lambda-invoker role, consumes one five-minute `lean-eval-release` capability,
 drops AWS authority before decryption, reconstructs the allowlisted public
 tree, and publishes with a second deploy key scoped only to this repository.
 The terminal State event pins the exact release commit, path, and tree digest.
+
+Before planning, the controller checks both full-history Git checkouts against
+the closed credential contract, requires exact tracked-clean `origin/main`
+commits, and requires production State to descend from the reviewed release
+event contract. A source-free qualification binds the exact controller commit,
+State commit and event provenance, release-queue bytes, and acceptance-snapshot
+bytes into the execution plan. Reconstruction rechecks the acceptance snapshot
+binding. The detailed authority, compare-and-swap, idempotence, and recovery
+contract is in
+[`docs/release-controller-contract.md`](docs/release-controller-contract.md).
 
 No plaintext or identity artifact is uploaded. A pre-publication failure is
 recorded as retryable. If a runner disappears after `release.started`, the next
@@ -129,7 +140,8 @@ publication-disabled preflight for the controller's two write-capable deploy
 keys. It runs only from protected `main` in `release-production`, shares the
 controller's non-cancelling concurrency group, and fails unless the repository
 publication variable remains absent or exactly `false`. It validates and
-materializes the exact live production State checkout, then uses
+materializes the exact live production State checkout, creates the same exact
+source-free qualification in non-publishing mode, then uses
 `git push --dry-run` against the already-current `main` SHA in each repository.
 This contacts GitHub's write-side `receive-pack` service and proves the matching
 key is accepted without updating either ref. The workflow has no OIDC

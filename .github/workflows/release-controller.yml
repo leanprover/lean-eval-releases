@@ -22,6 +22,8 @@ concurrency:
 jobs:
   publish-one:
     if: >-
+      github.repository == 'leanprover/lean-eval-releases' &&
+      github.ref == 'refs/heads/main' &&
       vars.PUBLICATION_ENABLED == 'true' &&
       (github.event_name == 'schedule' || inputs.confirm_publication == true)
     environment: release-production
@@ -32,6 +34,8 @@ jobs:
       # this public repository and is the ruleset's publication bypass.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
+          ref: main
+          fetch-depth: 0
           persist-credentials: true
           ssh-key: ${{ secrets.RELEASE_PUBLISH_KEY }}
 
@@ -41,6 +45,7 @@ jobs:
           repository: leanprover/lean-eval-state
           ref: main
           path: state
+          fetch-depth: 0
           persist-credentials: true
           ssh-key: ${{ secrets.PRODUCTION_STATE_CONTROLLER_KEY }}
 
@@ -49,6 +54,8 @@ jobs:
           python-version: '3.11.10'
 
       - name: Validate controller and materialize exact production State
+        env:
+          PUBLICATION_ENABLED: ${{ vars.PUBLICATION_ENABLED }}
         run: |
           set -euo pipefail
           test "$(jq -r .environment state/state.json)" = production
@@ -56,6 +63,17 @@ jobs:
           python state/scripts/state.py --root state validate
           python state/scripts/state.py --root state materialize \
             --output "$RUNNER_TEMP/state-views"
+          python scripts/release_qualification.py \
+            --contract configuration/release-controller-credential-contract-v1.json \
+            --release-root . \
+            --state-root state \
+            --queue "$RUNNER_TEMP/state-views/release-queue.json" \
+            --acceptance-snapshot \
+              "$RUNNER_TEMP/state-views/release-acceptance-snapshot.json" \
+            --environment production \
+            --publication-enabled "$PUBLICATION_ENABLED" \
+            --mode publication \
+            --output "$RUNNER_TEMP/release-controller-qualification.json"
 
       - name: Classify an interrupted release before selecting new work
         id: recovery
@@ -78,9 +96,17 @@ jobs:
             > "$RUNNER_TEMP/release-started-event.json"
           if [ "$RECOVERY_KIND" = published ]; then
             release_path=$(jq -r .release_path "$RUNNER_TEMP/release-recovery.json")
+            submission_id=$(jq -er .submission_id "$RUNNER_TEMP/release-recovery.json")
             tree_digest=$(jq -r .tree_digest "$RUNNER_TEMP/release-recovery.json")
-            repository_commit=$(git log --diff-filter=A --format=%H -1 -- "$release_path")
-            test "$repository_commit" != ""
+            python scripts/classify_release_publication.py \
+              --release-root . \
+              --release-path "$release_path" \
+              --submission-id "$submission_id" \
+              --history-only \
+              --output "$RUNNER_TEMP/recovered-publication-classification.json"
+            test "$(jq -er .kind "$RUNNER_TEMP/recovered-publication-classification.json")" = existing
+            repository_commit=$(jq -er .repository_commit \
+              "$RUNNER_TEMP/recovered-publication-classification.json")
             git show "$repository_commit:release-manifest.json" \
               > "$RUNNER_TEMP/recovered-manifest.json"
             generated_at=$(jq -r .generated_at "$RUNNER_TEMP/recovered-manifest.json")
@@ -133,6 +159,9 @@ jobs:
           python scripts/release_orchestrator.py \
             "$RUNNER_TEMP/state-views/release-queue.json" \
             --trusted-as-of "$trusted_now" \
+            --controller-qualification \
+              "$RUNNER_TEMP/release-controller-qualification.json" \
+            --require-controller-qualification \
             --output "$RUNNER_TEMP/release-plan.json"
           kind=$(jq -r .kind "$RUNNER_TEMP/release-plan.json")
           case "$kind" in
@@ -143,6 +172,8 @@ jobs:
             echo "kind=$kind"
             echo "trusted_now=$trusted_now"
             if [ "$kind" = execution ]; then
+              test "$(jq -r .request.controller.mode "$RUNNER_TEMP/release-plan.json")" = publication
+              test "$(jq -r .request.controller.environment "$RUNNER_TEMP/release-plan.json")" = production
               echo "archive_commit=$(jq -r .request.archive.archive_commit "$RUNNER_TEMP/release-plan.json")"
             fi
           } >> "$GITHUB_OUTPUT"
@@ -214,11 +245,12 @@ jobs:
           curl --proto '=https' --tlsv1.2 --fail --silent --show-error --location \
             https://github.com/FiloSottile/age/releases/download/v1.3.1/age-v1.3.1-linux-amd64.tar.gz \
             --output "$RUNNER_TEMP/age.tar.gz"
-          echo "bdc69c09cbdd6cf8b1f333d372a1f58247b3a33146406333e30c0f26e8f51377  $RUNNER_TEMP/age.tar.gz" \
-            | sha256sum --check --strict
+          printf '%s  %s\n' \
+            bdc69c09cbdd6cf8b1f333d372a1f58247b3a33146406333e30c0f26e8f51377 \
+            "$RUNNER_TEMP/age.tar.gz" | sha256sum --check --strict
           tar --extract --gzip --file "$RUNNER_TEMP/age.tar.gz" --directory "$RUNNER_TEMP"
           install -m 0555 "$RUNNER_TEMP/age/age" "$RUNNER_TEMP/age-bin"
-          test "$($RUNNER_TEMP/age-bin --version)" = v1.3.1
+          test "$("$RUNNER_TEMP/age-bin" --version)" = v1.3.1
           rm -rf "$RUNNER_TEMP/age" "$RUNNER_TEMP/age.tar.gz"
 
       - name: Build one five-minute release capability
@@ -300,41 +332,71 @@ jobs:
             --state-acceptance-snapshot \
               "$RUNNER_TEMP/state-views/release-acceptance-snapshot.json" \
             --bundle-root "$RUNNER_TEMP/reconstructed"
+          echo "trusted_now=$trusted_now" >> "$GITHUB_OUTPUT"
           rm -f "$RUNNER_TEMP/source.tar.gz" "$RUNNER_TEMP/archive.tar.age" \
             "$RUNNER_TEMP/archive-sidecar.json"
 
       - name: Publish one append-only release commit
         if: steps.plan.outputs.kind == 'execution'
         id: publish
+        env:
+          TRUSTED_NOW: ${{ steps.reconstruct.outputs.trusted_now }}
         run: |
           set -euo pipefail
           result_id=$(jq -r .request.result.result_id "$RUNNER_TEMP/release-plan.json")
           release_path=$(jq -r .request.release.path "$RUNNER_TEMP/release-plan.json")
           submission_id=$(jq -r .request.submission.submission_id "$RUNNER_TEMP/release-plan.json")
-          test ! -e "$release_path"
-          test ! -e "sources/$submission_id.tar.gz"
-          mkdir -p "$(dirname "$release_path")" sources
-          cp -a "$RUNNER_TEMP/reconstructed/$release_path" "$release_path"
-          cp "$RUNNER_TEMP/reconstructed/sources/$submission_id.tar.gz" \
-            "sources/$submission_id.tar.gz"
-          cp "$RUNNER_TEMP/reconstructed/release-manifest.json" release-manifest.json
-          python scripts/validate_manifest.py release-manifest.json \
-            --trusted-as-of "$(jq -r .generated_at release-manifest.json)" \
-            --state-acceptance-snapshot \
-              "$RUNNER_TEMP/state-views/release-acceptance-snapshot.json" \
-            --bundle-root .
-          tree_digest=$(jq -r --arg result "$result_id" \
-            '.entries[] | select(.result_id == $result) | .release_tree_sha256' \
-            release-manifest.json)
-          test "$tree_digest" != null
-          git config user.name lean-eval-release-controller
-          git config user.email lean-eval-release-controller@users.noreply.github.com
-          git add "$release_path" "sources/$submission_id.tar.gz" release-manifest.json
-          git diff --cached --check
-          git commit -m "Publish delayed source $result_id"
-          git push origin HEAD:main
+          python scripts/classify_release_publication.py \
+            --release-root . \
+            --reconstructed-root "$RUNNER_TEMP/reconstructed" \
+            --release-path "$release_path" \
+            --submission-id "$submission_id" \
+            --output "$RUNNER_TEMP/release-publication-classification.json"
+          publication_kind=$(jq -er .kind "$RUNNER_TEMP/release-publication-classification.json")
+          if [ "$publication_kind" = existing ]; then
+            repository_commit=$(jq -er .repository_commit \
+              "$RUNNER_TEMP/release-publication-classification.json")
+            git show "$repository_commit:release-manifest.json" \
+              > "$RUNNER_TEMP/publishing-manifest.json"
+            generated_at=$(jq -er .generated_at "$RUNNER_TEMP/publishing-manifest.json")
+            python scripts/validate_manifest.py "$RUNNER_TEMP/publishing-manifest.json" \
+              --trusted-as-of "$generated_at" \
+              --state-acceptance-snapshot \
+                "$RUNNER_TEMP/state-views/release-acceptance-snapshot.json" \
+              --bundle-root .
+            tree_digest=$(jq -er --arg result "$result_id" --arg path "$release_path" \
+              '.entries[] | select(.result_id == $result and .release_path == $path) | .release_tree_sha256' \
+              "$RUNNER_TEMP/publishing-manifest.json")
+          elif [ "$publication_kind" = new ]; then
+            mkdir -p "$(dirname "$release_path")" sources
+            cp -a "$RUNNER_TEMP/reconstructed/$release_path" "$release_path"
+            if [ "$(jq -r .bundle_exists "$RUNNER_TEMP/release-publication-classification.json")" = false ]; then
+              cp "$RUNNER_TEMP/reconstructed/sources/$submission_id.tar.gz" \
+                "sources/$submission_id.tar.gz"
+            fi
+            cp "$RUNNER_TEMP/reconstructed/release-manifest.json" release-manifest.json
+            python scripts/validate_manifest.py release-manifest.json \
+              --trusted-as-of "$TRUSTED_NOW" \
+              --state-acceptance-snapshot \
+                "$RUNNER_TEMP/state-views/release-acceptance-snapshot.json" \
+              --bundle-root .
+            tree_digest=$(jq -er --arg result "$result_id" --arg path "$release_path" \
+              '.entries[] | select(.result_id == $result and .release_path == $path) | .release_tree_sha256' \
+              release-manifest.json)
+            git config user.name lean-eval-release-controller
+            git config user.email lean-eval-release-controller@users.noreply.github.com
+            git add "$release_path" "sources/$submission_id.tar.gz" release-manifest.json
+            git diff --cached --check
+            git commit -m "Publish delayed source $result_id"
+            git push origin HEAD:main
+            repository_commit=$(git rev-parse HEAD)
+          else
+            echo "publication classifier returned an unknown kind" >&2
+            exit 1
+          fi
+          [[ "$tree_digest" =~ ^[0-9a-f]{64}$ ]]
           {
-            echo "repository_commit=$(git rev-parse HEAD)"
+            echo "repository_commit=$repository_commit"
             echo "tree_digest=$tree_digest"
             echo "release_path=$release_path"
           } >> "$GITHUB_OUTPUT"
