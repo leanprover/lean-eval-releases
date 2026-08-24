@@ -124,6 +124,18 @@ The protected `release-production` environment contains only:
 The workflow receives no archive writer, results writer, intake, OAuth, GitHub
 App, KMS, DynamoDB, or general AWS credential.
 
+`Verify production release controller credentials` is a separate manual,
+publication-disabled preflight for the controller's two write-capable deploy
+keys. It runs only from protected `main` in `release-production`, shares the
+controller's non-cancelling concurrency group, and fails unless the repository
+publication variable remains absent or exactly `false`. It validates and
+materializes the exact live production State checkout, then uses
+`git push --dry-run` against the already-current `main` SHA in each repository.
+This contacts GitHub's write-side `receive-pack` service and proves the matching
+key is accepted without updating either ref. The workflow has no OIDC
+permission, AWS step, audit key, release planner/controller invocation,
+artifact upload, commit, or non-dry-run push.
+
 `Prove one credentialed staging release unwrap` is the non-publishing launch
 gate for this boundary. Given an accepted staging submission, it derives the
 exact queued release from validated staging State, checks out the pinned audit
