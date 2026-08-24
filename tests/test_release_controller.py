@@ -14,8 +14,8 @@ import unittest
 from scripts.release_controller import (
     ControllerError,
     archive_key_id,
-    capability_digest,
     canonical_json,
+    capability_digest,
     plan_release_state_transition,
     prepare_unwrap,
     recover_running,
@@ -431,9 +431,8 @@ class ReleaseControllerTests(unittest.TestCase):
         running["status"] = "running"
         mutations.append(running)
         for current in mutations:
-            with self.subTest(current=current):
-                with self.assertRaises(ControllerError):
-                    plan_release_state_transition(current, started, "1" * 40)
+            with self.subTest(current=current), self.assertRaises(ControllerError):
+                plan_release_state_transition(current, started, "1" * 40)
 
     def test_stages_event_and_status_from_one_exact_state_head(self) -> None:
         started = started_event(
