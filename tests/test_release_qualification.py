@@ -13,6 +13,8 @@ sys.path.insert(0, str(ROOT / "scripts"))
 
 import plan_release_removal as removal_module
 from release_orchestrator import (
+    STAGING_STATE_RELEASE_CONTRACT_COMMIT,
+    STAGING_STATE_RELEASE_CONTRACT_TREES,
     STATE_RELEASE_CONTRACT_COMMIT,
     STATE_RELEASE_CONTRACT_TREES,
     ReleaseError,
@@ -25,6 +27,7 @@ from release_qualification import (
     qualify_repository,
     validate_contract,
 )
+from verify_release_state_contract import STATE_CONTRACTS
 
 
 class ReleaseQualificationTests(unittest.TestCase):
@@ -79,6 +82,25 @@ class ReleaseQualificationTests(unittest.TestCase):
             {
                 "schema": "473e694e0d40026a7ec0ad33430ea622e3e03b66",
                 "scripts": "ab90d1a997e3bfc7292dbf1a515db1abb4278c01",
+            },
+        )
+        self.assertEqual(
+            STATE_CONTRACTS["staging"],
+            (
+                "leanprover/lean-eval-state-staging",
+                STAGING_STATE_RELEASE_CONTRACT_COMMIT,
+                STAGING_STATE_RELEASE_CONTRACT_TREES,
+            ),
+        )
+        self.assertEqual(
+            STAGING_STATE_RELEASE_CONTRACT_COMMIT,
+            "6a386bb4362b10dd8d7743e826c82f1a0011c0c3",
+        )
+        self.assertEqual(
+            STAGING_STATE_RELEASE_CONTRACT_TREES,
+            {
+                "schema": "95a264fb61bffcec21ae91055675baf9c9ed78fc",
+                "scripts": "41962d05ebc32821a342ae6bc9cd6c2fa88db3eb",
             },
         )
 
@@ -188,6 +210,7 @@ class ReleaseQualificationTests(unittest.TestCase):
             (root / "scripts").mkdir()
             (root / "scripts" / "validate.py").write_text("pass\n", encoding="utf-8")
             (root / "contract").write_text("one\n", encoding="utf-8")
+            (root / ".gitignore").write_text("ignored.py\n", encoding="utf-8")
             subprocess.run(["git", "-C", root, "add", "."], check=True)
             subprocess.run(["git", "-C", root, "commit", "-qm", "contract"], check=True)
             minimum = subprocess.check_output(
@@ -281,6 +304,26 @@ class ReleaseQualificationTests(unittest.TestCase):
                 )
 
             (root / "runtime").write_text("two\n", encoding="utf-8")
+            (root / "untracked.py").write_text("raise SystemExit\n", encoding="utf-8")
+            with self.assertRaisesRegex(QualificationError, "untracked files"):
+                qualify_repository(
+                    root,
+                    "leanprover/lean-eval-state",
+                    minimum,
+                    contract_trees,
+                    reject_untracked=True,
+                )
+            (root / "untracked.py").unlink()
+            (root / "ignored.py").write_text("raise SystemExit\n", encoding="utf-8")
+            with self.assertRaisesRegex(QualificationError, "untracked files"):
+                qualify_repository(
+                    root,
+                    "leanprover/lean-eval-state",
+                    minimum,
+                    contract_trees,
+                    reject_untracked=True,
+                )
+            (root / "ignored.py").unlink()
             subprocess.run(
                 [
                     "git",

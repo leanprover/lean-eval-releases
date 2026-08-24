@@ -159,6 +159,10 @@ commit with separate read-only keys, consumes one staging release-purpose
 capability, drops AWS and OIDC authority, and verifies the decrypted tarball
 against the private sidecar. It neither reconstructs before the embargo nor
 writes State or this repository, and it uploads no artifact.
+Before executing any checked-out staging State code, the workflow requires the
+checkout to be clean, complete-history, and exact `origin/main`, to descend from
+the reviewed staging release contract, and to retain its exact reviewed
+`schema` and `scripts` trees.
 
 `scripts/plan_release_removal.py` is the Git-read-only first response tool for
 an erroneous publication or confidentiality incident. From exact local

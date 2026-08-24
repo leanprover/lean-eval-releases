@@ -101,6 +101,7 @@ class ReleaseControllerTests(unittest.TestCase):
         )
         self.assertIn("scripts/release_qualification.py", workflow)
         self.assertIn("scripts/verify_release_state_contract.py", workflow)
+        self.assertIn("--environment production", workflow)
         self.assertLess(
             workflow.index("scripts/verify_release_state_contract.py"),
             workflow.index("state/scripts/state.py"),
@@ -117,6 +118,7 @@ class ReleaseControllerTests(unittest.TestCase):
         self.assertIn("repository: leanprover/lean-eval-audit", workflow)
         self.assertIn("ref: ${{ steps.plan.outputs.archive_commit }}", workflow)
         self.assertIn("lean-eval-archive-unwrap-production", workflow)
+        self.assertIn("--max-filesize 16777216", workflow)
         self.assertIn("state-event started", workflow)
         self.assertIn("state-event published", workflow)
         self.assertIn("state-event failed", workflow)
@@ -164,12 +166,18 @@ class ReleaseControllerTests(unittest.TestCase):
         self.assertGreaterEqual(workflow.count("fetch-depth: 0"), 2)
         self.assertIn("scripts/release_qualification.py", workflow)
         self.assertIn("scripts/verify_release_state_contract.py", workflow)
+        self.assertIn("--environment production", workflow)
         self.assertLess(
             workflow.index("scripts/verify_release_state_contract.py"),
             workflow.index("state/scripts/state.py"),
         )
         self.assertIn("--mode preflight", workflow)
         self.assertEqual(workflow.count("push --dry-run --porcelain"), 1)
+        push_lines = [
+            line for line in workflow.splitlines() if re.search(r"\bgit\b.*\bpush\b", line)
+        ]
+        self.assertEqual(len(push_lines), 1)
+        self.assertIn("--dry-run", push_lines[0])
         self.assertIn("':(exclude)state'", workflow)
         self.assertNotIn("git commit", workflow)
         self.assertNotIn("state.py --root state append", workflow)
@@ -185,6 +193,9 @@ class ReleaseControllerTests(unittest.TestCase):
         workflow = (
             ROOT / ".github/workflows/credentialed-release-staging-smoke.yml"
         ).read_text(encoding="utf-8")
+        self.assertIn("github.repository == 'leanprover/lean-eval-releases'", workflow)
+        self.assertIn("github.ref == 'refs/heads/main'", workflow)
+        self.assertIn("inputs.confirm_staging_smoke == true", workflow)
         self.assertIn("environment: release-staging", workflow)
         self.assertIn("repository: leanprover/lean-eval-state-staging", workflow)
         self.assertIn("repository: leanprover/lean-eval-audit", workflow)
@@ -193,12 +204,45 @@ class ReleaseControllerTests(unittest.TestCase):
         self.assertIn("secrets.AUDIT_READ_KEY", workflow)
         self.assertIn("lean-eval-archive-unwrap-staging", workflow)
         self.assertIn("staging-smoke-plan", workflow)
+        self.assertGreaterEqual(workflow.count("fetch-depth: 0"), 2)
+        self.assertRegex(
+            workflow,
+            re.compile(
+                r"- uses: actions/checkout@[0-9a-f]{40}\n"
+                r"        with:\n"
+                r"          ref: \$\{\{ github\.sha \}\}\n"
+                r"          fetch-depth: 0\n"
+                r"          persist-credentials: false"
+            ),
+        )
+        self.assertIn('test "$(git rev-parse HEAD)" = "$GITHUB_SHA"', workflow)
+        self.assertIn("scripts/verify_release_state_contract.py", workflow)
+        self.assertIn("--environment staging", workflow)
+        self.assertLess(
+            workflow.index("scripts/verify_release_state_contract.py"),
+            workflow.index("state/scripts/state.py"),
+        )
+        self.assertIn("--max-filesize 16777216", workflow)
         self.assertIn("sha256sum", workflow)
         self.assertNotIn("RELEASE_PUBLISH_KEY", workflow)
         self.assertNotIn("state-event", workflow)
         self.assertNotIn("git push", workflow)
         self.assertNotIn("upload-artifact", workflow)
         self.assertNotIn("reconstruct_release.py", workflow)
+
+    def test_every_external_action_is_pinned_to_a_full_commit(self) -> None:
+        action = re.compile(r"^\s*(?:- )?uses:\s*([^\s#]+)", re.MULTILINE)
+        references: list[str] = []
+        for path in sorted((ROOT / ".github/workflows").glob("*.y*ml")):
+            workflow = path.read_text(encoding="utf-8")
+            workflow_references = action.findall(workflow)
+            references.extend(workflow_references)
+            for reference in workflow_references:
+                with self.subTest(workflow=path.name, reference=reference):
+                    if reference.startswith("./"):
+                        continue
+                    self.assertRegex(reference, r"^[^@]+@[0-9a-f]{40}$")
+        self.assertEqual(len(references), 18)
 
     def request(self) -> dict[str, object]:
         return prepare_unwrap(

@@ -29,6 +29,13 @@ STATE_RELEASE_CONTRACT_TREES = {
     "schema": "473e694e0d40026a7ec0ad33430ea622e3e03b66",
     "scripts": "ab90d1a997e3bfc7292dbf1a515db1abb4278c01",
 }
+STAGING_STATE_RELEASE_CONTRACT_COMMIT = (
+    "6a386bb4362b10dd8d7743e826c82f1a0011c0c3"
+)
+STAGING_STATE_RELEASE_CONTRACT_TREES = {
+    "schema": "95a264fb61bffcec21ae91055675baf9c9ed78fc",
+    "scripts": "41962d05ebc32821a342ae6bc9cd6c2fa88db3eb",
+}
 CONTROLLER_QUALIFICATION_FIELDS = {
     "schema_version",
     "environment",
