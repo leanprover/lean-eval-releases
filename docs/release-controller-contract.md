@@ -57,9 +57,15 @@ The controller's mutation protocol remains compare-and-swap and idempotent:
    reconstructs evidence from full release history and records
    `release.published`. This also converges if the first run recorded a
    retryable failure after pushing but before exporting its commit: the next
-   attempt validates the already-published tree and source against the newly
-   reconstructed allowlist, recovers its first-publishing commit, and records
-   the terminal event without overwriting the release. Otherwise, after the
+   attempt validates the already-published tree against its historical
+   manifest and compares the deterministic source bundle plus stable public
+   source/metadata fields against a fresh reconstruction. The run-specific
+   generation clock and the controller checkout's current license text are
+   deliberately excluded from the fresh comparison. It then recovers the
+   first-publishing commit and records the terminal event without overwriting
+   the release. A bundle already published for another result from the same
+   submission is compared and reused. A release path present in history but
+   later removed is never republished. Otherwise, after the
    recovery interval, it records one retryable interruption. Re-running
    recovery is deterministic.
 

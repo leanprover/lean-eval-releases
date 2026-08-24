@@ -23,15 +23,14 @@ from release_qualification import (
 class ReleaseQualificationTests(unittest.TestCase):
     def contract(self) -> dict[str, object]:
         return json.loads(
-            (ROOT / "configuration/release-controller-credential-contract-v1.json")
-            .read_text(encoding="utf-8")
+            (
+                ROOT / "configuration/release-controller-credential-contract-v1.json"
+            ).read_text(encoding="utf-8")
         )
 
     def queue(self) -> dict[str, object]:
         return json.loads(
-            (ROOT / "tests/fixtures/release-queue-v1.json").read_text(
-                encoding="utf-8"
-            )
+            (ROOT / "tests/fixtures/release-queue-v1.json").read_text(encoding="utf-8")
         )
 
     def snapshot(self) -> dict[str, object]:
@@ -45,9 +44,7 @@ class ReleaseQualificationTests(unittest.TestCase):
         contract = validate_contract(self.contract())
         self.assertEqual(contract["publication_latch"], "PUBLICATION_ENABLED")
         self.assertEqual(contract["audit"]["permission"], "contents-read")
-        self.assertEqual(
-            contract["release"]["credential"], "RELEASE_PUBLISH_KEY"
-        )
+        self.assertEqual(contract["release"]["credential"], "RELEASE_PUBLISH_KEY")
         self.assertEqual(
             contract["state"]["credential"], "PRODUCTION_STATE_CONTROLLER_KEY"
         )
@@ -113,9 +110,10 @@ class ReleaseQualificationTests(unittest.TestCase):
             ("publication", "false", "production"),
             ("publication", "true", "staging"),
         ):
-            with self.subTest(
-                mode=mode, enabled=enabled, environment=environment
-            ), self.assertRaises(QualificationError):
+            with (
+                self.subTest(mode=mode, enabled=enabled, environment=environment),
+                self.assertRaises(QualificationError),
+            ):
                 build_qualification(
                     self.contract(),
                     self.queue(),
@@ -139,7 +137,9 @@ class ReleaseQualificationTests(unittest.TestCase):
                 with self.assertRaises(QualificationError):
                     validate_contract(contract)
 
-    def test_local_repository_must_be_exact_origin_main_and_descend_from_pin(self) -> None:
+    def test_local_repository_must_be_exact_origin_main_and_descend_from_pin(
+        self,
+    ) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = pathlib.Path(temporary)
             subprocess.run(["git", "init", "-q", "-b", "main", root], check=True)

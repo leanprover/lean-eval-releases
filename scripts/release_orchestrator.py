@@ -13,7 +13,9 @@ from typing import Any
 
 from embargo import eligible_at, parse_utc_milliseconds
 
-UUID7 = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}")
+UUID7 = re.compile(
+    r"[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}"
+)
 RESULT_ID = re.compile(r"r2_[0-9a-f]{64}")
 LOGIN = re.compile(r"[a-z\d](?:[a-z\d-]{0,37}[a-z\d])?")
 PROBLEM = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}")
@@ -192,7 +194,9 @@ def canonical_release_path(result_identity: str, release_at: str) -> str:
 def _validate_task(value: Any, index: int) -> dict[str, Any]:
     label = f"tasks[{index}]"
     task = _object(value, label)
-    expected = TASK_FIELDS | ({"reason_code", "retryable"} if task.get("status") == "failed" else set())
+    expected = TASK_FIELDS | (
+        {"reason_code", "retryable"} if task.get("status") == "failed" else set()
+    )
     _fields(task, expected, label)
     identity = _match(RESULT_ID, task["result_id"], f"{label}.result_id")
     submission = _match(UUID7, task["submission_id"], f"{label}.submission_id")
@@ -206,9 +210,13 @@ def _validate_task(value: Any, index: int) -> dict[str, Any]:
     ):
         raise ReleaseError(f"{label}.declared_model is invalid")
     problem = _match(PROBLEM, task["problem_id"], f"{label}.problem_id")
-    revision = _safe_integer(task["statement_revision"], f"{label}.statement_revision", 1)
+    revision = _safe_integer(
+        task["statement_revision"], f"{label}.statement_revision", 1
+    )
     if identity != result_id(login, model, problem, revision):
-        raise ReleaseError(f"{label}.result_id does not match its deterministic identity")
+        raise ReleaseError(
+            f"{label}.result_id does not match its deterministic identity"
+        )
     for field in ("result_commit", "archive_commit"):
         _match(COMMIT, task[field], f"{label}.{field}")
     for field in ("result_tree_digest", "archive_ciphertext_sha256"):
@@ -239,7 +247,13 @@ def validate_release_queue(value: Any) -> dict[str, Any]:
     queue = _object(value, "release queue")
     _fields(
         queue,
-        {"schema_version", "environment", "source_event_count", "source_digest", "tasks"},
+        {
+            "schema_version",
+            "environment",
+            "source_event_count",
+            "source_digest",
+            "tasks",
+        },
         "release queue",
     )
     if queue["schema_version"] != 1 or isinstance(queue["schema_version"], bool):
@@ -265,7 +279,9 @@ def canonical_json_digest(value: Any, materialization: str) -> str:
     try:
         domain = domains[materialization]
     except KeyError as error:
-        raise ReleaseError("controller materialization digest domain is invalid") from error
+        raise ReleaseError(
+            "controller materialization digest domain is invalid"
+        ) from error
     encoded = json.dumps(
         value,
         allow_nan=False,
@@ -288,8 +304,7 @@ def validate_controller_binding(value: Any) -> dict[str, Any]:
         or isinstance(qualification["schema_version"], bool)
         or qualification["environment"] != "production"
         or qualification["mode"] != "publication"
-        or qualification["release_repository"]
-        != "leanprover/lean-eval-releases"
+        or qualification["release_repository"] != "leanprover/lean-eval-releases"
         or qualification["state_repository"] != "leanprover/lean-eval-state"
         or qualification["state_contract_commit"] != STATE_RELEASE_CONTRACT_COMMIT
     ):
@@ -310,7 +325,9 @@ def validate_controller_binding(value: Any) -> dict[str, Any]:
     return qualification
 
 
-def validate_controller_qualification(value: Any, queue: dict[str, Any]) -> dict[str, Any]:
+def validate_controller_qualification(
+    value: Any, queue: dict[str, Any]
+) -> dict[str, Any]:
     qualification = validate_controller_binding(value)
     if (
         qualification["environment"] != queue["environment"]
@@ -319,7 +336,9 @@ def validate_controller_qualification(value: Any, queue: dict[str, Any]) -> dict
         or qualification["release_queue_sha256"]
         != canonical_json_digest(queue, "release-queue")
     ):
-        raise ReleaseError("controller qualification does not bind the exact production queue")
+        raise ReleaseError(
+            "controller qualification does not bind the exact production queue"
+        )
     return qualification
 
 
@@ -329,8 +348,10 @@ def plan_next(
     controller_qualification: Any | None = None,
 ) -> dict[str, Any]:
     queue = validate_release_queue(queue_value)
-    qualification = None if controller_qualification is None else (
-        validate_controller_qualification(controller_qualification, queue)
+    qualification = (
+        None
+        if controller_qualification is None
+        else (validate_controller_qualification(controller_qualification, queue))
     )
     as_of = _timestamp(trusted_as_of, "trusted_as_of")
     eligible = [task for task in queue["tasks"] if task["release_at"] <= as_of]
@@ -399,8 +420,10 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         queue = json.loads(args.queue.read_text(encoding="utf-8"))
-        qualification = None if args.controller_qualification is None else json.loads(
-            args.controller_qualification.read_text(encoding="utf-8")
+        qualification = (
+            None
+            if args.controller_qualification is None
+            else json.loads(args.controller_qualification.read_text(encoding="utf-8"))
         )
         if args.require_controller_qualification and qualification is None:
             raise ReleaseError("controller qualification is required")
@@ -409,7 +432,13 @@ def main(argv: list[str] | None = None) -> int:
             json.dumps(plan, ensure_ascii=True, indent=2, sort_keys=True) + "\n",
             encoding="utf-8",
         )
-    except (OSError, UnicodeError, json.JSONDecodeError, ReleaseError, ValueError) as error:
+    except (
+        OSError,
+        UnicodeError,
+        json.JSONDecodeError,
+        ReleaseError,
+        ValueError,
+    ) as error:
         print(f"error: {error}", file=sys.stderr)
         return 1
     print(f"wrote release plan: {plan['kind']}")

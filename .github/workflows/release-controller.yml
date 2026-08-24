@@ -324,51 +324,57 @@ jobs:
             --state-acceptance-snapshot \
               "$RUNNER_TEMP/state-views/release-acceptance-snapshot.json" \
             --bundle-root "$RUNNER_TEMP/reconstructed"
+          echo "trusted_now=$trusted_now" >> "$GITHUB_OUTPUT"
           rm -f "$RUNNER_TEMP/source.tar.gz" "$RUNNER_TEMP/archive.tar.age" \
             "$RUNNER_TEMP/archive-sidecar.json"
 
       - name: Publish one append-only release commit
         if: steps.plan.outputs.kind == 'execution'
         id: publish
+        env:
+          TRUSTED_NOW: ${{ steps.reconstruct.outputs.trusted_now }}
         run: |
           set -euo pipefail
           result_id=$(jq -r .request.result.result_id "$RUNNER_TEMP/release-plan.json")
           release_path=$(jq -r .request.release.path "$RUNNER_TEMP/release-plan.json")
           submission_id=$(jq -r .request.submission.submission_id "$RUNNER_TEMP/release-plan.json")
-          if [ -e "$release_path" ] || [ -e "sources/$submission_id.tar.gz" ]; then
-            test -d "$release_path"
-            test -f "sources/$submission_id.tar.gz"
-            diff --recursive --no-dereference \
-              "$RUNNER_TEMP/reconstructed/$release_path" "$release_path"
-            cmp "$RUNNER_TEMP/reconstructed/sources/$submission_id.tar.gz" \
-              "sources/$submission_id.tar.gz"
-            python scripts/validate_manifest.py release-manifest.json \
-              --trusted-as-of "$(jq -r .generated_at release-manifest.json)" \
+          python scripts/classify_release_publication.py \
+            --release-root . \
+            --reconstructed-root "$RUNNER_TEMP/reconstructed" \
+            --release-path "$release_path" \
+            --submission-id "$submission_id" \
+            --output "$RUNNER_TEMP/release-publication-classification.json"
+          publication_kind=$(jq -er .kind "$RUNNER_TEMP/release-publication-classification.json")
+          if [ "$publication_kind" = existing ]; then
+            repository_commit=$(jq -er .repository_commit \
+              "$RUNNER_TEMP/release-publication-classification.json")
+            git show "$repository_commit:release-manifest.json" \
+              > "$RUNNER_TEMP/publishing-manifest.json"
+            generated_at=$(jq -er .generated_at "$RUNNER_TEMP/publishing-manifest.json")
+            python scripts/validate_manifest.py "$RUNNER_TEMP/publishing-manifest.json" \
+              --trusted-as-of "$generated_at" \
               --state-acceptance-snapshot \
                 "$RUNNER_TEMP/state-views/release-acceptance-snapshot.json" \
               --bundle-root .
-            tree_digest=$(jq -r --arg result "$result_id" \
-              '.entries[] | select(.result_id == $result) | .release_tree_sha256' \
-              release-manifest.json)
-            test "$tree_digest" != null
-            repository_commit=$(git log --diff-filter=A --format=%H -1 -- "$release_path")
-            test "$repository_commit" != ""
-            git merge-base --is-ancestor "$repository_commit" origin/main
-          else
+            tree_digest=$(jq -er --arg result "$result_id" --arg path "$release_path" \
+              '.entries[] | select(.result_id == $result and .release_path == $path) | .release_tree_sha256' \
+              "$RUNNER_TEMP/publishing-manifest.json")
+          elif [ "$publication_kind" = new ]; then
             mkdir -p "$(dirname "$release_path")" sources
             cp -a "$RUNNER_TEMP/reconstructed/$release_path" "$release_path"
-            cp "$RUNNER_TEMP/reconstructed/sources/$submission_id.tar.gz" \
-              "sources/$submission_id.tar.gz"
+            if [ "$(jq -r .bundle_exists "$RUNNER_TEMP/release-publication-classification.json")" = false ]; then
+              cp "$RUNNER_TEMP/reconstructed/sources/$submission_id.tar.gz" \
+                "sources/$submission_id.tar.gz"
+            fi
             cp "$RUNNER_TEMP/reconstructed/release-manifest.json" release-manifest.json
             python scripts/validate_manifest.py release-manifest.json \
-              --trusted-as-of "$(jq -r .generated_at release-manifest.json)" \
+              --trusted-as-of "$TRUSTED_NOW" \
               --state-acceptance-snapshot \
                 "$RUNNER_TEMP/state-views/release-acceptance-snapshot.json" \
               --bundle-root .
-            tree_digest=$(jq -r --arg result "$result_id" \
-              '.entries[] | select(.result_id == $result) | .release_tree_sha256' \
+            tree_digest=$(jq -er --arg result "$result_id" --arg path "$release_path" \
+              '.entries[] | select(.result_id == $result and .release_path == $path) | .release_tree_sha256' \
               release-manifest.json)
-            test "$tree_digest" != null
             git config user.name lean-eval-release-controller
             git config user.email lean-eval-release-controller@users.noreply.github.com
             git add "$release_path" "sources/$submission_id.tar.gz" release-manifest.json
@@ -376,7 +382,11 @@ jobs:
             git commit -m "Publish delayed source $result_id"
             git push origin HEAD:main
             repository_commit=$(git rev-parse HEAD)
+          else
+            echo "publication classifier returned an unknown kind" >&2
+            exit 1
           fi
+          [[ "$tree_digest" =~ ^[0-9a-f]{64}$ ]]
           {
             echo "repository_commit=$repository_commit"
             echo "tree_digest=$tree_digest"

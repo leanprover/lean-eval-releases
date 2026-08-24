@@ -34,9 +34,7 @@ CONTRACT_FIELDS = {
 }
 REPOSITORY_CONTRACT_FIELDS = {"repository", "credential", "permission"}
 MUTABLE_REPOSITORY_CONTRACT_FIELDS = REPOSITORY_CONTRACT_FIELDS | {"ref"}
-STATE_CONTRACT_FIELDS = MUTABLE_REPOSITORY_CONTRACT_FIELDS | {
-    "minimum_contract_commit"
-}
+STATE_CONTRACT_FIELDS = MUTABLE_REPOSITORY_CONTRACT_FIELDS | {"minimum_contract_commit"}
 GITHUB_ORIGIN = re.compile(
     r"(?:https://github\.com/|git@github\.com:)([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)"
 )
@@ -126,7 +124,10 @@ def qualify_repository(
     resolved = root.resolve(strict=True)
     if root.is_symlink() or not resolved.is_dir():
         raise QualificationError("qualified repository root must be a directory")
-    if pathlib.Path(_git(resolved, "rev-parse", "--show-toplevel")).resolve() != resolved:
+    if (
+        pathlib.Path(_git(resolved, "rev-parse", "--show-toplevel")).resolve()
+        != resolved
+    ):
         raise QualificationError("qualified repository root is not the Git toplevel")
     if _git(resolved, "rev-parse", "--is-shallow-repository") != "false":
         raise QualificationError("qualified repository must have complete history")
@@ -143,12 +144,24 @@ def qualify_repository(
     if minimum_commit is not None:
         try:
             subprocess.run(
-                ["git", "-C", str(resolved), "merge-base", "--is-ancestor", minimum_commit, head],
+                [
+                    "git",
+                    "-C",
+                    str(resolved),
+                    "merge-base",
+                    "--is-ancestor",
+                    minimum_commit,
+                    head,
+                ],
                 check=True,
                 capture_output=True,
                 timeout=10,
             )
-        except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as error:
+        except (
+            OSError,
+            subprocess.CalledProcessError,
+            subprocess.TimeoutExpired,
+        ) as error:
             raise QualificationError(
                 "State main does not descend from the reviewed release contract"
             ) from error
@@ -170,7 +183,9 @@ def build_qualification(
     queue = validate_release_queue(queue_value)
     load_state_snapshot(snapshot_value)
     if environment != "production" or queue["environment"] != environment:
-        raise QualificationError("controller requires the production State materialization")
+        raise QualificationError(
+            "controller requires the production State materialization"
+        )
     if mode == "preflight":
         if publication_enabled not in {"", "false"}:
             raise QualificationError("preflight requires publication absent or false")
@@ -242,7 +257,8 @@ def main(argv: list[str] | None = None) -> int:
         if args.output.exists() or args.output.is_symlink():
             raise QualificationError("refusing to overwrite qualification output")
         args.output.write_text(
-            json.dumps(qualification, ensure_ascii=True, indent=2, sort_keys=True) + "\n",
+            json.dumps(qualification, ensure_ascii=True, indent=2, sort_keys=True)
+            + "\n",
             encoding="utf-8",
         )
     except (QualificationError, OSError, ValueError) as error:
