@@ -17,6 +17,7 @@ import json
 import os
 import pathlib
 import re
+import subprocess
 import sys
 from typing import Any
 
@@ -43,6 +44,19 @@ BASE64 = re.compile(r"[A-Za-z0-9+/]+={0,2}")
 MAX_WRAPPED_BYTES = 16_384
 MAX_IDENTITY_BYTES = 4096
 MAX_SAFE_INTEGER = 9_007_199_254_740_991
+
+RELEASE_STATUS_FIELDS = {
+    "schema_version",
+    "result_id",
+    "authority_event_id",
+    "status",
+    "release_event_id",
+}
+CONTROLLER_RELEASE_TRANSITIONS = {
+    "release.started": ({"scheduled", "failed"}, "running"),
+    "release.published": ({"running"}, "published"),
+    "release.failed": ({"running"}, "failed"),
+}
 
 SIDECAR_REQUIRED_FIELDS = {
     "schema_version",
@@ -144,6 +158,232 @@ def _write(path: pathlib.Path, value: Any) -> None:
         json.dumps(value, ensure_ascii=True, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
     )
+
+
+def canonical_json(value: Any) -> str:
+    """Return State's byte-canonical operational-view representation."""
+    return json.dumps(value, ensure_ascii=True, indent=2, sort_keys=True) + "\n"
+
+
+def result_release_status_path(result_id: str) -> pathlib.PurePosixPath:
+    _match(RESULT_ID, result_id, "result_id")
+    return pathlib.PurePosixPath(
+        "views", "result-release-status", result_id[3:5], f"{result_id}.json"
+    )
+
+
+def release_event_path(event_id: str) -> pathlib.PurePosixPath:
+    _match(UUID7, event_id, "release event_id")
+    return pathlib.PurePosixPath(
+        "events", event_id.replace("-", "")[:2], f"{event_id}.json"
+    )
+
+
+def plan_release_state_transition(
+    current_value: Any,
+    event_value: Any,
+    protected_state_head: str,
+) -> dict[str, Any]:
+    """Bind one controller event and status replacement to one State head."""
+    _match(COMMIT, protected_state_head, "protected State head")
+    current = _object(current_value, "current result release status")
+    _fields(current, RELEASE_STATUS_FIELDS, "current result release status")
+    if current["schema_version"] != 1 or isinstance(current["schema_version"], bool):
+        raise ControllerError("current result release status schema_version is invalid")
+    result_id = _match(
+        RESULT_ID, current["result_id"], "current result release status result_id"
+    )
+    _match(
+        UUID7,
+        current["authority_event_id"],
+        "current result release status authority_event_id",
+    )
+    current_status = current["status"]
+    if current_status not in {
+        "not_scheduled",
+        "scheduled",
+        "running",
+        "published",
+        "failed",
+        "cancelled",
+        "removed",
+    }:
+        raise ControllerError("current result release status is invalid")
+    release_event_id = current["release_event_id"]
+    if current_status == "not_scheduled":
+        if release_event_id is not None:
+            raise ControllerError(
+                "not_scheduled result release status must not name a release event"
+            )
+    else:
+        _match(
+            UUID7,
+            release_event_id,
+            "current result release status release_event_id",
+        )
+
+    event = _object(event_value, "release transition event")
+    expected_event_fields = {
+        "schema_version",
+        "event_id",
+        "event_type",
+        "occurred_at",
+        "subject_id",
+        "causation_event_id",
+        "actor",
+        "payload",
+    }
+    _fields(event, expected_event_fields, "release transition event")
+    if event["schema_version"] != 1 or isinstance(event["schema_version"], bool):
+        raise ControllerError("release transition event schema_version is invalid")
+    event_id = _match(UUID7, event["event_id"], "release transition event_id")
+    kind = event["event_type"]
+    transition = CONTROLLER_RELEASE_TRANSITIONS.get(kind)
+    if transition is None:
+        raise ControllerError("release transition is not controller-writable")
+    allowed_current, next_status = transition
+    if event["subject_id"] != result_id:
+        raise ControllerError("release transition subject does not match status result")
+    if current_status not in allowed_current:
+        raise ControllerError(
+            f"release transition {kind} cannot follow status {current_status}"
+        )
+    if event["causation_event_id"] != release_event_id:
+        raise ControllerError(
+            "release transition cause does not match current status release event"
+        )
+    if event.get("actor") != {"kind": "system"}:
+        raise ControllerError("release transition must be system-authored")
+
+    after = {
+        **current,
+        "status": next_status,
+        "release_event_id": event_id,
+    }
+    status_path = result_release_status_path(result_id).as_posix()
+    return {
+        "schema_version": 1,
+        "protected_state_head": protected_state_head,
+        "event_path": release_event_path(event_id).as_posix(),
+        "status_path": status_path,
+        "status_before_sha256": hashlib.sha256(
+            canonical_json(current).encode("utf-8")
+        ).hexdigest(),
+        "status_after": after,
+    }
+
+
+def _git(
+    root: pathlib.Path, *arguments: str, check: bool = True
+) -> subprocess.CompletedProcess[bytes]:
+    try:
+        return subprocess.run(
+            ["git", "--no-replace-objects", "-C", str(root), *arguments],
+            check=check,
+            capture_output=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as error:
+        raise ControllerError("State Git inspection failed closed") from error
+
+
+def stage_release_state_transition(
+    state_root: pathlib.Path,
+    event_value: Any,
+    protected_state_head: str,
+) -> dict[str, Any]:
+    """Stage exactly one release event and its targeted status replacement."""
+    root = state_root.resolve(strict=True)
+    if state_root.is_symlink() or not root.is_dir():
+        raise ControllerError("State root must be a regular directory")
+    top = pathlib.Path(
+        _git(root, "rev-parse", "--show-toplevel").stdout.decode("utf-8").strip()
+    ).resolve()
+    if top != root:
+        raise ControllerError("State root is not the Git toplevel")
+    _match(COMMIT, protected_state_head, "protected State head")
+    head = _git(root, "rev-parse", "HEAD").stdout.decode("ascii").strip()
+    if head != protected_state_head:
+        raise ControllerError("State checkout moved from the protected State head")
+    dirty = _git(
+        root,
+        "status",
+        "--porcelain=v1",
+        "--untracked-files=all",
+        "--",
+        "events",
+        "state.json",
+        "views",
+    ).stdout
+    if dirty:
+        raise ControllerError("State event and operational-view tree is not clean")
+
+    event = _object(event_value, "release transition event")
+    subject = _match(RESULT_ID, event.get("subject_id"), "release transition subject")
+    relative_status = result_release_status_path(subject)
+    status_path = root.joinpath(*relative_status.parts)
+    if status_path.is_symlink() or not status_path.is_file():
+        raise ControllerError("targeted result release status must be a regular file")
+    try:
+        raw = status_path.read_bytes()
+        current = json.loads(raw.decode("utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as error:
+        raise ControllerError(
+            "targeted result release status is missing or unreadable"
+        ) from error
+    if raw != canonical_json(current).encode("utf-8"):
+        raise ControllerError("targeted result release status is not byte-canonical")
+    committed = _git(
+        root,
+        "show",
+        f"{protected_state_head}:{relative_status.as_posix()}",
+    ).stdout
+    if committed != raw:
+        raise ControllerError(
+            "targeted result release status is not bound to the protected State head"
+        )
+    plan = plan_release_state_transition(current, event, protected_state_head)
+    relative_event = pathlib.PurePosixPath(plan["event_path"])
+    event_path = root.joinpath(*relative_event.parts)
+    if event_path.exists() or event_path.is_symlink():
+        raise ControllerError("release transition event path already exists")
+    if (
+        _git(
+            root,
+            "cat-file",
+            "-e",
+            f"{protected_state_head}:{relative_event.as_posix()}",
+            check=False,
+        ).returncode
+        == 0
+    ):
+        raise ControllerError("release transition event already exists in State")
+
+    event_path.parent.mkdir(parents=True, exist_ok=True)
+    event_raw = canonical_json(event).encode("utf-8")
+    status_after_raw = canonical_json(plan["status_after"]).encode("utf-8")
+    event_path.write_bytes(event_raw)
+    status_path.write_bytes(status_after_raw)
+    _git(root, "add", "--", relative_event.as_posix(), relative_status.as_posix())
+    staged = {
+        line
+        for line in _git(root, "diff", "--cached", "--name-only", "--")
+        .stdout.decode("utf-8")
+        .splitlines()
+        if line
+    }
+    expected = {relative_event.as_posix(), relative_status.as_posix()}
+    if staged != expected:
+        raise ControllerError(
+            f"State transition staged unexpected paths: {sorted(staged ^ expected)}"
+        )
+    for relative, expected_raw in (
+        (relative_event, event_raw),
+        (relative_status, status_after_raw),
+    ):
+        if _git(root, "show", f":{relative.as_posix()}").stdout != expected_raw:
+            raise ControllerError("staged State transition bytes are not canonical")
+    return plan
 
 
 def parse_timestamp(value: Any, label: str) -> dt.datetime:
@@ -681,6 +921,12 @@ def main(argv: list[str] | None = None) -> int:
     staging.add_argument("--submission-id", required=True)
     staging.add_argument("--output", required=True, type=pathlib.Path)
 
+    transition = commands.add_parser("stage-state-transition")
+    transition.add_argument("--state-root", required=True, type=pathlib.Path)
+    transition.add_argument("--event", required=True, type=pathlib.Path)
+    transition.add_argument("--protected-state-head", required=True)
+    transition.add_argument("--output", required=True, type=pathlib.Path)
+
     args = parser.parse_args(argv)
     try:
         if args.command == "prepare-unwrap":
@@ -717,6 +963,15 @@ def main(argv: list[str] | None = None) -> int:
                     args.submission_id,
                 ),
             )
+        elif args.command == "stage-state-transition":
+            if args.output.exists() or args.output.is_symlink():
+                raise ControllerError(f"refusing to overwrite {args.output}")
+            plan = stage_release_state_transition(
+                args.state_root,
+                _read(args.event, "release transition event"),
+                args.protected_state_head,
+            )
+            _write(args.output, plan)
         elif args.kind == "started":
             if args.plan is None:
                 raise ControllerError("started event requires --plan")

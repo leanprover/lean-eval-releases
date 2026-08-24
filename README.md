@@ -95,13 +95,17 @@ is exactly `true`; a manual run additionally requires an explicit confirmation.
 It also refuses any repository or ref other than the exact upstream `main`.
 It materializes the private production State repository through a read/write
 deploy key scoped only to that repository, selects at most one due result,
-appends `release.started` with a non-forced compare-and-swap push, retrieves the
-exact audit commit, and verifies the schema-version-3 sidecar, KMS envelope,
-and ciphertext bytes agree. It then assumes only the production release
-Lambda-invoker role, consumes one five-minute `lean-eval-release` capability,
-drops AWS authority before decryption, reconstructs the allowlisted public
-tree, and publishes with a second deploy key scoped only to this repository.
-The terminal State event pins the exact release commit, path, and tree digest.
+atomically stages `release.started` and its exact targeted result release-status
+replacement, and commits them with a non-forced compare-and-swap push. A
+missing, stale, or mismatched status fails closed, and a rejected push is never
+rebased onto another State head. The controller then retrieves the exact audit
+commit and verifies that the schema-version-3 sidecar, KMS envelope, and
+ciphertext bytes agree. It assumes only the production release Lambda-invoker
+role, consumes one five-minute `lean-eval-release` capability, drops AWS
+authority before decryption, reconstructs the allowlisted public tree, and
+publishes with a second deploy key scoped only to this repository. The terminal
+State commit likewise atomically records the event and status replacement; its
+event pins the exact release commit, path, and tree digest.
 
 Before planning, the controller checks both full-history Git checkouts against
 the closed credential contract, requires exact tracked-clean `origin/main`

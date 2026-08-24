@@ -45,14 +45,28 @@ qualification. A preflight qualification is deliberately rejected by the
 production planner; the production workflow also asserts that an execution
 plan contains a production, publication-mode qualification.
 
-The controller's mutation protocol remains compare-and-swap and idempotent:
+The controller's mutation protocol remains compare-and-swap and idempotent.
+Every controller-authored release transition first reads the exact targeted
+`views/result-release-status/<prefix>/<result-id>.json` blob from the protected
+State head. `scripts/release_controller.py stage-state-transition` refuses a
+missing, noncanonical, dirty, or head-mismatched document, requires its current
+status and release-event marker to match the new event's causation, and stages
+exactly two paths: the immutable event and the replacement targeted status.
+The State validator checks that pair against the complete event graph before
+Git creates one commit. A normal, non-forced push is the only retry boundary;
+the workflow never rebases a prepared transition onto a different State head.
 
-1. A non-forced State push records `release.started` against its exact
-   causation event before any archive access.
+The resulting sequence is:
+
+1. A non-forced State push atomically records `release.started` and changes its
+   exact targeted status from `scheduled` or retryable `failed` to `running`
+   before any archive access.
 2. A non-forced release push publishes one append-only commit. A concurrent
    main update rejects the push rather than overwriting it.
-3. A terminal State push records the exact release commit, path, and tree
-   digest.
+3. A terminal State push atomically records the exact release commit, path,
+   and tree digest and replaces the same targeted status with `published`.
+   Failure and interrupted-run recovery use the identical two-path transition
+   for `failed` or recovered `published` state.
 4. If publication succeeds but the terminal callback is lost, a later run
    reconstructs evidence from full release history and records
    `release.published`. This also converges if the first run recorded a

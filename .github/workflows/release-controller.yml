@@ -133,22 +133,24 @@ jobs:
               --retryable true \
               --output "$RUNNER_TEMP/release-recovered-event.json"
           fi
-          event_id=$(jq -r .event_id "$RUNNER_TEMP/release-recovered-event.json")
-          python state/scripts/state.py --root state append \
-            "$RUNNER_TEMP/release-recovered-event.json"
-          event_path=$(find state/events -type f -name "$event_id.json" -print -quit)
-          test -n "$event_path"
+          state_head=$(git -C state rev-parse HEAD)
+          python scripts/release_controller.py stage-state-transition \
+            --state-root state \
+            --event "$RUNNER_TEMP/release-recovered-event.json" \
+            --protected-state-head "$state_head" \
+            --output "$RUNNER_TEMP/release-recovered-transition.json"
+          event_id=$(jq -er .event_id "$RUNNER_TEMP/release-recovered-event.json")
+          event_path=$(jq -er .event_path "$RUNNER_TEMP/release-recovered-transition.json")
+          status_path=$(jq -er .status_path "$RUNNER_TEMP/release-recovered-transition.json")
+          test -f "state/$event_path"
+          test -f "state/$status_path"
           git -C state config user.name lean-eval-release-controller
           git -C state config user.email lean-eval-release-controller@users.noreply.github.com
-          git -C state add "${event_path#state/}"
+          python state/scripts/state.py --root state \
+            --protected-main-commit "$state_head" validate
           git -C state commit -m "Recover interrupted release $event_id"
-          for attempt in 1 2 3 4 5; do
-            if git -C state push origin HEAD:main; then break; fi
-            test "$attempt" -lt 5
-            git -C state fetch origin main
-            git -C state rebase origin/main
-            python state/scripts/state.py --root state validate
-          done
+          test "$(git -C state rev-parse HEAD^)" = "$state_head"
+          git -C state push origin HEAD:main
 
       - name: Plan at the trusted workflow clock
         if: steps.recovery.outputs.kind == 'none'
@@ -189,25 +191,25 @@ jobs:
             --plan "$RUNNER_TEMP/release-plan.json" \
             --trusted-now "$TRUSTED_NOW" \
             --output "$RUNNER_TEMP/release-started-event.json"
-          event_id=$(jq -r .event_id "$RUNNER_TEMP/release-started-event.json")
-          python state/scripts/state.py --root state append \
-            "$RUNNER_TEMP/release-started-event.json"
+          state_head=$(git -C state rev-parse HEAD)
+          python scripts/release_controller.py stage-state-transition \
+            --state-root state \
+            --event "$RUNNER_TEMP/release-started-event.json" \
+            --protected-state-head "$state_head" \
+            --output "$RUNNER_TEMP/release-started-transition.json"
+          event_id=$(jq -er .event_id "$RUNNER_TEMP/release-started-event.json")
           git -C state config user.name lean-eval-release-controller
           git -C state config user.email lean-eval-release-controller@users.noreply.github.com
-          event_path=$(find state/events -type f -name "$event_id.json" -print -quit)
-          test -n "$event_path"
-          git -C state add "${event_path#state/}"
+          event_path=$(jq -er .event_path "$RUNNER_TEMP/release-started-transition.json")
+          status_path=$(jq -er .status_path "$RUNNER_TEMP/release-started-transition.json")
+          test -f "state/$event_path"
+          test -f "state/$status_path"
+          python state/scripts/state.py --root state \
+            --protected-main-commit "$state_head" validate
           git -C state commit -m "Start release $event_id"
-          for attempt in 1 2 3 4 5; do
-            if git -C state push origin HEAD:main; then
-              echo "recorded=true" >> "$GITHUB_OUTPUT"
-              break
-            fi
-            test "$attempt" -lt 5
-            git -C state fetch origin main
-            git -C state rebase origin/main
-            python state/scripts/state.py --root state validate
-          done
+          test "$(git -C state rev-parse HEAD^)" = "$state_head"
+          git -C state push origin HEAD:main
+          echo "recorded=true" >> "$GITHUB_OUTPUT"
 
       # This read-only key reaches only the private audit repository. Checking
       # out the State-pinned SHA avoids granting the controller an API token.
@@ -417,23 +419,23 @@ jobs:
             --tree-digest "$TREE_DIGEST" \
             --release-path "$RELEASE_PATH" \
             --output "$RUNNER_TEMP/release-terminal-event.json"
-          event_id=$(jq -r .event_id "$RUNNER_TEMP/release-terminal-event.json")
-          python state/scripts/state.py --root state append \
-            "$RUNNER_TEMP/release-terminal-event.json"
-          event_path=$(find state/events -type f -name "$event_id.json" -print -quit)
-          test -n "$event_path"
-          git -C state add "${event_path#state/}"
+          state_head=$(git -C state rev-parse HEAD)
+          python scripts/release_controller.py stage-state-transition \
+            --state-root state \
+            --event "$RUNNER_TEMP/release-terminal-event.json" \
+            --protected-state-head "$state_head" \
+            --output "$RUNNER_TEMP/release-terminal-transition.json"
+          event_id=$(jq -er .event_id "$RUNNER_TEMP/release-terminal-event.json")
+          event_path=$(jq -er .event_path "$RUNNER_TEMP/release-terminal-transition.json")
+          status_path=$(jq -er .status_path "$RUNNER_TEMP/release-terminal-transition.json")
+          test -f "state/$event_path"
+          test -f "state/$status_path"
+          python state/scripts/state.py --root state \
+            --protected-main-commit "$state_head" validate
           git -C state commit -m "Record published release $event_id"
-          for attempt in 1 2 3 4 5; do
-            if git -C state push origin HEAD:main; then
-              touch "$RUNNER_TEMP/release-terminal-recorded"
-              break
-            fi
-            test "$attempt" -lt 5
-            git -C state fetch origin main
-            git -C state rebase origin/main
-            python state/scripts/state.py --root state validate
-          done
+          test "$(git -C state rev-parse HEAD^)" = "$state_head"
+          git -C state push origin HEAD:main
+          touch "$RUNNER_TEMP/release-terminal-recorded"
 
       - name: Record a retryable failure if publication did not occur
         if: always() && steps.started.outputs.recorded == 'true' && steps.publish.outputs.repository_commit == ''
@@ -445,20 +447,22 @@ jobs:
             --reason-code controller_failed \
             --retryable true \
             --output "$RUNNER_TEMP/release-failed-event.json"
-          event_id=$(jq -r .event_id "$RUNNER_TEMP/release-failed-event.json")
-          python state/scripts/state.py --root state append \
-            "$RUNNER_TEMP/release-failed-event.json"
-          event_path=$(find state/events -type f -name "$event_id.json" -print -quit)
-          test -n "$event_path"
-          git -C state add "${event_path#state/}"
+          state_head=$(git -C state rev-parse HEAD)
+          python scripts/release_controller.py stage-state-transition \
+            --state-root state \
+            --event "$RUNNER_TEMP/release-failed-event.json" \
+            --protected-state-head "$state_head" \
+            --output "$RUNNER_TEMP/release-failed-transition.json"
+          event_id=$(jq -er .event_id "$RUNNER_TEMP/release-failed-event.json")
+          event_path=$(jq -er .event_path "$RUNNER_TEMP/release-failed-transition.json")
+          status_path=$(jq -er .status_path "$RUNNER_TEMP/release-failed-transition.json")
+          test -f "state/$event_path"
+          test -f "state/$status_path"
+          python state/scripts/state.py --root state \
+            --protected-main-commit "$state_head" validate
           git -C state commit -m "Record failed release $event_id"
-          for attempt in 1 2 3 4 5; do
-            if git -C state push origin HEAD:main; then break; fi
-            test "$attempt" -lt 5
-            git -C state fetch origin main
-            git -C state rebase origin/main
-            python state/scripts/state.py --root state validate
-          done
+          test "$(git -C state rev-parse HEAD^)" = "$state_head"
+          git -C state push origin HEAD:main
 
       - name: Remove controller scratch
         if: always()
