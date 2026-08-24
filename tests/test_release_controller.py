@@ -90,6 +90,39 @@ class ReleaseControllerTests(unittest.TestCase):
         self.assertNotIn("upload-artifact", workflow)
         self.assertNotIn("actions/download-artifact", workflow)
 
+    def test_production_credential_preflight_is_manual_and_nonmutating(self) -> None:
+        workflow = (
+            ROOT
+            / ".github/workflows/verify-production-controller-credentials.yml"
+        ).read_text(encoding="utf-8")
+        self.assertIn("workflow_dispatch:", workflow)
+        self.assertNotIn("schedule:", workflow)
+        self.assertNotIn("pull_request:", workflow)
+        self.assertNotIn("push:\n", workflow)
+        self.assertIn("github.ref == 'refs/heads/main'", workflow)
+        self.assertIn("inputs.confirm_publication_disabled == true", workflow)
+        self.assertIn("environment: release-production", workflow)
+        self.assertIn("group: lean-eval-release-controller-production", workflow)
+        self.assertIn("cancel-in-progress: false", workflow)
+        self.assertIn("contents: read", workflow)
+        self.assertNotIn("contents: write", workflow)
+        self.assertNotIn("id-token: write", workflow)
+        self.assertIn("secrets.RELEASE_PUBLISH_KEY", workflow)
+        self.assertIn("secrets.PRODUCTION_STATE_CONTROLLER_KEY", workflow)
+        self.assertNotIn("secrets.AUDIT_READ_KEY", workflow)
+        self.assertIn("PUBLICATION_ENABLED must remain absent or false", workflow)
+        self.assertIn("python state/scripts/state.py --root state validate", workflow)
+        self.assertIn("--output \"$RUNNER_TEMP/state-views\"", workflow)
+        self.assertEqual(workflow.count("push --dry-run --porcelain"), 1)
+        self.assertIn("':(exclude)state'", workflow)
+        self.assertNotIn("git commit", workflow)
+        self.assertNotIn("state.py --root state append", workflow)
+        self.assertNotIn("release_controller.py", workflow)
+        self.assertNotIn("release_orchestrator.py", workflow)
+        self.assertNotIn("configure-aws-credentials", workflow)
+        self.assertNotIn("aws ", workflow)
+        self.assertNotIn("upload-artifact", workflow)
+
     def test_staging_release_smoke_is_exact_decrypt_only_and_source_artifact_free(self) -> None:
         workflow = (
             ROOT / ".github/workflows/credentialed-release-staging-smoke.yml"
