@@ -17,9 +17,12 @@ from unittest import mock
 
 sys.path.insert(0, str(pathlib.Path(__file__).parents[1] / "scripts"))
 
+import plan_release_removal as removal_module
 from plan_release_removal import (
     MAX_DOCUMENT_BYTES,
     MAX_PLAN_OUTPUT_BYTES,
+    MAX_SHARED_RELEASE_PATHS,
+    RELEASE_PATH,
     RemovalPlanError,
     _blob,
     _git,
@@ -49,6 +52,60 @@ SECRET_MARKER = b"private-source-must-not-enter-the-plan"
 
 
 class ReleaseRemovalPlanTests(unittest.TestCase):
+    def test_pinned_state_contract_manifest_is_exact(self) -> None:
+        self.assertEqual(
+            removal_module.STATE_REMOVAL_CONTRACT_COMMIT,
+            "940a2a4f2e042c076a37b6c14190e072b786032c",
+        )
+        self.assertEqual(
+            removal_module.STATE_REMOVAL_CONTRACT_TREES,
+            {
+                "schema": "831016c5c2b63c0e38233378c7e62d690fb0fd16",
+                "scripts": "18e7abe53c981903cb92d1856125edde33bd840a",
+            },
+        )
+        self.assertEqual(
+            removal_module.STATE_REMOVAL_CONTRACT_COMPONENTS,
+            {
+                "schema/public-state-projection-v1.schema.json": (
+                    "9d6c546a2139f587d1a3c8d76c1df7674c4a9759",
+                    "74398c7c81dad719637bdad2e9c73974719a077beb3a1f4a503cd55bf4d93c58",
+                ),
+                "schema/public-state-projection-v2.schema.json": (
+                    "fc782883787ed654bcfc69ed15241e1cadee80df",
+                    "94dac7dcfbf3d322d5f72b20992e2950f8fa714641f2bb9ee6fd5b84d288a336",
+                ),
+                "schema/public-state-projection-v3.schema.json": (
+                    "cfd577d818119917a6060c06abd48d24f32028aa",
+                    "eea75447b8c13778b454f1313778068f9908c189724107a9e3be3635b00c5bee",
+                ),
+                "schema/state-event-v1.schema.json": (
+                    "c2b4e85ddd18b7a3d41c705cfa1454ff8f879da1",
+                    "cae8e11dad8b87997a09fa66f5500ea75a0e0b7ff4221ac14a20459cf6970589",
+                ),
+                "schema/result-overlays-v1.schema.json": (
+                    "41d4078133d6854bf8de839873a3f58e9ba1afd1",
+                    "245324f32265d0476ca45e55ec5fbe2363c47da852d2641ddc292df0c5d9d474",
+                ),
+                "scripts/materialize_state.py": (
+                    "656c30abf35ec69e645602193496a765ee2de7eb",
+                    "be02b7a1e415e85d5c32cb75f230c237847cb4f08caa9e81d22d486bbe783867",
+                ),
+                "scripts/public_projection.py": (
+                    "ea5a6a69ac19728b9d22016631c323821cd17383",
+                    "24b9cb91340eee08a45ccaf2e50c57827839658f0813fafeb2c1712f3f8d912a",
+                ),
+                "scripts/state.py": (
+                    "d11c3d4fdd9db50216a9f08abe776486db1d1160",
+                    "b43ba033eef9ab94b81b9359ea53f136d745b660cacac981593a0f60b1dbce15",
+                ),
+                "scripts/validate_state.py": (
+                    "c714c26dd84f591a885f7dbb8321337767500145",
+                    "0d26368105137b2d36fa925e7be7021148c998db2569f19a3119b1c35119c94b",
+                ),
+            },
+        )
+
     def git(self, root: pathlib.Path, *arguments: str) -> str:
         environment = {
             **os.environ,
@@ -64,6 +121,15 @@ class ReleaseRemovalPlanTests(unittest.TestCase):
             env=environment,
         ).stdout.strip()
 
+    @staticmethod
+    def git_bytes(root: pathlib.Path, *arguments: str) -> bytes:
+        return subprocess.run(
+            ["git", "-C", str(root), *arguments],
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        ).stdout
+
     def init_repository(self, root: pathlib.Path, repository: str) -> None:
         root.mkdir()
         self.git(root, "init", "--initial-branch=main")
@@ -77,6 +143,56 @@ class ReleaseRemovalPlanTests(unittest.TestCase):
         return (
             json.dumps(value, ensure_ascii=True, indent=2, sort_keys=True) + "\n"
         ).encode("utf-8")
+
+    @staticmethod
+    def removal_schema() -> dict[str, object]:
+        fixed = removal_module.STATE_REMOVAL_FIXED_PAYLOAD_FIELDS
+        late = removal_module.STATE_REMOVAL_LATE_PAYLOAD_FIELDS
+        payload_properties = {field: {} for field in fixed | late}
+        payload_properties["release_path"] = {"$ref": "#/$defs/releasePath"}
+        payload_properties["shared_release_paths"] = {
+            "type": "array",
+            "maxItems": removal_module.MAX_SHARED_RELEASE_PATHS,
+            "uniqueItems": True,
+            "items": {"$ref": "#/$defs/releasePath"},
+        }
+        return {
+            "$defs": {
+                "releasePath": {
+                    "type": "string",
+                    "pattern": f"^{removal_module.RELEASE_PATH.pattern}$",
+                }
+            },
+            "type": "object",
+            "additionalProperties": False,
+            "required": sorted(removal_module.EVENT_FIELDS),
+            "properties": {
+                field: {} for field in removal_module.EVENT_FIELDS
+            },
+            "allOf": [{
+                "if": {
+                    "properties": {
+                        "event_type": {"const": "release.removed"}
+                    }
+                },
+                "then": {
+                    "properties": {
+                        "actor": {
+                            "type": "object",
+                            "additionalProperties": False,
+                            "required": ["kind"],
+                            "properties": {"kind": {"const": "system"}},
+                        },
+                        "payload": {
+                            "type": "object",
+                            "additionalProperties": False,
+                            "required": sorted(fixed | late),
+                            "properties": payload_properties,
+                        },
+                    }
+                },
+            }],
+        }
 
     def write_json(self, path: pathlib.Path, value: object) -> bytes:
         raw = self.canonical(value)
@@ -195,6 +311,30 @@ class ReleaseRemovalPlanTests(unittest.TestCase):
         self.init_repository(release_root, RELEASE_REPOSITORY)
         self.init_repository(state_root, STATE_REPOSITORY)
 
+        state_initial_commit = self.git(state_root, "rev-parse", "HEAD")
+        state_contract_raw: dict[str, bytes] = {}
+        for path in removal_module.STATE_REMOVAL_CONTRACT_COMPONENTS:
+            state_contract_raw[path] = self.write_json(
+                state_root / path,
+                self.removal_schema()
+                if path == "schema/state-event-v1.schema.json"
+                else {"fixture_component": path},
+            )
+        self.git(state_root, "add", ".")
+        self.git(state_root, "commit", "-m", "Add release removal contract")
+        state_contract_commit = self.git(state_root, "rev-parse", "HEAD")
+        state_contract_components = {
+            path: (
+                self.git(state_root, "rev-parse", f"{state_contract_commit}:{path}"),
+                hashlib.sha256(raw).hexdigest(),
+            )
+            for path, raw in state_contract_raw.items()
+        }
+        state_contract_trees = {
+            path: self.git(state_root, "rev-parse", f"{state_contract_commit}:{path}")
+            for path in removal_module.STATE_REMOVAL_CONTRACT_TREES
+        }
+
         bundle = release_root.joinpath(*BUNDLE_PATH.split("/"))
         bundle.parent.mkdir()
         bundle.write_bytes(b"deterministic-gzip-fixture\0" + SECRET_MARKER)
@@ -275,10 +415,46 @@ class ReleaseRemovalPlanTests(unittest.TestCase):
             "request": request,
             "release_commit": release_commit,
             "state_commit": state_commit,
+            "state_initial_commit": state_initial_commit,
+            "state_contract_commit": state_contract_commit,
+            "state_contract_trees": state_contract_trees,
+            "state_contract_components": state_contract_components,
             "evidence_raw": evidence_raw,
         }
 
-    def plan(self, fixture: dict[str, object]) -> dict[str, object]:
+    def contract_patch(self, fixture: dict[str, object]):
+        return mock.patch.multiple(
+            removal_module,
+            STATE_REMOVAL_CONTRACT_COMMIT=fixture["state_contract_commit"],
+            STATE_REMOVAL_CONTRACT_TREES=fixture["state_contract_trees"],
+            STATE_REMOVAL_CONTRACT_COMPONENTS=fixture["state_contract_components"],
+        )
+
+    def rebind_contract(self, fixture: dict[str, object]) -> None:
+        commit = self.git(fixture["state_root"], "rev-parse", "HEAD")
+        fixture["state_contract_commit"] = commit
+        fixture["state_commit"] = commit
+        fixture["state_contract_trees"] = {
+            directory: self.git(
+                fixture["state_root"], "rev-parse", f"{commit}:{directory}"
+            )
+            for directory in removal_module.STATE_REMOVAL_CONTRACT_TREES
+        }
+        fixture["state_contract_components"] = {
+            component: (
+                self.git(
+                    fixture["state_root"], "rev-parse", f"{commit}:{component}"
+                ),
+                hashlib.sha256(
+                    self.git_bytes(
+                        fixture["state_root"], "show", f"{commit}:{component}"
+                    )
+                ).hexdigest(),
+            )
+            for component in removal_module.STATE_REMOVAL_CONTRACT_COMPONENTS
+        }
+
+    def call_plan(self, fixture: dict[str, object]) -> dict[str, object]:
         return plan_removal(
             repository_root=fixture["release_root"],
             state_repository_roots={STATE_REPOSITORY: fixture["state_root"]},
@@ -289,6 +465,10 @@ class ReleaseRemovalPlanTests(unittest.TestCase):
                 STATE_REPOSITORY: fixture["state_commit"],
             },
         )
+
+    def plan(self, fixture: dict[str, object]) -> dict[str, object]:
+        with self.contract_patch(fixture):
+            return self.call_plan(fixture)
 
     def test_plan_is_exact_private_deterministic_source_free_and_read_only(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -305,9 +485,80 @@ class ReleaseRemovalPlanTests(unittest.TestCase):
             self.assertEqual(plan["containment"]["manifest"]["action"], "delete")
             self.assertEqual(len(plan["required_state_corrections"]), 1)
             correction = plan["required_state_corrections"][0]
-            self.assertEqual(correction["status"], "blocked_on_state_schema")
+            self.assertEqual(correction["status"], "ready_after_containment")
             self.assertEqual(correction["required_event_type"], "release.removed")
-            self.assertNotIn("event", correction)
+            self.assertEqual(
+                set(correction["fixed_payload_bindings"]),
+                {
+                    "incident_id",
+                    "classification",
+                    "published_state_event_repository",
+                    "published_state_event_commit",
+                    "published_state_event_path",
+                    "published_state_event_blob",
+                    "published_state_event_sha256",
+                    "published_repository_commit",
+                    "published_repository_tree",
+                    "published_release_tree_sha256",
+                    "release_path",
+                    "bundle_path",
+                    "bundle_sha256",
+                    "bundle_disposition",
+                    "shared_release_paths",
+                    "evidence_repository",
+                    "evidence_commit",
+                    "evidence_path",
+                    "evidence_blob",
+                    "evidence_sha256",
+                },
+            )
+            self.assertEqual(
+                correction["fixed_payload_bindings"]["incident_id"], INCIDENT_ID
+            )
+            self.assertEqual(
+                correction["event_skeleton"],
+                {
+                    "schema_version": 1,
+                    "event_type": "release.removed",
+                    "subject_id": RESULT_1,
+                    "causation_event_id": EVENT_1,
+                    "actor": {"kind": "system"},
+                    "payload": correction["fixed_payload_bindings"],
+                },
+            )
+            self.assertEqual(
+                correction["required_after_containment"],
+                [
+                    "event_id",
+                    "occurred_at",
+                    "payload.removal_repository_commit",
+                    "payload.removal_repository_tree",
+                ],
+            )
+            self.assertEqual(
+                plan["state_contract"],
+                {
+                    "repository": STATE_REPOSITORY,
+                    "commit": fixture["state_contract_commit"],
+                    "event_type": "release.removed",
+                    "trees": [
+                        {"path": path, "tree": tree}
+                        for path, tree in sorted(
+                            fixture["state_contract_trees"].items()
+                        )
+                    ],
+                    "components": [
+                        {
+                            "path": path,
+                            "blob": blob,
+                            "sha256": sha256,
+                        }
+                        for path, (blob, sha256) in sorted(
+                            fixture["state_contract_components"].items()
+                        )
+                    ],
+                },
+            )
             encoded = json.dumps(plan, sort_keys=True).encode("utf-8")
             self.assertNotIn(SECRET_MARKER, encoded)
             self.assertNotIn(fixture["evidence_raw"].strip(), encoded)
@@ -325,22 +576,55 @@ class ReleaseRemovalPlanTests(unittest.TestCase):
             self.assertNotIn("evidence", encoded)
             self.assertNotIn("state_event", encoded)
             self.assertNotIn(STATE_REPOSITORY, encoded)
+            self.assertEqual(
+                projection["state_correction_status"], "ready_after_containment"
+            )
+
+    def test_confidentiality_incident_cannot_produce_any_public_output(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            parent = pathlib.Path(temporary)
+            fixture = self.fixture(parent)
+            fixture["request"]["classification"] = "confidentiality_incident"
+            plan = self.plan(fixture)
+            with self.assertRaisesRegex(RemovalPlanError, "cannot produce"):
+                public_projection(plan)
+
+            request_path = parent / "request.json"
+            request_path.write_bytes(self.canonical(fixture["request"]))
+            private_path = parent / "private.json"
+            public_path = parent / "public.json"
+            with self.contract_patch(fixture), mock.patch(
+                "plan_release_removal._remote_main",
+                side_effect=lambda repository: {
+                    RELEASE_REPOSITORY: fixture["release_commit"],
+                    STATE_REPOSITORY: fixture["state_commit"],
+                }[repository],
+            ), mock.patch("sys.stderr"):
+                self.assertEqual(
+                    main([
+                        str(request_path),
+                        "--repository-root", str(fixture["release_root"]),
+                        "--state-repository-root", str(fixture["state_root"]),
+                        "--evidence-repository-root", str(fixture["state_root"]),
+                        "--output", str(private_path),
+                        "--public-output", str(public_path),
+                    ]),
+                    1,
+                )
+            self.assertFalse(private_path.exists())
+            self.assertFalse(public_path.exists())
 
     def test_rejects_local_head_or_state_commit_not_on_remote_main(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             fixture = self.fixture(pathlib.Path(temporary))
             release_parent = self.git(fixture["release_root"], "rev-parse", "HEAD^")
-            with self.assertRaisesRegex(RemovalPlanError, "remote protected main"):
-                plan_removal(
-                    repository_root=fixture["release_root"],
-                    state_repository_roots={STATE_REPOSITORY: fixture["state_root"]},
-                    evidence_repository_root=fixture["state_root"],
-                    request_value=fixture["request"],
-                    remote_main_commits={
-                        RELEASE_REPOSITORY: release_parent,
-                        STATE_REPOSITORY: fixture["state_commit"],
-                    },
-                )
+            with self.contract_patch(fixture), self.assertRaisesRegex(
+                RemovalPlanError, "remote protected main"
+            ):
+                self.call_plan({
+                    **fixture,
+                    "release_commit": release_parent,
+                })
 
             self.git(fixture["state_root"], "checkout", "--orphan", "unrelated")
             (fixture["state_root"] / "unrelated").write_text("x", encoding="utf-8")
@@ -348,7 +632,9 @@ class ReleaseRemovalPlanTests(unittest.TestCase):
             self.git(fixture["state_root"], "commit", "-m", "Unrelated remote head")
             unrelated = self.git(fixture["state_root"], "rev-parse", "HEAD")
             self.git(fixture["state_root"], "checkout", "main")
-            with self.assertRaisesRegex(RemovalPlanError, "ancestry"):
+            with self.contract_patch(fixture), self.assertRaisesRegex(
+                RemovalPlanError, "ancestry"
+            ):
                 plan_removal(
                     repository_root=fixture["release_root"],
                     state_repository_roots={STATE_REPOSITORY: fixture["state_root"]},
@@ -359,6 +645,95 @@ class ReleaseRemovalPlanTests(unittest.TestCase):
                         STATE_REPOSITORY: unrelated,
                     },
                 )
+
+    def test_rejects_unreviewed_or_tampered_state_contract(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            fixture = self.fixture(pathlib.Path(temporary))
+            tampered = dict(fixture["state_contract_components"])
+            first_path = sorted(tampered)[0]
+            tampered[first_path] = (tampered[first_path][0], "0" * 64)
+            with self.contract_patch(fixture), mock.patch.object(
+                removal_module, "STATE_REMOVAL_CONTRACT_COMPONENTS", tampered
+            ), self.assertRaisesRegex(RemovalPlanError, "reviewed contract"):
+                self.call_plan(fixture)
+
+            with self.contract_patch(fixture), self.assertRaisesRegex(
+                RemovalPlanError, "ancestry"
+            ):
+                plan_removal(
+                    repository_root=fixture["release_root"],
+                    state_repository_roots={STATE_REPOSITORY: fixture["state_root"]},
+                    evidence_repository_root=fixture["state_root"],
+                    request_value=fixture["request"],
+                    remote_main_commits={
+                        RELEASE_REPOSITORY: fixture["release_commit"],
+                        STATE_REPOSITORY: fixture["state_initial_commit"],
+                    },
+                )
+
+    def test_rejects_effective_live_contract_drift(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            fixture = self.fixture(pathlib.Path(temporary))
+            path = sorted(fixture["state_contract_components"])[0]
+            self.write_json(fixture["state_root"] / path, {"drifted": True})
+            self.git(fixture["state_root"], "add", path)
+            self.git(fixture["state_root"], "commit", "-m", "Drift contract")
+            fixture["state_commit"] = self.git(
+                fixture["state_root"], "rev-parse", "HEAD"
+            )
+            with self.assertRaisesRegex(RemovalPlanError, "has drifted"):
+                self.plan(fixture)
+
+    def test_rejects_digest_pinned_schema_shape_drift(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            fixture = self.fixture(pathlib.Path(temporary))
+            path = "schema/state-event-v1.schema.json"
+            schema = self.removal_schema()
+            branch = schema["allOf"][0]
+            branch["then"]["properties"]["payload"]["properties"][
+                "shared_release_paths"
+            ]["maxItems"] = 127
+            self.write_json(fixture["state_root"] / path, schema)
+            self.git(fixture["state_root"], "add", path)
+            self.git(fixture["state_root"], "commit", "-m", "Pin incompatible schema")
+            self.rebind_contract(fixture)
+            with self.assertRaisesRegex(RemovalPlanError, "shared paths schema"):
+                self.plan(fixture)
+
+    def test_state_schema_path_and_cardinality_constraints_are_mirrored(self) -> None:
+        self.assertEqual(MAX_SHARED_RELEASE_PATHS, 128)
+        for month in ("01", "12"):
+            self.assertIsNotNone(
+                RELEASE_PATH.fullmatch(f"releases/2026/{month}/{RESULT_1}")
+            )
+        for month in ("00", "13", "99"):
+            self.assertIsNone(
+                RELEASE_PATH.fullmatch(f"releases/2026/{month}/{RESULT_1}")
+            )
+
+        with tempfile.TemporaryDirectory() as temporary:
+            fixture = self.fixture(
+                pathlib.Path(temporary), results=(RESULT_1, RESULT_2)
+            )
+            fixture["request"]["published_events"] = [
+                fixture["request"]["published_events"][0]
+            ]
+            path = fixture["state_root"] / "schema/state-event-v1.schema.json"
+            schema = json.loads(path.read_text(encoding="utf-8"))
+            schema["allOf"][0]["then"]["properties"]["payload"]["properties"][
+                "shared_release_paths"
+            ]["maxItems"] = 0
+            self.write_json(path, schema)
+            self.git(
+                fixture["state_root"], "add", "schema/state-event-v1.schema.json"
+            )
+            self.git(fixture["state_root"], "commit", "-m", "Use zero shared paths")
+            self.rebind_contract(fixture)
+            with (
+                mock.patch.object(removal_module, "MAX_SHARED_RELEASE_PATHS", 0),
+                self.assertRaisesRegex(RemovalPlanError, "exceeds"),
+            ):
+                self.plan(fixture)
 
     def test_rejects_event_and_evidence_locator_forgery(self) -> None:
         mutations = (
@@ -432,6 +807,7 @@ class ReleaseRemovalPlanTests(unittest.TestCase):
             shutil.copytree(original, duplicate)
             metadata = json.loads((duplicate / "metadata.json").read_text())
             metadata["release"]["path"] = duplicate_path
+            metadata["release"]["eligible_at"] = "2026-11-20T06:07:05.000Z"
             self.write_json(duplicate / "metadata.json", metadata)
             self.git(release_root, "add", ".")
             self.git(release_root, "commit", "-m", "Add duplicate public exposure")
@@ -574,7 +950,7 @@ class ReleaseRemovalPlanTests(unittest.TestCase):
             request_path.write_bytes(self.canonical(fixture["request"]))
             output_path = parent / "private-plan.json"
             public_path = parent / "public-plan.json"
-            with mock.patch(
+            with self.contract_patch(fixture), mock.patch(
                 "plan_release_removal._remote_main",
                 side_effect=lambda repository: {
                     RELEASE_REPOSITORY: fixture["release_commit"],
