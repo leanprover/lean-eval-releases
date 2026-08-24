@@ -96,9 +96,17 @@ jobs:
             > "$RUNNER_TEMP/release-started-event.json"
           if [ "$RECOVERY_KIND" = published ]; then
             release_path=$(jq -r .release_path "$RUNNER_TEMP/release-recovery.json")
+            submission_id=$(jq -er .submission_id "$RUNNER_TEMP/release-recovery.json")
             tree_digest=$(jq -r .tree_digest "$RUNNER_TEMP/release-recovery.json")
-            repository_commit=$(git log --diff-filter=A --format=%H -1 -- "$release_path")
-            test "$repository_commit" != ""
+            python scripts/classify_release_publication.py \
+              --release-root . \
+              --release-path "$release_path" \
+              --submission-id "$submission_id" \
+              --history-only \
+              --output "$RUNNER_TEMP/recovered-publication-classification.json"
+            test "$(jq -er .kind "$RUNNER_TEMP/recovered-publication-classification.json")" = existing
+            repository_commit=$(jq -er .repository_commit \
+              "$RUNNER_TEMP/recovered-publication-classification.json")
             git show "$repository_commit:release-manifest.json" \
               > "$RUNNER_TEMP/recovered-manifest.json"
             generated_at=$(jq -r .generated_at "$RUNNER_TEMP/recovered-manifest.json")

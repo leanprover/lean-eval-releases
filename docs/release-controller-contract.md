@@ -64,10 +64,11 @@ The controller's mutation protocol remains compare-and-swap and idempotent:
    deliberately excluded from the fresh comparison. It then recovers the
    first-publishing commit and records the terminal event without overwriting
    the release. A bundle already published for another result from the same
-   submission is compared and reused. A release path present in history but
-   later removed is never republished. Otherwise, after the
-   recovery interval, it records one retryable interruption. Re-running
-   recovery is deterministic.
+   submission is compared and reused. Any deletion history for either a release
+   path or its shared submission bundle is a permanent fail-closed tombstone,
+   even if the path was later re-added; neither is republished. Otherwise,
+   after the recovery interval, it records one retryable interruption.
+   Re-running recovery is deterministic.
 
 The publication workflow must remain disabled until the rollout runbook's
 external staging and credential gates have passed and an operator deliberately

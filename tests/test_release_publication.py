@@ -12,6 +12,7 @@ sys.path.insert(0, str(ROOT / "scripts"))
 
 from classify_release_publication import (
     PublicationClassificationError,
+    classify_existing_publication_history,
     classify_publication,
 )
 
@@ -174,6 +175,149 @@ class ReleasePublicationTests(unittest.TestCase):
                 classify_publication(
                     root,
                     reconstructed,
+                    f"releases/2026/10/{RESULT_ID}",
+                    SUBMISSION_ID,
+                )
+
+            self.release_tree(
+                root,
+                RESULT_ID,
+                generated_at="2026-10-20T06:00:00.000Z",
+                license_text="license\n",
+            )
+            self.git(root, "add", ".")
+            self.git(root, "commit", "-qm", "unsafe re-add")
+            with self.assertRaisesRegex(
+                PublicationClassificationError, "deletion history"
+            ):
+                classify_publication(
+                    root,
+                    reconstructed,
+                    f"releases/2026/10/{RESULT_ID}",
+                    SUBMISSION_ID,
+                )
+
+    def test_removed_shared_bundle_is_never_republished(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory) / "release"
+            reconstructed = pathlib.Path(directory) / "reconstructed"
+            subprocess.run(["git", "init", "-q", "-b", "main", root], check=True)
+            self.git(root, "config", "user.name", "Test")
+            self.git(root, "config", "user.email", "test@example.com")
+            self.bundle(root)
+            self.git(root, "add", ".")
+            self.git(root, "commit", "-qm", "publish shared source")
+            self.git(root, "rm", f"sources/{SUBMISSION_ID}.tar.gz")
+            self.git(root, "commit", "-qm", "remove shared source")
+            self.release_tree(
+                reconstructed,
+                SECOND_RESULT_ID,
+                generated_at="2026-10-21T06:00:00.000Z",
+                license_text="license\n",
+            )
+            self.bundle(reconstructed)
+            with self.assertRaisesRegex(
+                PublicationClassificationError, "source bundle has deletion history"
+            ):
+                classify_publication(
+                    root,
+                    reconstructed,
+                    f"releases/2026/10/{SECOND_RESULT_ID}",
+                    SUBMISSION_ID,
+                )
+
+            self.bundle(root)
+            self.git(root, "add", ".")
+            self.git(root, "commit", "-qm", "unsafe source re-add")
+            with self.assertRaisesRegex(
+                PublicationClassificationError, "source bundle has deletion history"
+            ):
+                classify_publication(
+                    root,
+                    reconstructed,
+                    f"releases/2026/10/{SECOND_RESULT_ID}",
+                    SUBMISSION_ID,
+                )
+
+    def test_history_only_recovers_oldest_add_and_rejects_deletion(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory) / "release"
+            subprocess.run(["git", "init", "-q", "-b", "main", root], check=True)
+            self.git(root, "config", "user.name", "Test")
+            self.git(root, "config", "user.email", "test@example.com")
+            published = self.release_tree(
+                root,
+                RESULT_ID,
+                generated_at="2026-10-20T06:00:00.000Z",
+                license_text="license\n",
+            )
+            self.bundle(root)
+            self.git(root, "add", ".")
+            self.git(root, "commit", "-qm", "publish")
+            publishing_commit = self.git(root, "rev-parse", "HEAD")
+            nested = published / "Submission" / "Later.lean"
+            nested.parent.mkdir()
+            nested.write_text("example : True := by trivial\n", encoding="utf-8")
+            nested.chmod(0o644)
+            self.git(root, "add", ".")
+            self.git(root, "commit", "-qm", "later addition")
+
+            result = classify_existing_publication_history(
+                root,
+                f"releases/2026/10/{RESULT_ID}",
+                SUBMISSION_ID,
+            )
+            self.assertEqual(result["repository_commit"], publishing_commit)
+
+            nested.unlink()
+            self.git(root, "add", "-A")
+            self.git(root, "commit", "-qm", "delete later source")
+            with self.assertRaisesRegex(
+                PublicationClassificationError, "deletion history"
+            ):
+                classify_existing_publication_history(
+                    root,
+                    f"releases/2026/10/{RESULT_ID}",
+                    SUBMISSION_ID,
+                )
+
+    def test_history_only_requires_one_unique_oldest_add(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory) / "release"
+            subprocess.run(["git", "init", "-q", "-b", "main", root], check=True)
+            self.git(root, "config", "user.name", "Test")
+            self.git(root, "config", "user.email", "test@example.com")
+            self.bundle(root)
+            self.git(root, "add", ".")
+            self.git(root, "commit", "-qm", "shared source")
+
+            self.git(root, "checkout", "-qb", "first")
+            self.release_tree(
+                root,
+                RESULT_ID,
+                generated_at="2026-10-20T06:00:00.000Z",
+                license_text="license\n",
+            )
+            self.git(root, "add", ".")
+            self.git(root, "commit", "-qm", "first publication")
+
+            self.git(root, "checkout", "-q", "main")
+            self.git(root, "checkout", "-qb", "second")
+            self.release_tree(
+                root,
+                RESULT_ID,
+                generated_at="2026-10-20T06:00:00.000Z",
+                license_text="license\n",
+            )
+            self.git(root, "add", ".")
+            self.git(root, "commit", "-qm", "parallel publication")
+            self.git(root, "merge", "-q", "--no-ff", "first", "-m", "merge")
+
+            with self.assertRaisesRegex(
+                PublicationClassificationError, "no unique oldest adding commit"
+            ):
+                classify_existing_publication_history(
+                    root,
                     f"releases/2026/10/{RESULT_ID}",
                     SUBMISSION_ID,
                 )

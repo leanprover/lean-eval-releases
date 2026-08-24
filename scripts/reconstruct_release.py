@@ -60,7 +60,11 @@ class ReconstructionError(ValueError):
 
 def _validate_execution_plan(value: Any) -> dict[str, Any]:
     plan = _object(value, "release plan")
-    _fields(plan, {"schema_version", "kind", "started_transition", "request"}, "release plan")
+    _fields(
+        plan,
+        {"schema_version", "kind", "started_transition", "request"},
+        "release plan",
+    )
     if plan["schema_version"] != 1 or isinstance(plan["schema_version"], bool):
         raise ReconstructionError("release plan schema_version must be integer 1")
     if plan["kind"] != "execution":
@@ -75,7 +79,9 @@ def _validate_execution_plan(value: Any) -> dict[str, Any]:
     if started["event_type"] != "release.started":
         raise ReconstructionError("started transition must be release.started")
     subject = _match(RESULT_ID, started["subject_id"], "started_transition.subject_id")
-    _match(UUID7, started["causation_event_id"], "started_transition.causation_event_id")
+    _match(
+        UUID7, started["causation_event_id"], "started_transition.causation_event_id"
+    )
     started_payload = _object(started["payload"], "started_transition.payload")
     _fields(started_payload, {"attempt"}, "started_transition.payload")
     _safe_integer(started_payload["attempt"], "started_transition.payload.attempt", 1)
@@ -101,7 +107,9 @@ def _validate_execution_plan(value: Any) -> dict[str, Any]:
     )
     identity = _match(RESULT_ID, result["result_id"], "request.result.result_id")
     problem = _match(PROBLEM, result["problem_id"], "request.result.problem_id")
-    revision = _safe_integer(result["statement_revision"], "request.result.statement_revision", 1)
+    revision = _safe_integer(
+        result["statement_revision"], "request.result.statement_revision", 1
+    )
     _match(COMMIT, result["commit"], "request.result.commit")
     _match(DIGEST, result["tree_digest"], "request.result.tree_digest")
     if identity != subject:
@@ -113,7 +121,9 @@ def _validate_execution_plan(value: Any) -> dict[str, Any]:
         {"submission_id", "owner_login", "declared_model", "production_metadata"},
         "request.submission",
     )
-    submission_id = _match(UUID7, submission["submission_id"], "request.submission.submission_id")
+    submission_id = _match(
+        UUID7, submission["submission_id"], "request.submission.submission_id"
+    )
     login = _match(LOGIN, submission["owner_login"], "request.submission.owner_login")
     model = submission["declared_model"]
     if (
@@ -124,8 +134,12 @@ def _validate_execution_plan(value: Any) -> dict[str, Any]:
     ):
         raise ReconstructionError("request.submission.declared_model is invalid")
     if identity != result_id(login, model, problem, revision):
-        raise ReconstructionError("request result_id does not match its deterministic identity")
-    _production_metadata(submission["production_metadata"], "request.submission.production_metadata")
+        raise ReconstructionError(
+            "request result_id does not match its deterministic identity"
+        )
+    _production_metadata(
+        submission["production_metadata"], "request.submission.production_metadata"
+    )
 
     archive = _object(request["archive"], "request.archive")
     _fields(
@@ -139,20 +153,30 @@ def _validate_execution_plan(value: Any) -> dict[str, Any]:
         },
         "request.archive",
     )
-    _match(REPOSITORY, archive["archive_repository"], "request.archive.archive_repository")
+    _match(
+        REPOSITORY, archive["archive_repository"], "request.archive.archive_repository"
+    )
     _match(COMMIT, archive["archive_commit"], "request.archive.archive_commit")
-    _match(DIGEST, archive["archive_ciphertext_sha256"], "request.archive.archive_ciphertext_sha256")
+    _match(
+        DIGEST,
+        archive["archive_ciphertext_sha256"],
+        "request.archive.archive_ciphertext_sha256",
+    )
     if archive["archive_path"] != canonical_archive_path(submission_id):
         raise ReconstructionError("request archive_path does not match submission_id")
     if archive["encrypted"] is not True:
         raise ReconstructionError("request archive must be encrypted")
 
     release = _object(request["release"], "request.release")
-    _fields(release, {"accepted_at", "eligible_at", "path", "license"}, "request.release")
+    _fields(
+        release, {"accepted_at", "eligible_at", "path", "license"}, "request.release"
+    )
     accepted = _timestamp(release["accepted_at"], "request.release.accepted_at")
     eligible = _timestamp(release["eligible_at"], "request.release.eligible_at")
     if eligible != eligible_at(accepted):
-        raise ReconstructionError("request release eligibility is not two UTC calendar months")
+        raise ReconstructionError(
+            "request release eligibility is not two UTC calendar months"
+        )
     if release["path"] != canonical_release_path(identity, eligible):
         raise ReconstructionError("request release path is not canonical")
     if release["license"] != "Apache-2.0":
@@ -197,7 +221,9 @@ def _read_release_sources(plaintext_tar: pathlib.Path) -> dict[str, bytes]:
                 path = _safe_member_name(member.name)
                 canonical_name = path.as_posix()
                 if canonical_name in seen:
-                    raise ReconstructionError(f"plaintext archive repeats member {canonical_name!r}")
+                    raise ReconstructionError(
+                        f"plaintext archive repeats member {canonical_name!r}"
+                    )
                 seen.add(canonical_name)
                 if not (member.isdir() or member.isreg()):
                     raise ReconstructionError(
@@ -206,10 +232,14 @@ def _read_release_sources(plaintext_tar: pathlib.Path) -> dict[str, bytes]:
                 if member.isdir():
                     continue
                 if member.size < 0 or member.size > MAX_ARCHIVE_MEMBER_BYTES:
-                    raise ReconstructionError(f"archive member size is unsafe: {canonical_name!r}")
+                    raise ReconstructionError(
+                        f"archive member size is unsafe: {canonical_name!r}"
+                    )
                 declared_total += member.size
                 if declared_total > MAX_ARCHIVE_TOTAL_BYTES:
-                    raise ReconstructionError("plaintext archive expands beyond its byte cap")
+                    raise ReconstructionError(
+                        "plaintext archive expands beyond its byte cap"
+                    )
 
                 relative: pathlib.PurePosixPath | None = None
                 if path == pathlib.PurePosixPath("source/Submission.lean"):
@@ -223,29 +253,43 @@ def _read_release_sources(plaintext_tar: pathlib.Path) -> dict[str, bytes]:
                 if relative is None:
                     continue
                 if member.size > MAX_RELEASE_FILE_BYTES:
-                    raise ReconstructionError(f"release source is too large: {canonical_name!r}")
+                    raise ReconstructionError(
+                        f"release source is too large: {canonical_name!r}"
+                    )
                 extracted = archive.extractfile(member)
                 if extracted is None:
-                    raise ReconstructionError(f"cannot read release source {canonical_name!r}")
+                    raise ReconstructionError(
+                        f"cannot read release source {canonical_name!r}"
+                    )
                 content = extracted.read(MAX_RELEASE_FILE_BYTES + 1)
                 if len(content) != member.size or len(content) > MAX_RELEASE_FILE_BYTES:
-                    raise ReconstructionError(f"release source size mismatch: {canonical_name!r}")
+                    raise ReconstructionError(
+                        f"release source size mismatch: {canonical_name!r}"
+                    )
                 try:
                     content.decode("utf-8")
                 except UnicodeDecodeError as error:
-                    raise ReconstructionError(f"release source is not UTF-8: {canonical_name!r}") from error
+                    raise ReconstructionError(
+                        f"release source is not UTF-8: {canonical_name!r}"
+                    ) from error
                 selected[relative.as_posix()] = content
                 selected_total += len(content)
                 if (
                     len(selected) > MAX_RELEASE_FILES
                     or selected_total > MAX_RELEASE_TOTAL_BYTES
                 ):
-                    raise ReconstructionError("selected release source exceeds its file or byte cap")
+                    raise ReconstructionError(
+                        "selected release source exceeds its file or byte cap"
+                    )
     except (tarfile.TarError, EOFError, OSError) as error:
-        raise ReconstructionError("plaintext archive is not one valid gzip tar stream") from error
+        raise ReconstructionError(
+            "plaintext archive is not one valid gzip tar stream"
+        ) from error
     submission = selected.get("Submission.lean")
     if submission is None or not submission:
-        raise ReconstructionError("plaintext archive has no nonempty source/Submission.lean")
+        raise ReconstructionError(
+            "plaintext archive has no nonempty source/Submission.lean"
+        )
     return selected
 
 
@@ -254,9 +298,7 @@ def _write_deterministic_bundle(path: pathlib.Path, sources: dict[str, bytes]) -
     buffer = io.BytesIO()
     with (
         gzip.GzipFile(filename="", mode="wb", fileobj=buffer, mtime=0) as compressed,
-        tarfile.open(
-            fileobj=compressed, mode="w", format=tarfile.GNU_FORMAT
-        ) as bundle,
+        tarfile.open(fileobj=compressed, mode="w", format=tarfile.GNU_FORMAT) as bundle,
     ):
         for name in sorted(sources, key=lambda item: item.encode("utf-8")):
             content = sources[name]
@@ -275,7 +317,9 @@ def _write_deterministic_bundle(path: pathlib.Path, sources: dict[str, bytes]) -
     return hashlib.sha256(content).hexdigest()
 
 
-def _metadata(plan: dict[str, Any], generated_at: str, sources: dict[str, bytes]) -> dict[str, Any]:
+def _metadata(
+    plan: dict[str, Any], generated_at: str, sources: dict[str, bytes]
+) -> dict[str, Any]:
     request = plan["request"]
     return {
         "schema_version": 1,
@@ -305,15 +349,15 @@ def reconstruct_one(
 ) -> dict[str, Any]:
     plan = _validate_execution_plan(plan_value)
     generated = _timestamp(trusted_as_of, "trusted_as_of")
-    if parse_utc_milliseconds(plan["request"]["release"]["eligible_at"]) > parse_utc_milliseconds(generated):
+    if parse_utc_milliseconds(
+        plan["request"]["release"]["eligible_at"]
+    ) > parse_utc_milliseconds(generated):
         raise ReconstructionError("release embargo has not expired at trusted_as_of")
     trusted = load_state_snapshot(state_snapshot_value)
     controller = plan["request"].get("controller")
-    if (
-        controller is not None
-        and controller["acceptance_snapshot_sha256"]
-        != canonical_json_digest(state_snapshot_value, "acceptance-snapshot")
-    ):
+    if controller is not None and controller[
+        "acceptance_snapshot_sha256"
+    ] != canonical_json_digest(state_snapshot_value, "acceptance-snapshot"):
         raise ReconstructionError(
             "controller qualification does not bind the exact acceptance snapshot"
         )
@@ -363,7 +407,9 @@ def reconstruct_one(
                     "archive_repository": request["archive"]["archive_repository"],
                     "archive_commit": request["archive"]["archive_commit"],
                     "archive_path": request["archive"]["archive_path"],
-                    "archive_ciphertext_sha256": request["archive"]["archive_ciphertext_sha256"],
+                    "archive_ciphertext_sha256": request["archive"][
+                        "archive_ciphertext_sha256"
+                    ],
                     "bundle_sha256": bundle_digest,
                     "bundle_path": bundle_relative,
                     "release_tree_sha256": release_digest,

@@ -112,9 +112,11 @@ class ReleaseControllerTests(unittest.TestCase):
         self.assertNotIn("upload-artifact", workflow)
         self.assertNotIn("actions/download-artifact", workflow)
         self.assertIn("scripts/classify_release_publication.py", workflow)
+        self.assertIn("--history-only", workflow)
         self.assertIn("publishing-manifest.json", workflow)
         self.assertIn("jq -er .repository_commit", workflow)
         self.assertIn("jq -er --arg result", workflow)
+        self.assertNotIn("git log --diff-filter=A --format=%H -1", workflow)
 
     def test_production_credential_preflight_is_manual_and_nonmutating(self) -> None:
         workflow = (
@@ -358,6 +360,7 @@ class ReleaseControllerTests(unittest.TestCase):
             self.assertEqual(
                 published["release_path"], f"releases/2026/10/{task['result_id']}"
             )
+            self.assertEqual(published["submission_id"], task["submission_id"])
             self.assertRegex(published["tree_digest"], r"^[0-9a-f]{64}$")
 
             recent = copy.deepcopy(domain)

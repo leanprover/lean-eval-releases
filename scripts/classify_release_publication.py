@@ -38,6 +38,29 @@ def _git(root: pathlib.Path, *arguments: str) -> str:
     return completed.stdout.strip()
 
 
+def _is_ancestor(root: pathlib.Path, ancestor: str, descendant: str) -> bool:
+    try:
+        completed = subprocess.run(
+            [
+                "git",
+                "-C",
+                str(root),
+                "merge-base",
+                "--is-ancestor",
+                ancestor,
+                descendant,
+            ],
+            check=False,
+            capture_output=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise PublicationClassificationError("release history lookup failed") from error
+    if completed.returncode not in {0, 1}:
+        raise PublicationClassificationError("release history lookup failed")
+    return completed.returncode == 0
+
+
 def _release_relative_path(value: str) -> pathlib.PurePosixPath:
     path = pathlib.PurePosixPath(value)
     parts = path.parts
@@ -100,6 +123,97 @@ def _stable_release_projection(root: pathlib.Path) -> dict[str, bytes]:
     return projection
 
 
+def _oldest_undeleted_addition(
+    release_root: pathlib.Path,
+    relative: pathlib.PurePosixPath,
+    label: str,
+) -> str | None:
+    additions = _git(
+        release_root,
+        "log",
+        "--full-history",
+        "--reverse",
+        "--topo-order",
+        "--diff-filter=A",
+        "--format=%H",
+        "--",
+        relative.as_posix(),
+    ).splitlines()
+    deletions = _git(
+        release_root,
+        "log",
+        "--full-history",
+        "--diff-filter=D",
+        "--format=%H",
+        "--",
+        relative.as_posix(),
+    ).splitlines()
+    for commit in additions + deletions:
+        if COMMIT.fullmatch(commit) is None:
+            raise PublicationClassificationError(
+                f"{label} history contains an invalid commit"
+            )
+    if len(additions) != len(set(additions)) or len(deletions) != len(set(deletions)):
+        raise PublicationClassificationError(f"{label} history is ambiguous")
+    if deletions:
+        raise PublicationClassificationError(
+            f"{label} has deletion history; refusing republication"
+        )
+    if not additions:
+        return None
+    oldest = additions[0]
+    if any(
+        not _is_ancestor(release_root, oldest, descendant)
+        for descendant in additions[1:]
+    ):
+        raise PublicationClassificationError(
+            f"{label} has no unique oldest adding commit"
+        )
+    return oldest
+
+
+def classify_existing_publication_history(
+    release_root: pathlib.Path,
+    release_path: str,
+    submission_id: str,
+) -> dict[str, Any]:
+    """Validate an extant publication and recover its first adding commit."""
+    relative = _release_relative_path(release_path)
+    if SUBMISSION_ID.fullmatch(submission_id) is None:
+        raise PublicationClassificationError("submission id is not canonical")
+    release_root = release_root.resolve(strict=True)
+    existing_release = release_root.joinpath(*relative.parts)
+    bundle_relative = pathlib.PurePosixPath("sources", f"{submission_id}.tar.gz")
+    existing_bundle_path = release_root.joinpath(*bundle_relative.parts)
+
+    repository_commit = _oldest_undeleted_addition(
+        release_root, relative, "release path"
+    )
+    bundle_commit = _oldest_undeleted_addition(
+        release_root, bundle_relative, "source bundle"
+    )
+    if repository_commit is None:
+        raise PublicationClassificationError(
+            "existing release has no historical adding commit"
+        )
+    if bundle_commit is None:
+        raise PublicationClassificationError(
+            "existing release source bundle has no historical adding commit"
+        )
+    if not existing_release.exists() or existing_release.is_symlink():
+        raise PublicationClassificationError(
+            "previously published release is absent; refusing republication"
+        )
+    _stable_release_projection(existing_release)
+    _regular_file(existing_bundle_path, release_root, "published source bundle")
+    return {
+        "schema_version": 1,
+        "kind": "existing",
+        "repository_commit": repository_commit,
+        "bundle_exists": True,
+    }
+
+
 def classify_publication(
     release_root: pathlib.Path,
     reconstructed_root: pathlib.Path,
@@ -123,6 +237,12 @@ def classify_publication(
     )
     existing_bundle_path = release_root.joinpath(*bundle_relative.parts)
     bundle_exists = existing_bundle_path.exists() or existing_bundle_path.is_symlink()
+    release_addition = _oldest_undeleted_addition(
+        release_root, relative, "release path"
+    )
+    bundle_addition = _oldest_undeleted_addition(
+        release_root, bundle_relative, "source bundle"
+    )
     if bundle_exists:
         existing_bundle = _regular_file(
             existing_bundle_path, release_root, "published source bundle"
@@ -132,41 +252,22 @@ def classify_publication(
                 "published source bundle differs from reconstruction"
             )
 
-    history = _git(
-        release_root,
-        "log",
-        "--diff-filter=A",
-        "--format=%H",
-        "--",
-        relative.as_posix(),
-    ).splitlines()
-    for commit in history:
-        if COMMIT.fullmatch(commit) is None:
-            raise PublicationClassificationError(
-                "release history contains an invalid commit"
-            )
-    if history:
-        if not existing_release.exists() or existing_release.is_symlink():
-            raise PublicationClassificationError(
-                "previously published release is absent; refusing republication"
-            )
-        if not bundle_exists:
-            raise PublicationClassificationError(
-                "published release is missing its source bundle"
-            )
+    if release_addition is not None:
+        history = classify_existing_publication_history(
+            release_root, release_path, submission_id
+        )
         if _stable_release_projection(existing_release) != reconstructed_projection:
             raise PublicationClassificationError(
                 "published release differs from the reconstructed stable allowlist"
             )
-        return {
-            "schema_version": 1,
-            "kind": "existing",
-            "repository_commit": history[-1],
-            "bundle_exists": True,
-        }
+        return history
     if existing_release.exists() or existing_release.is_symlink():
         raise PublicationClassificationError(
             "unhistorical release path exists in the qualified checkout"
+        )
+    if bundle_addition is not None and not bundle_exists:
+        raise PublicationClassificationError(
+            "previously published source bundle is absent; refusing republication"
         )
     return {
         "schema_version": 1,
@@ -179,18 +280,34 @@ def classify_publication(
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--release-root", required=True, type=pathlib.Path)
-    parser.add_argument("--reconstructed-root", required=True, type=pathlib.Path)
+    parser.add_argument("--reconstructed-root", type=pathlib.Path)
     parser.add_argument("--release-path", required=True)
     parser.add_argument("--submission-id", required=True)
+    parser.add_argument("--history-only", action="store_true")
     parser.add_argument("--output", required=True, type=pathlib.Path)
     args = parser.parse_args(argv)
     try:
-        result = classify_publication(
-            args.release_root,
-            args.reconstructed_root,
-            args.release_path,
-            args.submission_id,
-        )
+        if args.history_only:
+            if args.reconstructed_root is not None:
+                raise PublicationClassificationError(
+                    "history-only classification does not accept a reconstruction"
+                )
+            result = classify_existing_publication_history(
+                args.release_root,
+                args.release_path,
+                args.submission_id,
+            )
+        else:
+            if args.reconstructed_root is None:
+                raise PublicationClassificationError(
+                    "publication classification requires a reconstruction"
+                )
+            result = classify_publication(
+                args.release_root,
+                args.reconstructed_root,
+                args.release_path,
+                args.submission_id,
+            )
         args.output.write_text(
             json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8"
         )
