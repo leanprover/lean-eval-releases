@@ -406,6 +406,234 @@ class ReleaseControllerTests(unittest.TestCase):
                 with self.assertRaises(AssertionError):
                     validate_closed_boundary(workflow.replace(old, new, 1))
 
+    def test_production_release_oidc_preflight_is_trust_only(self) -> None:
+        workflow = (
+            ROOT / ".github/workflows/verify-production-release-oidc.yml"
+        ).read_text(encoding="utf-8")
+        self.assertIn("workflow_dispatch:", workflow)
+        self.assertNotIn("schedule:", workflow)
+        self.assertNotIn("pull_request:", workflow)
+        self.assertNotIn("push:\n", workflow)
+        self.assertNotIn("workflow_call:", workflow)
+        self.assertIn("permissions: {}", workflow)
+        self.assertIn(
+            "    permissions:\n"
+            "      id-token: write\n"
+            "    environment: release-production\n",
+            workflow,
+        )
+        self.assertNotIn("contents:", workflow)
+        self.assertEqual(workflow.count("id-token: write"), 1)
+        self.assertEqual(workflow.count("runs-on:"), 3)
+        self.assertIn("needs: authorize", workflow)
+        self.assertIn("github.repository == 'leanprover/lean-eval-releases'", workflow)
+        self.assertIn("github.ref == 'refs/heads/main'", workflow)
+        self.assertIn("inputs.confirm_publication_disabled == true", workflow)
+        self.assertIn("environment: release-production", workflow)
+        self.assertIn(
+            "group: lean-eval-release-controller-production-oidc-preflight",
+            workflow,
+        )
+        self.assertIn("cancel-in-progress: false", workflow)
+        self.assertIn("PUBLICATION_ENABLED must remain absent or false", workflow)
+        self.assertEqual(re.findall(r"secrets\.([A-Z0-9_]+)", workflow), [])
+        self.assertNotIn("secrets[", workflow)
+        self.assertNotIn("toJSON(secrets", workflow)
+        self.assertNotIn("secrets: inherit", workflow)
+        expected_role = (
+            "arn:aws:iam::161072922960:role/"
+            "lean-eval-release-unwrap-invoker-production"
+        )
+        expected_caller = (
+            "arn:aws:sts::161072922960:assumed-role/"
+            "lean-eval-release-unwrap-invoker-production/"
+            "lean-eval-release-production-oidc-preflight"
+        )
+        self.assertIn("role-to-assume: ${{ vars.AWS_RELEASE_UNWRAP_ROLE_ARN }}", workflow)
+        self.assertIn(expected_role, workflow)
+        self.assertIn(expected_caller, workflow)
+        self.assertIn("role-duration-seconds: 900", workflow)
+        self.assertIn(
+            "role-session-name: lean-eval-release-production-oidc-preflight",
+            workflow,
+        )
+        self.assertIn("retry-max-attempts: 4", workflow)
+        self.assertIn("allowed-account-ids: 161072922960", workflow)
+        self.assertIn("output-credentials: false", workflow)
+        self.assertIn("output-env-credentials: true", workflow)
+        self.assertIn("unset-current-credentials: true", workflow)
+        self.assertIn(
+            '"Effect":"Allow","Action":"sts:GetCallerIdentity",'
+            '"Resource":"*"',
+            workflow,
+        )
+        self.assertEqual(workflow.count("uses:"), 1)
+        self.assertRegex(
+            workflow,
+            re.compile(
+                r"uses: aws-actions/configure-aws-credentials@[0-9a-f]{40}"
+            ),
+        )
+        self.assertEqual(workflow.count("aws sts get-caller-identity"), 2)
+        self.assertEqual(workflow.count("aws "), 2)
+        self.assertIn("*:lean-eval-release-production-oidc-preflight", workflow)
+        for variable in (
+            "AWS_ACCESS_KEY_ID",
+            "AWS_SECRET_ACCESS_KEY",
+            "AWS_SESSION_TOKEN",
+            "ACTIONS_ID_TOKEN_REQUEST_TOKEN",
+            "ACTIONS_ID_TOKEN_REQUEST_URL",
+        ):
+            with self.subTest(variable=variable):
+                self.assertIn(f"unset {variable}", workflow)
+                self.assertIn(f"echo '{variable}='", workflow)
+                self.assertIn(f'test -z "${{{variable}:-}}"', workflow)
+        self.assertIn(
+            'rm -f "$RUNNER_TEMP/production-release-caller-identity.json"',
+            workflow,
+        )
+        self.assertIn("trap cleanup EXIT", workflow)
+        self.assertIn("trap - EXIT", workflow)
+        self.assertIn("export AWS_EC2_METADATA_DISABLED=true", workflow)
+        self.assertIn("AWS authority survived cleanup", workflow)
+        self.assertIn("  summarize:\n    needs: oidc-trust\n    permissions: {}", workflow)
+        self.assertEqual(workflow.count("\n      - "), 5)
+        self.assertEqual(
+            re.findall(r"^      - name: (.+)$", workflow, re.MULTILINE),
+            [
+                "Require an exact protected publication-disabled dispatch",
+                "Require the publication latch and role boundary",
+                "Assume only the production release Invoke role",
+                "Prove exact caller identity and discard all authority handles",
+                "Record a source-free trust proof",
+            ],
+        )
+        for forbidden in (
+            "actions/checkout",
+            "repository:",
+            "git ",
+            "aws lambda",
+            "lean-eval-archive-unwrap",
+            "state.py",
+            "release_controller.py",
+            "release_orchestrator.py",
+            "upload-artifact",
+            "download-artifact",
+        ):
+            with self.subTest(forbidden=forbidden):
+                self.assertNotIn(forbidden, workflow)
+
+    def test_production_release_oidc_preflight_rejects_authority_drift(
+        self,
+    ) -> None:
+        workflow = (
+            ROOT / ".github/workflows/verify-production-release-oidc.yml"
+        ).read_text(encoding="utf-8")
+
+        def validate_closed_boundary(candidate: str) -> None:
+            self.assertIn("permissions: {}", candidate)
+            self.assertIn(
+                "    permissions:\n"
+                "      id-token: write\n"
+                "    environment: release-production\n",
+                candidate,
+            )
+            self.assertEqual(candidate.count("id-token: write"), 1)
+            self.assertNotIn("contents:", candidate)
+            self.assertNotIn("workflow_call:", candidate)
+            self.assertEqual(candidate.count("runs-on:"), 3)
+            self.assertEqual(candidate.count("uses:"), 1)
+            self.assertEqual(
+                re.findall(r"secrets\.([A-Z0-9_]+)", candidate), []
+            )
+            self.assertIn(
+                "arn:aws:iam::161072922960:role/"
+                "lean-eval-release-unwrap-invoker-production",
+                candidate,
+            )
+            self.assertEqual(candidate.count("aws sts get-caller-identity"), 2)
+            self.assertNotIn("aws lambda", candidate)
+            self.assertNotIn("actions/checkout", candidate)
+            self.assertIn("trap cleanup EXIT", candidate)
+            self.assertIn("trap - EXIT", candidate)
+            self.assertIn("ACTIONS_ID_TOKEN_REQUEST_TOKEN=", candidate)
+            self.assertIn("AWS_SESSION_TOKEN=", candidate)
+            self.assertIn("output-credentials: false", candidate)
+            self.assertIn("output-env-credentials: true", candidate)
+            self.assertIn(
+                '"Effect":"Allow","Action":"sts:GetCallerIdentity",'
+                '"Resource":"*"',
+                candidate,
+            )
+            self.assertIn("AWS authority survived cleanup", candidate)
+            self.assertIn(
+                "  summarize:\n    needs: oidc-trust\n    permissions: {}",
+                candidate,
+            )
+            self.assertEqual(candidate.count("\n      - "), 5)
+            self.assertEqual(
+                re.findall(r"^      - name: (.+)$", candidate, re.MULTILINE),
+                [
+                    "Require an exact protected publication-disabled dispatch",
+                    "Require the publication latch and role boundary",
+                    "Assume only the production release Invoke role",
+                    "Prove exact caller identity and discard all authority handles",
+                    "Record a source-free trust proof",
+                ],
+            )
+
+        validate_closed_boundary(workflow)
+        hostile_changes = (
+            (
+                "    permissions:\n      id-token: write",
+                "    permissions:\n      contents: read\n      id-token: write",
+            ),
+            (
+                "      id-token: write\n    environment: release-production",
+                "      id-token: write\n      actions: write\n"
+                "    environment: release-production",
+            ),
+            (
+                "on:\n  workflow_dispatch:",
+                "on:\n  workflow_dispatch:\n  workflow_call:",
+            ),
+            (
+                "      - name: Record a source-free trust proof",
+                "      - uses: actions/checkout@" + "0" * 40 + "\n"
+                "      - name: Record a source-free trust proof",
+            ),
+            (
+                "      - name: Prove exact caller identity and discard all authority handles",
+                "      - run: env\n"
+                "      - name: Prove exact caller identity and discard all authority handles",
+            ),
+            (
+                "lean-eval-release-unwrap-invoker-production",
+                "AdministratorAccess",
+            ),
+            (
+                "aws sts get-caller-identity",
+                "aws lambda list-functions",
+            ),
+            ("trap cleanup EXIT", "trap - EXIT"),
+            ("trap - EXIT", "true # keep the EXIT trap"),
+            ("ACTIONS_ID_TOKEN_REQUEST_TOKEN=", "OIDC_TOKEN_RETAINED=true"),
+            ("AWS_SESSION_TOKEN=", "AWS_SESSION_RETAINED=true"),
+            ("output-credentials: false", "output-credentials: true"),
+            ("output-env-credentials: true", "output-env-credentials: false"),
+            (
+                '"Effect":"Allow","Action":"sts:GetCallerIdentity",'
+                '"Resource":"*"',
+                '"Effect":"Allow","Action":"lambda:*","Resource":"*"',
+            ),
+            ("AWS authority survived cleanup", "AWS authority retained"),
+        )
+        for old, new in hostile_changes:
+            with self.subTest(change=new):
+                self.assertIn(old, workflow)
+                with self.assertRaises(AssertionError):
+                    validate_closed_boundary(workflow.replace(old, new, 1))
+
     def test_staging_release_smoke_is_exact_decrypt_only_and_source_artifact_free(
         self,
     ) -> None:
@@ -461,7 +689,7 @@ class ReleaseControllerTests(unittest.TestCase):
                     if reference.startswith("./"):
                         continue
                     self.assertRegex(reference, r"^[^@]+@[0-9a-f]{40}$")
-        self.assertEqual(len(references), 19)
+        self.assertEqual(len(references), 20)
 
     def request(self) -> dict[str, object]:
         return prepare_unwrap(
