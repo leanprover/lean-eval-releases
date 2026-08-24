@@ -10,6 +10,7 @@ State and evidence locators.
 from __future__ import annotations
 
 import argparse
+import datetime as dt
 import hashlib
 import json
 import os
@@ -32,7 +33,10 @@ MAX_GIT_METADATA_BYTES = 32 * 1024 * 1024
 MAX_RELEASE_METADATA_ENTRIES = 4096
 MAX_RELEASE_METADATA_BYTES = 32 * 1024 * 1024
 MAX_PLAN_OUTPUT_BYTES = 8 * 1024 * 1024
-RELEASE_PATH = re.compile(r"releases/[0-9]{4}/[0-9]{2}/r2_[0-9a-f]{64}")
+MAX_SHARED_RELEASE_PATHS = 128
+RELEASE_PATH = re.compile(
+    r"releases/[0-9]{4}/(?:0[1-9]|1[0-2])/r2_[0-9a-f]{64}"
+)
 BUNDLE_PATH = re.compile(
     r"sources/[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-"
     r"[89ab][0-9a-f]{3}-[0-9a-f]{12}\.tar\.gz"
@@ -44,6 +48,49 @@ PRIVATE_EVIDENCE_REPOSITORIES = {
     "leanprover/lean-eval-audit",
     EXPECTED_STATE_REPOSITORY,
 }
+STATE_REMOVAL_CONTRACT_COMMIT = "940a2a4f2e042c076a37b6c14190e072b786032c"
+STATE_REMOVAL_CONTRACT_TREES = {
+    "schema": "831016c5c2b63c0e38233378c7e62d690fb0fd16",
+    "scripts": "18e7abe53c981903cb92d1856125edde33bd840a",
+}
+STATE_REMOVAL_CONTRACT_COMPONENTS = {
+    "schema/public-state-projection-v1.schema.json": (
+        "9d6c546a2139f587d1a3c8d76c1df7674c4a9759",
+        "74398c7c81dad719637bdad2e9c73974719a077beb3a1f4a503cd55bf4d93c58",
+    ),
+    "schema/public-state-projection-v2.schema.json": (
+        "fc782883787ed654bcfc69ed15241e1cadee80df",
+        "94dac7dcfbf3d322d5f72b20992e2950f8fa714641f2bb9ee6fd5b84d288a336",
+    ),
+    "schema/public-state-projection-v3.schema.json": (
+        "cfd577d818119917a6060c06abd48d24f32028aa",
+        "eea75447b8c13778b454f1313778068f9908c189724107a9e3be3635b00c5bee",
+    ),
+    "schema/state-event-v1.schema.json": (
+        "c2b4e85ddd18b7a3d41c705cfa1454ff8f879da1",
+        "cae8e11dad8b87997a09fa66f5500ea75a0e0b7ff4221ac14a20459cf6970589",
+    ),
+    "schema/result-overlays-v1.schema.json": (
+        "41d4078133d6854bf8de839873a3f58e9ba1afd1",
+        "245324f32265d0476ca45e55ec5fbe2363c47da852d2641ddc292df0c5d9d474",
+    ),
+    "scripts/materialize_state.py": (
+        "656c30abf35ec69e645602193496a765ee2de7eb",
+        "be02b7a1e415e85d5c32cb75f230c237847cb4f08caa9e81d22d486bbe783867",
+    ),
+    "scripts/public_projection.py": (
+        "ea5a6a69ac19728b9d22016631c323821cd17383",
+        "24b9cb91340eee08a45ccaf2e50c57827839658f0813fafeb2c1712f3f8d912a",
+    ),
+    "scripts/state.py": (
+        "d11c3d4fdd9db50216a9f08abe776486db1d1160",
+        "b43ba033eef9ab94b81b9359ea53f136d745b660cacac981593a0f60b1dbce15",
+    ),
+    "scripts/validate_state.py": (
+        "c714c26dd84f591a885f7dbb8321337767500145",
+        "0d26368105137b2d36fa925e7be7021148c998db2569f19a3119b1c35119c94b",
+    ),
+}
 REQUEST_FIELDS = {
     "schema_version", "incident_id", "planned_at", "classification",
     "release_repository", "base_commit", "published_events", "evidence",
@@ -52,6 +99,19 @@ LOCATOR_FIELDS = {"repository", "commit", "path", "sha256"}
 EVENT_FIELDS = {
     "schema_version", "event_id", "event_type", "occurred_at", "subject_id",
     "causation_event_id", "actor", "payload",
+}
+STATE_REMOVAL_FIXED_PAYLOAD_FIELDS = {
+    "incident_id", "classification", "published_state_event_repository",
+    "published_state_event_commit", "published_state_event_path",
+    "published_state_event_blob", "published_state_event_sha256",
+    "published_repository_commit", "published_repository_tree",
+    "published_release_tree_sha256", "release_path", "bundle_path",
+    "bundle_sha256", "bundle_disposition", "shared_release_paths",
+    "evidence_repository", "evidence_commit", "evidence_path",
+    "evidence_blob", "evidence_sha256",
+}
+STATE_REMOVAL_LATE_PAYLOAD_FIELDS = {
+    "removal_repository_commit", "removal_repository_tree",
 }
 PUBLISHED_PAYLOAD_FIELDS = {"attempt", "repository_commit", "tree_digest", "path"}
 MANIFEST_FIELDS = {"schema_version", "release_id", "generated_at", "entries"}
@@ -113,12 +173,11 @@ def _safe_path(value: Any, label: str) -> str:
     return value
 
 
-def _timestamp(value: Any, label: str) -> str:
+def _timestamp(value: Any, label: str) -> dt.datetime:
     try:
-        parse_timestamp(value, label)
+        return parse_timestamp(value, label)
     except ControllerError as error:
         raise RemovalPlanError(str(error)) from error
-    return value
 
 
 def _sha256(raw: bytes) -> str:
@@ -390,6 +449,172 @@ def _optional_blob(
     return object_id, _blob(root, object_id, label, maximum)
 
 
+def _validate_state_removal_schema(raw: bytes) -> None:
+    """Prove the reviewed schema shape agrees with the emitted skeleton."""
+    schema = _json_document(raw, "release removal State event schema")
+    properties = _object(schema.get("properties"), "State event schema properties")
+    required = schema.get("required")
+    if (
+        schema.get("additionalProperties") is not False
+        or set(properties) != EVENT_FIELDS
+        or not isinstance(required, list)
+        or len(required) != len(EVENT_FIELDS)
+        or set(required) != EVENT_FIELDS
+    ):
+        raise RemovalPlanError("State event schema top-level contract has drifted")
+    definitions = _object(schema.get("$defs"), "State event schema definitions")
+    release_path = _object(
+        definitions.get("releasePath"), "State release-path definition"
+    )
+    if release_path.get("pattern") != f"^{RELEASE_PATH.pattern}$":
+        raise RemovalPlanError("State release-path schema disagrees with the planner")
+
+    branches = schema.get("allOf")
+    if not isinstance(branches, list):
+        raise RemovalPlanError("State event schema has no conditional branches")
+    removal_branches = []
+    for candidate in branches:
+        if not isinstance(candidate, dict):
+            continue
+        condition = candidate.get("if")
+        if not isinstance(condition, dict):
+            continue
+        condition_properties = condition.get("properties")
+        if not isinstance(condition_properties, dict):
+            continue
+        event_type = condition_properties.get("event_type")
+        if isinstance(event_type, dict) and event_type.get("const") == "release.removed":
+            removal_branches.append(candidate)
+    if len(removal_branches) != 1:
+        raise RemovalPlanError("State schema has no unique release.removed branch")
+    then = _object(removal_branches[0].get("then"), "release.removed schema then")
+    branch_properties = _object(
+        then.get("properties"), "release.removed schema properties"
+    )
+    if set(branch_properties) != {"actor", "payload"}:
+        raise RemovalPlanError("release.removed branch fields have drifted")
+    actor = _object(branch_properties["actor"], "release.removed actor schema")
+    if actor != {
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["kind"],
+        "properties": {"kind": {"const": "system"}},
+    }:
+        raise RemovalPlanError("release.removed actor schema has drifted")
+    payload = _object(branch_properties["payload"], "release.removed payload schema")
+    payload_properties = _object(
+        payload.get("properties"), "release.removed payload properties"
+    )
+    expected_payload_fields = (
+        STATE_REMOVAL_FIXED_PAYLOAD_FIELDS | STATE_REMOVAL_LATE_PAYLOAD_FIELDS
+    )
+    payload_required = payload.get("required")
+    if (
+        payload.get("additionalProperties") is not False
+        or set(payload_properties) != expected_payload_fields
+        or not isinstance(payload_required, list)
+        or len(payload_required) != len(expected_payload_fields)
+        or set(payload_required) != expected_payload_fields
+    ):
+        raise RemovalPlanError("release.removed payload fields have drifted")
+    shared = _object(
+        payload_properties["shared_release_paths"],
+        "release.removed shared paths schema",
+    )
+    if (
+        shared.get("type") != "array"
+        or shared.get("maxItems") != MAX_SHARED_RELEASE_PATHS
+        or shared.get("uniqueItems") is not True
+        or shared.get("items") != {"$ref": "#/$defs/releasePath"}
+    ):
+        raise RemovalPlanError("release.removed shared paths schema has drifted")
+    if payload_properties["release_path"] != {"$ref": "#/$defs/releasePath"}:
+        raise RemovalPlanError("release.removed release-path schema has drifted")
+
+
+def _state_removal_contract(
+    state_root: pathlib.Path, remote_main: str
+) -> dict[str, Any]:
+    """Bind planning to the exact reviewed and currently effective contract."""
+    _commit_on_remote_main(
+        state_root,
+        STATE_REMOVAL_CONTRACT_COMMIT,
+        remote_main,
+        "release removal State contract",
+    )
+    trees = []
+    for path, expected_tree in sorted(STATE_REMOVAL_CONTRACT_TREES.items()):
+        reviewed_tree = _git_text(
+            state_root,
+            "rev-parse",
+            f"{STATE_REMOVAL_CONTRACT_COMMIT}:{path}",
+            label=f"reviewed release removal State tree {path}",
+        )
+        live_tree = _git_text(
+            state_root,
+            "rev-parse",
+            f"{remote_main}:{path}",
+            label=f"live release removal State tree {path}",
+        )
+        if reviewed_tree != expected_tree or live_tree != expected_tree:
+            raise RemovalPlanError(
+                f"live release removal State tree {path} has drifted from the "
+                "reviewed contract"
+            )
+        if any(
+            _git_text(state_root, "cat-file", "-t", tree, label=f"{path} tree type")
+            != "tree"
+            for tree in (reviewed_tree, live_tree)
+        ):
+            raise RemovalPlanError(f"release removal State path {path} is not a tree")
+        trees.append({"path": path, "tree": expected_tree})
+    components = []
+    for path, (expected_blob, expected_sha256) in sorted(
+        STATE_REMOVAL_CONTRACT_COMPONENTS.items()
+    ):
+        reviewed_blob, reviewed_raw = _one_blob(
+            state_root,
+            STATE_REMOVAL_CONTRACT_COMMIT,
+            path,
+            label=f"reviewed release removal State component {path}",
+            maximum=MAX_DOCUMENT_BYTES,
+        )
+        if (
+            reviewed_blob != expected_blob
+            or _sha256(reviewed_raw) != expected_sha256
+        ):
+            raise RemovalPlanError(
+                f"release removal State component {path} does not match the "
+                "reviewed contract"
+            )
+        live_blob, live_raw = _one_blob(
+            state_root,
+            remote_main,
+            path,
+            label=f"live release removal State component {path}",
+            maximum=MAX_DOCUMENT_BYTES,
+        )
+        if live_blob != expected_blob or _sha256(live_raw) != expected_sha256:
+            raise RemovalPlanError(
+                f"live release removal State component {path} has drifted from "
+                "the reviewed contract"
+            )
+        components.append({
+            "path": path,
+            "blob": expected_blob,
+            "sha256": expected_sha256,
+        })
+        if path == "schema/state-event-v1.schema.json":
+            _validate_state_removal_schema(reviewed_raw)
+    return {
+        "repository": EXPECTED_STATE_REPOSITORY,
+        "commit": STATE_REMOVAL_CONTRACT_COMMIT,
+        "event_type": "release.removed",
+        "trees": trees,
+        "components": components,
+    }
+
+
 def _release_tree(
     root: pathlib.Path, commit: str, release_path: str, *, label: str
 ) -> tuple[str, dict[str, bytes]]:
@@ -530,11 +755,21 @@ def _manifest(value: Any, label: str) -> dict[str, Any]:
     _fields(manifest, MANIFEST_FIELDS, label)
     if manifest["schema_version"] != 1 or isinstance(manifest["schema_version"], bool):
         raise RemovalPlanError(f"{label}.schema_version must be integer 1")
-    if not isinstance(manifest["release_id"], str) or not re.fullmatch(
-        r"lean-eval-[0-9]{4}-[0-9]{2}-[0-9]{2}", manifest["release_id"]
-    ):
+    if not isinstance(manifest["release_id"], str):
         raise RemovalPlanError(f"{label}.release_id is not canonical")
-    _timestamp(manifest["generated_at"], f"{label}.generated_at")
+    match = re.fullmatch(
+        r"lean-eval-(?P<date>[0-9]{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12][0-9]|3[01]))",
+        manifest["release_id"],
+    )
+    if match is None:
+        raise RemovalPlanError(f"{label}.release_id is not canonical")
+    try:
+        release_date = dt.date.fromisoformat(match.group("date"))
+    except ValueError as error:
+        raise RemovalPlanError(f"{label}.release_id has an impossible date") from error
+    generated_at = _timestamp(manifest["generated_at"], f"{label}.generated_at")
+    if release_date != generated_at.date():
+        raise RemovalPlanError(f"{label}.release_id disagrees with generated_at")
     if not isinstance(manifest["entries"], list) or not manifest["entries"]:
         raise RemovalPlanError(f"{label}.entries must be nonempty")
     entries = [
@@ -569,7 +804,12 @@ def _metadata(value: Any, *, result_id: str, release_path: str) -> dict[str, Any
     if release["path"] != release_path or release["license"] != "Apache-2.0":
         raise RemovalPlanError("published metadata release does not match State")
     _timestamp(release["accepted_at"], "metadata accepted_at")
-    _timestamp(release["eligible_at"], "metadata eligible_at")
+    eligible_at = _timestamp(release["eligible_at"], "metadata eligible_at")
+    expected_release_path = (
+        f"releases/{eligible_at.year:04d}/{eligible_at.month:02d}/{result_id}"
+    )
+    if release_path != expected_release_path:
+        raise RemovalPlanError("published metadata release path disagrees with eligibility")
     _match(REPOSITORY, archive["archive_repository"], "metadata archive_repository")
     _match(COMMIT, archive["archive_commit"], "metadata archive_commit")
     _match(DIGEST, archive["archive_ciphertext_sha256"], "metadata archive digest")
@@ -688,6 +928,10 @@ def plan_removal(
         resolved_heads[repository] = remote
 
     release_root = roots[EXPECTED_RELEASE_REPOSITORY]
+    state_contract = _state_removal_contract(
+        roots[EXPECTED_STATE_REPOSITORY],
+        resolved_heads[EXPECTED_STATE_REPOSITORY],
+    )
     if _git(
         release_root, "status", "--porcelain", "--untracked-files=all",
         label="cleanliness",
@@ -874,6 +1118,10 @@ def plan_removal(
             for item in public_by_submission.get(bundled[0]["submission_id"], [])
             if item["release_path"] not in scoped_paths
         )
+        if len(shared) > MAX_SHARED_RELEASE_PATHS:
+            raise RemovalPlanError(
+                "shared release-path scope exceeds the State correction contract"
+            )
         action = "retain_shared" if shared else "delete"
         bundle = {
             "action": action,
@@ -901,34 +1149,47 @@ def plan_removal(
     corrections = []
     for record in sorted(records, key=lambda item: item["result_id"]):
         bundle = bundle_by_path[record["bundle_path"]]
+        fixed_payload_bindings = {
+            "incident_id": request["incident_id"],
+            "classification": classification,
+            "published_state_event_repository": record["state"]["repository"],
+            "published_state_event_commit": record["state"]["commit"],
+            "published_state_event_path": record["state"]["path"],
+            "published_state_event_blob": record["state"]["blob"],
+            "published_state_event_sha256": record["state"]["sha256"],
+            "published_repository_commit": record["repository_commit"],
+            "published_repository_tree": record["repository_tree"],
+            "published_release_tree_sha256": record["release_tree_sha256"],
+            "release_path": record["release_path"],
+            "bundle_path": record["bundle_path"],
+            "bundle_sha256": record["bundle_sha256"],
+            "bundle_disposition": bundle["action"],
+            "shared_release_paths": bundle["shared_release_paths"],
+            "evidence_repository": evidence_locator["repository"],
+            "evidence_commit": evidence_locator["commit"],
+            "evidence_path": evidence_locator["path"],
+            "evidence_blob": evidence_blob_id,
+            "evidence_sha256": evidence_locator["sha256"],
+        }
+        if set(fixed_payload_bindings) != STATE_REMOVAL_FIXED_PAYLOAD_FIELDS:
+            raise RemovalPlanError("planner payload bindings disagree with State contract")
         corrections.append({
-            "status": "blocked_on_state_schema",
+            "status": "ready_after_containment",
             "required_event_type": "release.removed",
             "subject_id": record["result_id"],
             "causation_event_id": record["state"]["event_id"],
-            "fixed_payload_bindings": {
-                "classification": classification,
-                "published_state_event_repository": record["state"]["repository"],
-                "published_state_event_commit": record["state"]["commit"],
-                "published_state_event_path": record["state"]["path"],
-                "published_state_event_blob": record["state"]["blob"],
-                "published_state_event_sha256": record["state"]["sha256"],
-                "published_repository_commit": record["repository_commit"],
-                "published_repository_tree": record["repository_tree"],
-                "published_release_tree_sha256": record["release_tree_sha256"],
-                "release_path": record["release_path"],
-                "bundle_path": record["bundle_path"],
-                "bundle_sha256": record["bundle_sha256"],
-                "bundle_disposition": bundle["action"],
-                "shared_release_paths": bundle["shared_release_paths"],
-                "evidence_repository": evidence_locator["repository"],
-                "evidence_commit": evidence_locator["commit"],
-                "evidence_path": evidence_locator["path"],
-                "evidence_blob": evidence_blob_id,
-                "evidence_sha256": evidence_locator["sha256"],
+            "fixed_payload_bindings": fixed_payload_bindings,
+            "event_skeleton": {
+                "schema_version": 1,
+                "event_type": "release.removed",
+                "subject_id": record["result_id"],
+                "causation_event_id": record["state"]["event_id"],
+                "actor": {"kind": "system"},
+                "payload": dict(fixed_payload_bindings),
             },
             "required_after_containment": [
-                "removal_repository_commit", "removal_repository_tree",
+                "event_id", "occurred_at", "payload.removal_repository_commit",
+                "payload.removal_repository_tree",
             ],
         })
 
@@ -940,6 +1201,7 @@ def plan_removal(
         "planned_at": request["planned_at"],
         "classification": classification,
         "release_repository": request["release_repository"],
+        "state_contract": state_contract,
         "remote_main_commits": dict(sorted(resolved_heads.items())),
         "base": {"commit": base_commit, "tree": base_root_tree},
         "published": [{
@@ -987,7 +1249,11 @@ def plan_removal(
 
 
 def public_projection(plan: dict[str, Any]) -> dict[str, Any]:
-    """Return an explicitly redacted, source-free public incident summary."""
+    """Return a source-free public summary for an ordinary erroneous release."""
+    if plan["classification"] == "confidentiality_incident":
+        raise RemovalPlanError(
+            "a confidentiality-incident plan cannot produce a public projection"
+        )
     return {
         "schema_version": 1,
         "kind": "release_removal_public_summary",
@@ -1005,7 +1271,7 @@ def public_projection(plan: dict[str, Any]) -> dict[str, Any]:
             )
         } for item in plan["published"]],
         "containment": plan["containment"],
-        "state_correction_status": "blocked_on_state_schema",
+        "state_correction_status": "ready_after_containment",
         "safety": {
             "publication_must_remain_disabled": True,
             "must_not_rewrite_results": True,
@@ -1088,14 +1354,17 @@ def main(argv: list[str] | None = None) -> int:
             evidence_repository_root=args.evidence_repository_root,
             request_value=request,
         )
+        public_value = (
+            public_projection(plan) if args.public_output is not None else None
+        )
         roots = [
             args.repository_root, args.state_repository_root,
             args.evidence_repository_root,
         ]
         _write_exclusive(args.output, plan, roots, 0o600)
-        if args.public_output is not None:
+        if args.public_output is not None and public_value is not None:
             _write_exclusive(
-                args.public_output, public_projection(plan), roots, 0o644
+                args.public_output, public_value, roots, 0o644
             )
     except RemovalPlanError as error:
         print(f"release-removal-plan: {error}", file=sys.stderr)

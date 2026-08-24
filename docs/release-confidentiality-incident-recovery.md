@@ -75,27 +75,40 @@ The private output is created once with mode `0600`, without following a final
 symlink. It is never overwritten. If maintainers decide that a source-free
 summary is appropriate for public disclosure, add
 `--public-output /public/release-removal-summary.json`; that separate projection
-omits every State-event and evidence locator. Do not publish the full plan.
+omits every State-event and evidence locator. This option is available only for
+an ordinary erroneous publication. A confidentiality-incident request with a
+public output fails before creating either output because even source-free Git
+object and bundle locators may renew the disclosure. Do not publish the full
+plan.
 
 The tool is deterministic and read-only. It requires:
 
 1. `base_commit` to be the clean checked-out release `HEAD` and the exact live
    upstream `main` returned by GitHub;
-2. each event locator to name one exact mode-100644 blob in production State,
+2. the reviewed `release.removed` State commit to be reachable from live State
+   `main`; the complete `schema/` and `scripts/` Git trees to remain exact; and
+   the mode-100644 event schema, public schemas, validator, materializer,
+   projection, and State entrypoint blobs to retain their independently verified
+   Git IDs and SHA-256s at live `main`; any contract drift requires a new planner
+   review;
+3. each event locator to name one exact mode-100644 blob in production State,
    at a commit reachable from live State `main`, under the canonical path for
    its event ID, with the requested SHA-256, and containing one canonical
    system-authored `release.published` event;
-3. every event's release commit to be reachable from live release `main`;
-4. the event's canonical release path and tree digest to match the exact Git
+4. every event's release commit to be reachable from live release `main`;
+5. the event's canonical release path and tree digest to match the exact Git
    objects at both the publication commit and the current base;
-5. `metadata.json`, `release-manifest.json`, and the source bundle to agree on
+6. `metadata.json`, `release-manifest.json`, and the source bundle to agree on
    the result, submission, canonical submission-derived bundle path, complete
-   archive locator/digest, timestamps, release path, license, and SHA-256;
-6. the current source bundle to be byte-identical to the published bundle; the
+   archive locator/digest, timestamps, eligibility-derived release path,
+   real-calendar release ID, license, and SHA-256;
+7. the current source bundle to be byte-identical to the published bundle; the
    plan inventories any other release path sharing that submission bundle,
    retains a shared bundle for an ordinary single-result correction, and refuses
-   a confidentiality plan until every path exposing those bytes is in scope; and
-7. the evidence locator to name one exact bounded blob at a commit reachable
+   a confidentiality plan until every path exposing those bytes is in scope;
+   the retained shared-path list cannot exceed the State contract's 128-item
+   bound; and
+8. the evidence locator to name one exact bounded blob at a commit reachable
    from its live private-repository `main`, with the requested SHA-256.
 
 Git is invoked with optional locks disabled, system/global configuration
@@ -128,9 +141,10 @@ After independent review of the plan:
    process. The planner does not perform this step.
 4. Verify the affected paths are absent at the exact correction commit and
    capture that commit and root Git tree ID.
-5. Append the forward State correction described below only after its schema,
-   materializer, projection behavior, and tests are merged. Never edit or delete
-   the original `release.published` event.
+5. Complete the planner's event skeleton with a fresh event ID and trusted
+   timestamp plus the verified correction commit and root tree, validate the
+   resulting `release.removed` event, and append it through the protected State
+   process. Never edit or delete the original `release.published` event.
 6. Rebuild public consumers from corrected State. Do not change Results.
 
 An ordinary forward deletion removes the bytes from the current branch but not
@@ -157,9 +171,9 @@ Do not wait for a tooling change before containment:
 5. Before restoring visibility, independently verify the affected paths and
    objects are absent from every maintained ref and public delivery surface.
    Record the sanitized head commit and root Git tree ID in private evidence.
-6. Append the forward State correction after the State dependency below lands.
-   Never rewrite Results or the immutable State log to imitate sanitized release
-   history.
+6. Complete and append the forward State correction described below only after
+   containment is independently verified. Never rewrite Results or the immutable
+   State log to imitate sanitized release history.
 
 History cleanup reduces repository exposure; it cannot revoke earlier clones,
 forks, downloads, mirrors, or caches. Incident classification and disclosure
@@ -167,16 +181,25 @@ decisions remain human security/legal decisions.
 
 ## Required forward State correction
 
-As of the implementation of this planner, State schema version 1 has no legal
-transition after `release.published`. It registers only `release.scheduled`,
-`release.started`, `release.published`, `release.failed`, and
-`release.cancelled`; the materializer and public projection likewise have no
-removed/contained status. The planner therefore reports
-each `required_state_corrections[].status = "blocked_on_state_schema"` and does not
-fabricate an event that production State would reject.
+State schema version 1 now defines a direct, system-authored `release.removed`
+event caused by the original `release.published` event. The reviewed contract,
+materializer, public projection, compatibility behavior, and tests landed in
+`leanprover/lean-eval-state` at commit
+`940a2a4f2e042c076a37b6c14190e072b786032c`. The planner fails closed unless
+that exact contract commit is reachable from live protected State `main` and
+the complete State `schema/` and `scripts/` trees remain unchanged. Within those
+trees it also rechecks the relevant Git blob IDs and SHA-256s and parses the
+reviewed event schema to prove the closed top-level fields, system actor, exact
+payload fields, release-path grammar, and shared-path bound agree with the event
+skeleton it emits.
 
-The minimal proposed dependency is a `release.removed` event caused by the
-original `release.published` event. Its closed payload must preserve:
+Each `required_state_corrections[].status` is `ready_after_containment`. Its
+`event_skeleton` fixes the event type, subject, cause, system actor, incident
+identity, and all pre-containment payload bindings. It deliberately omits the
+fresh event ID and occurrence time and the post-containment release commit and
+root tree. Those four values may be supplied only after the planned cleanup is
+complete and independently verified; until then, the skeleton is not a valid
+appendable State event. The closed payload preserves:
 
 - classification;
 - exact original State-event repository, commit, path, Git blob ID and SHA-256,
@@ -186,12 +209,11 @@ original `release.published` event. Its closed payload must preserve:
 - private evidence repository, commit, path, Git blob ID, and digest; and
 - the post-containment release-repository commit and root Git tree.
 
-The State change must validate this transition, materialize a terminal removed
-status, remove the public solution link from the public projection while
-retaining visible correction history, and keep the task out of the release
-queue. Whether policy needs a separate `release.incident_reported` event before
-`release.removed` is unresolved; the planner's fixed bindings support either
-causal design.
+When appended, the State transition materializes a terminal removed status,
+removes the public solution link from the public projection while retaining
+visible correction history, and keeps the task out of the release queue. The
+planner remains read-only: it neither performs containment nor appends the
+event.
 
 ## Unresolved policy
 
@@ -199,8 +221,6 @@ Maintainers must still decide:
 
 - who may classify a true confidentiality incident and authorize emergency
   visibility restriction;
-- whether incident report and corrective action are one State event or a
-  two-event causal chain, and which actor kinds may append them;
 - whether and under what new consent a removed release can ever be republished;
 - the public wording and stable-link behavior for erroneous versus confidential
   removals;
@@ -213,5 +233,6 @@ repository. Expanding that allowlist requires a reviewed decision that the new
 repository is private, protected, retained appropriately, and accessible to the
 incident responders.
 
-Until these decisions and the State schema dependency land, the safe automated
-boundary ends at deterministic read-only planning.
+Until the remaining operational policy decisions are made, the safe automated
+boundary ends at deterministic read-only planning; containment and the protected
+State append require reviewed operator action.

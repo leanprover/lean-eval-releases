@@ -152,9 +152,13 @@ binds them to the published Git commit/tree, canonical release-tree digest,
 public source bundle, and publication manifest. It emits a deterministic,
 source-free private containment plan with exclusive mode-0600 creation outside
 every repository; an optional explicitly redacted public projection is
-separate. It performs no deletion, commit, index/ref update, Results rewrite,
-or State write. The operator procedure, multi-result confidentiality scope, and
-intentionally unresolved State event dependency are in
+available only for ordinary erroneous publications. Confidentiality incidents
+cannot produce a public output. It performs no deletion, commit, index/ref
+update, Results rewrite, or State write. It binds the exact reviewed
+`release.removed` State contract and
+emits a correction skeleton whose fresh identity, timestamp, and verified
+post-containment commit/tree remain operator-supplied. The operator procedure
+and multi-result confidentiality scope are in
 [`docs/release-confidentiality-incident-recovery.md`](docs/release-confidentiality-incident-recovery.md).
 
 Publication remains disabled until the production credentials and a
