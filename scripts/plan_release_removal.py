@@ -29,6 +29,9 @@ MAX_DOCUMENT_BYTES = 1024 * 1024
 MAX_RELEASE_BYTES = 16 * 1024 * 1024
 MAX_INCIDENT_RESULTS = 128
 MAX_GIT_METADATA_BYTES = 32 * 1024 * 1024
+MAX_RELEASE_METADATA_ENTRIES = 4096
+MAX_RELEASE_METADATA_BYTES = 32 * 1024 * 1024
+MAX_PLAN_OUTPUT_BYTES = 8 * 1024 * 1024
 RELEASE_PATH = re.compile(r"releases/[0-9]{4}/[0-9]{2}/r2_[0-9a-f]{64}")
 BUNDLE_PATH = re.compile(
     r"sources/[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-"
@@ -181,6 +184,7 @@ def _git_environment() -> dict[str, str]:
     environment.update({
         "GIT_CONFIG_NOSYSTEM": "1",
         "GIT_CONFIG_GLOBAL": os.devnull,
+        "GIT_NO_LAZY_FETCH": "1",
         "GIT_NO_REPLACE_OBJECTS": "1",
         "GIT_OPTIONAL_LOCKS": "0",
         "GIT_TERMINAL_PROMPT": "0",
@@ -203,19 +207,35 @@ def _git(
     label: str,
     maximum: int = MAX_GIT_METADATA_BYTES,
 ) -> bytes:
+    process: subprocess.Popen[bytes] | None = None
     try:
-        completed = subprocess.run(
+        process = subprocess.Popen(
             ["git", "-C", str(root), *arguments],
-            check=True,
             stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
             env=_git_environment(),
         )
-    except (OSError, subprocess.CalledProcessError) as error:
+        if process.stdout is None:
+            raise OSError("Git stdout pipe was not created")
+        raw = process.stdout.read(maximum + 1)
+        if len(raw) > maximum:
+            process.kill()
+            process.wait()
+            raise RemovalPlanError(f"Git returned oversized {label}")
+        if process.wait() != 0:
+            raise RemovalPlanError(f"Git could not validate {label}")
+        return raw
+    except RemovalPlanError:
+        raise
+    except OSError as error:
         raise RemovalPlanError(f"Git could not validate {label}") from error
-    if len(completed.stdout) > maximum:
-        raise RemovalPlanError(f"Git returned oversized {label}")
-    return completed.stdout
+    finally:
+        if process is not None:
+            if process.stdout is not None:
+                process.stdout.close()
+            if process.poll() is None:
+                process.kill()
+                process.wait()
 
 
 def _git_text(root: pathlib.Path, *arguments: str, label: str) -> str:
@@ -231,7 +251,7 @@ def _run_git(root: pathlib.Path, *arguments: str, label: str) -> None:
             ["git", "-C", str(root), *arguments],
             check=True,
             stdout=subprocess.DEVNULL,
-            stderr=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
             env=_git_environment(),
         )
     except (OSError, subprocess.CalledProcessError) as error:
@@ -793,21 +813,30 @@ def plan_removal(
         release_root, base_commit, "releases", label="base release metadata inventory"
     )
     public_by_submission: dict[str, list[dict[str, str]]] = {}
+    metadata_count = 0
+    metadata_bytes = 0
     for mode, object_type, object_id, path in metadata_entries:
         if not path.endswith("/metadata.json"):
             continue
+        metadata_count += 1
+        if metadata_count > MAX_RELEASE_METADATA_ENTRIES:
+            raise RemovalPlanError("base release metadata inventory has too many entries")
         if mode != "100644" or object_type != "blob":
             raise RemovalPlanError("base release metadata inventory is noncanonical")
         release_path = path.removesuffix("/metadata.json")
         result_id = release_path.rsplit("/", 1)[-1]
+        remaining_metadata_bytes = MAX_RELEASE_METADATA_BYTES - metadata_bytes
+        if remaining_metadata_bytes <= 0:
+            raise RemovalPlanError("base release metadata inventory exceeds its byte limit")
+        metadata_raw = _blob(
+            release_root,
+            object_id,
+            "base release metadata",
+            min(MAX_DOCUMENT_BYTES, remaining_metadata_bytes),
+        )
+        metadata_bytes += len(metadata_raw)
         metadata = _metadata(
-            _json_document(
-                _blob(
-                    release_root, object_id, "base release metadata",
-                    MAX_DOCUMENT_BYTES,
-                ),
-                "base release metadata",
-            ),
+            _json_document(metadata_raw, "base release metadata"),
             result_id=result_id,
             release_path=release_path,
         )
@@ -815,11 +844,11 @@ def plan_removal(
             "result_id": result_id, "release_path": release_path,
         })
 
-    scoped_results = {record["result_id"] for record in records}
+    scoped_paths = {record["release_path"] for record in records}
     out_of_scope: list[dict[str, str]] = []
     for record in records:
         for exposure in public_by_submission.get(record["submission_id"], []):
-            if exposure["result_id"] not in scoped_results and exposure not in out_of_scope:
+            if exposure["release_path"] not in scoped_paths and exposure not in out_of_scope:
                 out_of_scope.append(exposure)
     if request["classification"] == "confidentiality_incident" and out_of_scope:
         required_ids = sorted(item["result_id"] for item in out_of_scope)
@@ -843,7 +872,7 @@ def plan_removal(
         shared = sorted(
             item["release_path"]
             for item in public_by_submission.get(bundled[0]["submission_id"], [])
-            if item["result_id"] not in scoped_results
+            if item["release_path"] not in scoped_paths
         )
         action = "retain_shared" if shared else "delete"
         bundle = {
@@ -990,15 +1019,24 @@ def _write_exclusive(
     value: Any,
     forbidden_roots: list[pathlib.Path],
     mode: int,
+    maximum: int = MAX_PLAN_OUTPUT_BYTES,
 ) -> None:
     parent = path.parent.resolve(strict=True)
     for forbidden in forbidden_roots:
         root = forbidden.resolve(strict=True)
         if parent == root or parent.is_relative_to(root):
             raise RemovalPlanError("plan output must be outside every repository")
-    raw = (
-        json.dumps(value, ensure_ascii=True, indent=2, sort_keys=True) + "\n"
-    ).encode("utf-8")
+    encoder = json.JSONEncoder(ensure_ascii=True, indent=2, sort_keys=True)
+
+    def encoded_chunks() -> Any:
+        yield from encoder.iterencode(value)
+        yield "\n"
+
+    encoded_size = 0
+    for chunk in encoded_chunks():
+        encoded_size += len(chunk.encode("utf-8"))
+        if encoded_size > maximum:
+            raise RemovalPlanError("plan output exceeds its size limit")
     directory_flags = (
         os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_CLOEXEC", 0)
         | getattr(os, "O_NOFOLLOW", 0)
@@ -1012,12 +1050,13 @@ def _write_exclusive(
         try:
             descriptor = os.open(path.name, output_flags, mode, dir_fd=directory)
             try:
-                view = memoryview(raw)
-                while view:
-                    written = os.write(descriptor, view)
-                    if written <= 0:
-                        raise OSError("short output write")
-                    view = view[written:]
+                for chunk in encoded_chunks():
+                    view = memoryview(chunk.encode("utf-8"))
+                    while view:
+                        written = os.write(descriptor, view)
+                        if written <= 0:
+                            raise OSError("short output write")
+                        view = view[written:]
                 os.fsync(descriptor)
             finally:
                 os.close(descriptor)

@@ -5,6 +5,8 @@ import hashlib
 import json
 import os
 import pathlib
+import re
+import shutil
 import stat
 import subprocess
 import sys
@@ -17,7 +19,10 @@ sys.path.insert(0, str(pathlib.Path(__file__).parents[1] / "scripts"))
 
 from plan_release_removal import (
     MAX_DOCUMENT_BYTES,
+    MAX_PLAN_OUTPUT_BYTES,
     RemovalPlanError,
+    _blob,
+    _git,
     _git_environment,
     _read_regular,
     _write_exclusive,
@@ -299,6 +304,10 @@ class ReleaseRemovalPlanTests(unittest.TestCase):
             self.assertRegex(plan["evidence"]["blob"], r"^[0-9a-f]{40}$")
             self.assertEqual(plan["containment"]["manifest"]["action"], "delete")
             self.assertEqual(len(plan["required_state_corrections"]), 1)
+            correction = plan["required_state_corrections"][0]
+            self.assertEqual(correction["status"], "blocked_on_state_schema")
+            self.assertEqual(correction["required_event_type"], "release.removed")
+            self.assertNotIn("event", correction)
             encoded = json.dumps(plan, sort_keys=True).encode("utf-8")
             self.assertNotIn(SECRET_MARKER, encoded)
             self.assertNotIn(fixture["evidence_raw"].strip(), encoded)
@@ -413,6 +422,29 @@ class ReleaseRemovalPlanTests(unittest.TestCase):
             self.assertEqual(plan["containment"]["bundles"][0]["action"], "delete")
             self.assertEqual(plan["containment"]["manifest"]["action"], "delete")
 
+    def test_confidential_scope_rejects_duplicate_path_for_same_result(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            fixture = self.fixture(pathlib.Path(temporary))
+            release_root = fixture["release_root"]
+            original = release_root / self.release_path(RESULT_1)
+            duplicate_path = f"releases/2026/11/{RESULT_1}"
+            duplicate = release_root / duplicate_path
+            shutil.copytree(original, duplicate)
+            metadata = json.loads((duplicate / "metadata.json").read_text())
+            metadata["release"]["path"] = duplicate_path
+            self.write_json(duplicate / "metadata.json", metadata)
+            self.git(release_root, "add", ".")
+            self.git(release_root, "commit", "-m", "Add duplicate public exposure")
+            new_head = self.git(release_root, "rev-parse", "HEAD")
+            fixture["release_commit"] = new_head
+            fixture["request"]["base_commit"] = new_head
+            fixture["request"]["classification"] = "confidentiality_incident"
+
+            with self.assertRaisesRegex(
+                RemovalPlanError, re.escape(duplicate_path)
+            ):
+                self.plan(fixture)
+
     def test_inputs_are_bounded_before_read_and_symlinks_are_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = pathlib.Path(temporary)
@@ -427,6 +459,34 @@ class ReleaseRemovalPlanTests(unittest.TestCase):
             link.symlink_to(target)
             with self.assertRaises(RemovalPlanError):
                 _read_regular(link, "link", MAX_DOCUMENT_BYTES)
+
+    def test_release_metadata_inventory_has_aggregate_limits(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            fixture = self.fixture(
+                pathlib.Path(temporary), results=(RESULT_1, RESULT_2)
+            )
+            fixture["request"]["classification"] = "confidentiality_incident"
+            with mock.patch(
+                "plan_release_removal.MAX_RELEASE_METADATA_ENTRIES", 1
+            ), self.assertRaisesRegex(RemovalPlanError, "too many entries"):
+                self.plan(fixture)
+            with mock.patch(
+                "plan_release_removal.MAX_RELEASE_METADATA_BYTES", 1
+            ), self.assertRaisesRegex(RemovalPlanError, "size limit"):
+                self.plan(fixture)
+
+    def test_git_output_is_capped_while_reading(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            fixture = self.fixture(pathlib.Path(temporary))
+            with self.assertRaisesRegex(RemovalPlanError, "oversized"):
+                _git(
+                    fixture["release_root"],
+                    "cat-file",
+                    "blob",
+                    f"{fixture['release_commit']}:{BUNDLE_PATH}",
+                    label="oversized test blob",
+                    maximum=1,
+                )
 
     def test_outputs_are_exclusive_nofollow_and_private_by_default(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -446,17 +506,65 @@ class ReleaseRemovalPlanTests(unittest.TestCase):
                 _write_exclusive(link, {"safe": True}, [repository], 0o600)
             with self.assertRaisesRegex(RemovalPlanError, "outside every repository"):
                 _write_exclusive(repository / "plan.json", {}, [repository], 0o600)
+            oversized = outside / "oversized.json"
+            with self.assertRaisesRegex(RemovalPlanError, "size limit"):
+                _write_exclusive(
+                    oversized,
+                    {"value": "x" * (MAX_PLAN_OUTPUT_BYTES + 1)},
+                    [repository],
+                    0o600,
+                )
+            self.assertFalse(oversized.exists())
 
     def test_git_environment_disables_locks_and_local_write_accelerators(self) -> None:
         environment = _git_environment()
         self.assertEqual(environment["GIT_OPTIONAL_LOCKS"], "0")
         self.assertEqual(environment["GIT_CONFIG_NOSYSTEM"], "1")
         self.assertEqual(environment["GIT_CONFIG_GLOBAL"], os.devnull)
+        self.assertEqual(environment["GIT_NO_LAZY_FETCH"], "1")
         self.assertEqual(environment["GIT_NO_REPLACE_OBJECTS"], "1")
         self.assertIn("core.fsmonitor", environment.values())
         self.assertIn("core.untrackedCache", environment.values())
         self.assertNotIn("GIT_DIR", environment)
         self.assertNotIn("GIT_WORK_TREE", environment)
+
+    def test_missing_promisor_blob_is_not_lazily_fetched(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = pathlib.Path(temporary)
+            source = root / "source"
+            source.mkdir()
+            self.git(source, "init", "--initial-branch=main")
+            self.git(source, "config", "user.name", "release-test")
+            self.git(source, "config", "user.email", "release-test@example.invalid")
+            self.git(source, "config", "uploadpack.allowFilter", "true")
+            payload = source / "payload"
+            payload.write_bytes(b"promisor-only payload")
+            self.git(source, "add", "payload")
+            self.git(source, "commit", "-m", "Add promisor payload")
+            blob_id = self.git(source, "rev-parse", "HEAD:payload")
+
+            clone = root / "clone"
+            subprocess.run(
+                [
+                    "git", "clone", "--filter=blob:none", "--no-checkout",
+                    source.resolve().as_uri(), str(clone),
+                ],
+                check=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            absent = subprocess.run(
+                ["git", "--no-lazy-fetch", "-C", str(clone), "cat-file", "-e", blob_id],
+                check=False,
+            )
+            self.assertNotEqual(absent.returncode, 0)
+            with self.assertRaises(RemovalPlanError):
+                _blob(clone, blob_id, "promisor blob", 1024)
+            still_absent = subprocess.run(
+                ["git", "--no-lazy-fetch", "-C", str(clone), "cat-file", "-e", blob_id],
+                check=False,
+            )
+            self.assertNotEqual(still_absent.returncode, 0)
 
     def test_cli_uses_exact_repository_blobs_and_exclusive_outputs(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

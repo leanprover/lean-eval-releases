@@ -99,13 +99,15 @@ The tool is deterministic and read-only. It requires:
    from its live private-repository `main`, with the requested SHA-256.
 
 Git is invoked with optional locks disabled, system/global configuration
-disabled, replacement objects disabled, and fsmonitor/untracked-cache/index
-write accelerators overridden. Input sizes are checked before reads; Git blob
-sizes are checked before blob output is consumed. The plan binds the remote
-main commits, publication and base commit/tree IDs, exact State-event and
-evidence Git blob IDs and SHA-256s, release-tree and bundle digests, all affected
-public paths, and the required manifest action. It never includes source or
-evidence bytes.
+disabled, replacement objects and promisor lazy-fetches disabled, and
+fsmonitor/untracked-cache/index write accelerators overridden. Input sizes are
+checked before reads; Git output is streamed through hard caps, Git blob sizes
+are checked before blob output is consumed, and the release metadata inventory
+has aggregate entry and byte budgets. Private and public outputs are likewise
+size-capped before exclusive creation. The plan binds the remote main commits,
+publication and base commit/tree IDs, exact State-event and evidence Git blob
+IDs and SHA-256s, release-tree and bundle digests, all affected public paths,
+and the required manifest action. It never includes source or evidence bytes.
 
 ## Erroneous-publication procedure
 
