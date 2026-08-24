@@ -54,7 +54,10 @@ jobs:
           python-version: '3.11.10'
 
       - name: Verify reviewed State code before executing it
-        run: python scripts/verify_release_state_contract.py --state-root state
+        run: >-
+          python scripts/verify_release_state_contract.py
+          --environment production
+          --state-root state
 
       - name: Validate controller and materialize exact production State
         env:
@@ -256,6 +259,7 @@ jobs:
         run: |
           set -euo pipefail
           curl --proto '=https' --tlsv1.2 --fail --silent --show-error --location \
+            --max-filesize 16777216 \
             https://github.com/FiloSottile/age/releases/download/v1.3.1/age-v1.3.1-linux-amd64.tar.gz \
             --output "$RUNNER_TEMP/age.tar.gz"
           printf '%s  %s\n' \

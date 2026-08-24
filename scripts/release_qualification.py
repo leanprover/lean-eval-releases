@@ -122,6 +122,8 @@ def qualify_repository(
     expected_repository: str,
     minimum_commit: str | None = None,
     contract_trees: dict[str, str] | None = None,
+    *,
+    reject_untracked: bool = False,
 ) -> str:
     resolved = root.resolve(strict=True)
     if root.is_symlink() or not resolved.is_dir():
@@ -143,6 +145,8 @@ def qualify_repository(
         raise QualificationError("qualified repository is not exact origin/main")
     if _git(resolved, "diff", "--name-only", "HEAD"):
         raise QualificationError("qualified repository has tracked changes")
+    if reject_untracked and _git(resolved, "ls-files", "--others"):
+        raise QualificationError("qualified repository has untracked files")
     if minimum_commit is not None:
         try:
             subprocess.run(
