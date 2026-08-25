@@ -5,12 +5,14 @@ import copy
 import datetime as dt
 import hashlib
 import json
+import os
 import pathlib
 import re
 import subprocess
 import tempfile
 import unittest
 
+from scripts import release_provider_literal
 from scripts.release_controller import (
     ControllerError,
     archive_key_id,
@@ -32,6 +34,52 @@ from scripts.release_orchestrator import plan_next
 
 ROOT = pathlib.Path(__file__).parents[1]
 NOW = "2026-10-20T06:07:05.000Z"
+
+
+def workflow_job_steps(workflow: str, job_name: str) -> list[dict[str, object]]:
+    """Parse the exact step mappings for one job in this workflow subset."""
+    lines = workflow.splitlines()
+    job_header = f"  {job_name}:"
+    try:
+        job_start = lines.index(job_header)
+    except ValueError as error:
+        raise AssertionError(f"missing workflow job: {job_name}") from error
+    job_end = len(lines)
+    for index in range(job_start + 1, len(lines)):
+        line = lines[index]
+        if line and not line.startswith(" "):
+            job_end = index
+            break
+        if re.match(r"^  [A-Za-z0-9_-]+:\s*$", line):
+            job_end = index
+            break
+    try:
+        steps_start = lines.index("    steps:", job_start + 1, job_end)
+    except ValueError as error:
+        raise AssertionError(f"missing steps for workflow job: {job_name}") from error
+
+    starts = [
+        index
+        for index in range(steps_start + 1, job_end)
+        if re.match(r"^      -(?:\s|$)", lines[index])
+    ]
+    steps: list[dict[str, object]] = []
+    for position, start in enumerate(starts):
+        end = starts[position + 1] if position + 1 < len(starts) else job_end
+        block = lines[start:end]
+        keys: dict[str, str] = {}
+        first = re.match(r"^      -\s*([A-Za-z0-9_-]+):\s*(.*)$", block[0])
+        if first:
+            keys[first.group(1)] = first.group(2)
+        for line in block[1:]:
+            match = re.match(r"^        ([A-Za-z0-9_-]+):\s*(.*)$", line)
+            if match:
+                key = match.group(1)
+                if key in keys:
+                    raise AssertionError(f"duplicate step key {key!r} in {job_name}")
+                keys[key] = match.group(2)
+        steps.append({"keys": keys, "text": "\n".join(block) + "\n"})
+    return steps
 
 
 class ReleaseControllerTests(unittest.TestCase):
@@ -116,27 +164,28 @@ class ReleaseControllerTests(unittest.TestCase):
             workflow,
         )
         self.assertIn("repository: leanprover/lean-eval-audit", workflow)
-        self.assertIn("ref: ${{ steps.plan.outputs.archive_commit }}", workflow)
+        self.assertIn("ref: ${{ needs.prepare-one.outputs.archive_commit }}", workflow)
         self.assertIn("lean-eval-archive-unwrap-production", workflow)
         self.assertIn("--max-filesize 16777216", workflow)
         self.assertIn("state-event started", workflow)
-        self.assertIn("state-event published", workflow)
-        self.assertIn("state-event failed", workflow)
         self.assertNotIn("upload-artifact", workflow)
         self.assertNotIn("actions/download-artifact", workflow)
-        self.assertIn("scripts/classify_release_publication.py", workflow)
         self.assertIn("--history-only", workflow)
-        self.assertIn("publishing-manifest.json", workflow)
         self.assertIn("jq -er .repository_commit", workflow)
-        self.assertIn("jq -er --arg result", workflow)
         self.assertNotIn("git log --diff-filter=A --format=%H -1", workflow)
+        tail = (ROOT / "scripts/release_authority_tail.sh").read_text(encoding="utf-8")
+        controller = workflow + tail
+        self.assertIn("state-event published", controller)
+        self.assertIn("state-event failed", controller)
+        self.assertIn("scripts/classify_release_publication.py", controller)
+        self.assertIn("publishing-manifest.json", controller)
+        self.assertIn("jq -er --arg result", controller)
+        self.assertEqual(controller.count("release_controller.py stage-state-transition"), 4)
         self.assertEqual(
-            workflow.count("release_controller.py stage-state-transition"), 4
+            controller.count("release_controller.py verify-staged-state-transition"),
+            4,
         )
-        self.assertEqual(
-            workflow.count("release_controller.py verify-staged-state-transition"), 4
-        )
-        self.assertEqual(workflow.count("--protected-main-commit"), 4)
+        self.assertEqual(controller.count("--protected-main-commit"), 4)
         self.assertNotIn("state.py --root state append", workflow)
         self.assertNotIn("git -C state rebase", workflow)
 
@@ -144,10 +193,73 @@ class ReleaseControllerTests(unittest.TestCase):
         self,
         workflow: str,
         *,
+        job_name: str,
         environment: str,
         function_name: str,
         session_name: str,
+        check_hostile: bool = True,
     ) -> None:
+        steps = workflow_job_steps(workflow, job_name)
+        configure = [
+            index
+            for index, step in enumerate(steps)
+            if str(step["keys"].get("uses", "")).startswith(
+                "aws-actions/configure-aws-credentials@"
+            )
+        ]
+        self.assertEqual(configure, [len(steps) - 2])
+        configure_index = configure[0]
+        configure_text = str(steps[configure_index]["text"])
+        before = steps[:configure_index]
+        after = steps[configure_index + 1 :]
+        self.assertEqual(len(after), 1)
+        self.assertEqual(
+            after[0]["keys"],
+            {
+                "name": (
+                    "Invoke once and exec the sanitized release tail"
+                    if environment == "production"
+                    else "Invoke once and exec the sanitized staging tail"
+                ),
+                "if": "always()",
+                "env": "",
+                "run": "|",
+            },
+        )
+
+        allowed_actions = {
+            "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+            "actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97",
+        }
+        for step in before:
+            keys = step["keys"]
+            text = str(step["text"])
+            if "uses" in keys:
+                self.assertIn(keys["uses"], allowed_actions)
+                continue
+            self.assertIn(keys.get("name"), {
+                "Stage exact encrypted inputs without executing checked-out code",
+                f"Require the exact {environment} release Invoke role",
+            })
+            self.assertIn("run", keys)
+            for executable in (
+                "python scripts/",
+                "python state/",
+                "bash scripts/",
+                "sh scripts/",
+                "source scripts/",
+                "./scripts/",
+                '"$RUNNER_TEMP/age-bin" --',
+            ):
+                self.assertNotIn(executable, text)
+            for line in text.splitlines():
+                if "audit/" not in line:
+                    continue
+                self.assertRegex(
+                    line.strip(),
+                    r'^(?:test -f|cp) "audit/\$(?:archive_path|sidecar_path)"',
+                )
+
         role_arn = (
             "arn:aws:iam::161072922960:role/"
             f"lean-eval-release-unwrap-invoker-{environment}"
@@ -175,100 +287,77 @@ class ReleaseControllerTests(unittest.TestCase):
         self.assertIn("output-credentials: false", workflow)
         self.assertIn("output-env-credentials: true", workflow)
         self.assertIn("unset-current-credentials: true", workflow)
-        self.assertEqual(workflow.count("inline-session-policy: >-"), 1)
-        self.assertEqual(workflow.count('"Action":"lambda:InvokeFunction"'), 1)
+        self.assertEqual(configure_text.count("inline-session-policy: >-"), 1)
+        self.assertEqual(configure_text.count('"Action":"lambda:InvokeFunction"'), 1)
         self.assertEqual(
-            workflow.count('"Resource":"arn:aws:lambda:'),
+            configure_text.count('"Resource":"arn:aws:lambda:'),
             1,
         )
         self.assertNotIn('"Action":"lambda:*"', workflow)
         self.assertIn(
             '"Effect":"Allow","Action":"lambda:InvokeFunction",'
             f'"Resource":"{function_arn}"',
-            workflow,
+            configure_text,
         )
         self.assertIn(
             '"Effect":"Allow","Action":"sts:GetCallerIdentity",'
             '"Resource":"*"',
-            workflow,
+            configure_text,
         )
         self.assertLess(
             workflow.index(role_guard),
             workflow.index("uses: aws-actions/configure-aws-credentials@"),
         )
-        self.assertLess(
-            workflow.index("uses: aws-actions/configure-aws-credentials@"),
-            workflow.index(f"--function-name {function_name}"),
-        )
-
-    def assert_final_authority_step(
-        self,
-        workflow: str,
-        *,
-        final_step_name: str,
-        final_condition: str,
-        function_name: str,
-    ) -> None:
-        action = "uses: aws-actions/configure-aws-credentials@"
-        action_index = workflow.index(action)
-        authority_tail = workflow[action_index:]
-        authored_steps = re.findall(
-            r"^      - (?:name|uses|run): (.+)$", authority_tail, re.MULTILINE
-        )
-        self.assertEqual(authored_steps, [final_step_name])
-        self.assertIn(f"      - name: {final_step_name}\n", authority_tail)
-        self.assertIn(f"        if: {final_condition}\n", authority_tail)
-        self.assertIn(
-            "id: aws\n"
-            "        uses: aws-actions/configure-aws-credentials@",
-            workflow,
-        )
-        self.assertIn("AWS_STEP_OUTCOME: ${{ steps.aws.outcome }}", authority_tail)
-        self.assertRegex(authority_tail, r"trap (?:cleanup|finish) EXIT")
-        self.assertIn(
-            "GitHub injects a fresh OIDC request handle into every step",
-            authority_tail,
-        )
-        oidc_drop = authority_tail.index(
-            'clear_oidc\n          if [ "$AWS_STEP_OUTCOME" != success ]'
-        )
-        invoke = authority_tail.index(f"--function-name {function_name}")
-        authority_drop = authority_tail.index("          clear_authority\n", invoke)
-        decrypt = authority_tail.index('"$RUNNER_TEMP/age-bin" --decrypt', invoke)
-        self.assertLess(oidc_drop, invoke)
-        self.assertLess(invoke, authority_drop)
-        self.assertLess(authority_drop, decrypt)
-        for variable in (
-            "AWS_ACCESS_KEY_ID",
-            "AWS_SECRET_ACCESS_KEY",
-            "AWS_SESSION_TOKEN",
-            "ACTIONS_ID_TOKEN_REQUEST_TOKEN",
-            "ACTIONS_ID_TOKEN_REQUEST_URL",
+        final_text = str(after[0]["text"])
+        self.assertIn("AWS_STEP_OUTCOME: ${{ steps.aws.outcome }}", final_text)
+        self.assertIn(f"--function-name {function_name}", final_text)
+        self.assertIn("exec env -i", final_text)
+        provider, tail = final_text.split("exec env -i", 1)
+        for checkout_executable in (
+            "scripts/",
+            "state/",
+            "audit/",
+            '"$RUNNER_TEMP/age-bin" --',
         ):
-            with self.subTest(variable=variable):
-                self.assertRegex(
-                    authority_tail,
-                    rf"unset [^\n]*\b{re.escape(variable)}\b",
-                )
-                self.assertIn(f"echo '{variable}='", authority_tail)
-                self.assertIn(f'test -z "${{{variable}:-}}"', authority_tail)
+            self.assertNotIn(checkout_executable, provider)
+        self.assertIn("scripts/release_authority_tail.sh", tail)
 
-    def assert_later_authority_step_is_rejected(
-        self,
-        workflow: str,
-        *,
-        final_step_name: str,
-        final_condition: str,
-        function_name: str,
-    ) -> None:
-        hostile = workflow.rstrip() + "\n\n      - run: env\n"
+        if not check_hostile:
+            return
+        hostile_execution = workflow.replace(
+            "          set -euo pipefail\n          umask 077",
+            "          set -euo pipefail\n          sh scripts/hostile.sh\n          umask 077",
+            1,
+        )
         with self.assertRaises(AssertionError):
-            self.assert_final_authority_step(
-                hostile,
-                final_step_name=final_step_name,
-                final_condition=final_condition,
+            self.assert_release_invoke_session_boundary(
+                hostile_execution,
+                job_name=job_name,
+                environment=environment,
                 function_name=function_name,
+                session_name=session_name,
+                check_hostile=False,
             )
+        for first_key in ("run", "if", "id"):
+            if first_key == "run":
+                hostile_step = "      - run: env\n"
+            elif first_key == "if":
+                hostile_step = "      - if: always()\n        run: env\n"
+            else:
+                hostile_step = "      - id: hostile\n        run: env\n"
+            hostile = workflow.rstrip() + "\n\n" + hostile_step
+            with (
+                self.subTest(hostile_first_key=first_key),
+                self.assertRaises(AssertionError),
+            ):
+                self.assert_release_invoke_session_boundary(
+                    hostile,
+                    job_name=job_name,
+                    environment=environment,
+                    function_name=function_name,
+                    session_name=session_name,
+                    check_hostile=False,
+                )
 
     def test_automatic_workflow_closes_the_aws_session_boundary(self) -> None:
         workflow = (ROOT / ".github/workflows/release-controller.yml").read_text(
@@ -276,47 +365,247 @@ class ReleaseControllerTests(unittest.TestCase):
         )
         self.assert_release_invoke_session_boundary(
             workflow,
+            job_name="unwrap-publish",
             environment="production",
             function_name="lean-eval-archive-unwrap-production",
             session_name="lean-eval-release-controller",
         )
-        final_step_name = (
-            "Consume capability and finish one release under one authority boundary"
-        )
-        final_condition = "always() && steps.started.outputs.recorded == 'true'"
-        self.assert_final_authority_step(
-            workflow,
-            final_step_name=final_step_name,
-            final_condition=final_condition,
-            function_name="lean-eval-archive-unwrap-production",
-        )
-        authority_tail = workflow[
-            workflow.index("uses: aws-actions/configure-aws-credentials@") :
+        prepare = workflow[
+            workflow.index("  prepare-one:") : workflow.index("  unwrap-publish:")
         ]
-        invoke = authority_tail.index(
-            "--function-name lean-eval-archive-unwrap-production"
+        privileged = workflow[workflow.index("  unwrap-publish:") :]
+        self.assertNotIn("id-token: write", prepare)
+        self.assertIn(
+            "permissions:\n      contents: read\n      id-token: write",
+            privileged,
         )
-        authority_drop = authority_tail.index("          clear_authority\n", invoke)
+
+        authority_tail = (ROOT / "scripts/release_authority_tail.sh").read_text(
+            encoding="utf-8"
+        )
+        proof = authority_tail.index("assert_no_authority_environment\n")
+        self.assertIn('"/proc/$$/environ" "/proc/$PPID/environ"', authority_tail)
+        self.assertLess(authority_tail.index("trap finish_production EXIT"), proof)
+        proof_complete = authority_tail.index("authority_proven=true", proof)
         for command in (
             "scripts/reconstruct_release.py",
             "scripts/classify_release_publication.py",
             "state-event published",
         ):
             with self.subTest(command=command):
-                self.assertGreater(authority_tail.index(command), authority_drop)
+                self.assertIn(command, authority_tail[proof_complete:])
         self.assertIn(
-            "clear_authority\n"
-            '            if [ "$status" -ne 0 ] && '
-            '[ "$publication_recorded" = false ]; then\n'
-            "              record_retryable_failure",
+            'if [ "$status" -ne 0 ] && [ "$publication_recorded" = false ]; then\n'
+            "    record_retryable_failure",
             authority_tail,
         )
-        self.assert_later_authority_step_is_rejected(
-            workflow,
-            final_step_name=final_step_name,
-            final_condition=final_condition,
-            function_name="lean-eval-archive-unwrap-production",
+        self.assertIn("cmp \"$RUNNER_TEMP/release-started-event.json\"", authority_tail)
+        self.assertIn("scripts/classify_release_publication.py", authority_tail)
+        self.assertIn("len(expected) != 2 or actual != expected", workflow)
+        self.assertIn("audit SSH key was not synchronously removed", workflow)
+        validate = (ROOT / ".github/workflows/validate.yml").read_text(
+            encoding="utf-8"
         )
+        self.assertIn("bash -n scripts/release_authority_tail.sh", validate)
+        self.assertIn("shellcheck scripts/release_authority_tail.sh", validate)
+
+    def test_sanitized_exec_erases_process_start_authority(self) -> None:
+        tail = ROOT / "scripts/release_authority_tail.sh"
+        authority = {
+            "AWS_ACCESS_KEY_ID": "hostile-access-key",
+            "AWS_SECRET_ACCESS_KEY": "hostile-secret-key",
+            "AWS_SESSION_TOKEN": "hostile-session-token",
+            "ACTIONS_ID_TOKEN_REQUEST_TOKEN": "hostile-oidc-token",
+            "ACTIONS_ID_TOKEN_REQUEST_URL": "https://hostile.invalid/oidc",
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            temporary_path = pathlib.Path(temporary)
+            home = temporary_path / "home"
+            runner = temporary_path / "runner"
+            home.mkdir()
+            runner.mkdir()
+            clean = {
+                "PATH": os.environ["PATH"],
+                "HOME": str(home),
+                "RUNNER_TEMP": str(runner),
+            }
+            rejected = subprocess.run(
+                ["bash", str(tail), "probe"],
+                check=False,
+                capture_output=True,
+                text=True,
+                env={**clean, **authority},
+            )
+            self.assertNotEqual(rejected.returncode, 0)
+            self.assertIn("authority variable survived", rejected.stderr)
+
+            assignments = " ".join(
+                f"{name}={value}" for name, value in authority.items()
+            )
+            command = (
+                f"{assignments} bash -c 'exec env -i PATH=\"$PATH\" "
+                "HOME=\"$2\" RUNNER_TEMP=\"$3\" bash --noprofile --norc "
+                "\"$1\" probe' authority-child \"$1\" \"$2\" \"$3\""
+            )
+            accepted = subprocess.run(
+                [
+                    "env",
+                    "-i",
+                    f"PATH={clean['PATH']}",
+                    "bash",
+                    "-c",
+                    command,
+                    "authority-parent",
+                    str(tail),
+                    str(home),
+                    str(runner),
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(accepted.returncode, 0, accepted.stderr)
+
+            parent_command = (
+                "env -i PATH=\"$PATH\" HOME=\"$2\" RUNNER_TEMP=\"$3\" "
+                "bash --noprofile --norc \"$1\" probe; status=$?; :; exit $status"
+            )
+            contaminated_parent = subprocess.run(
+                [
+                    "bash",
+                    "-c",
+                    parent_command,
+                    "authority-parent",
+                    str(tail),
+                    str(home),
+                    str(runner),
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+                env={**clean, **authority},
+            )
+            self.assertNotEqual(contaminated_parent.returncode, 0)
+            self.assertIn("process-readable", contaminated_parent.stderr)
+
+    def test_literal_provider_is_exact_and_prepare_unwrap_equivalent(self) -> None:
+        source = (ROOT / "scripts/release_provider_literal.py").read_text(
+            encoding="utf-8"
+        )
+        workflows = (
+            ("release-controller.yml", "unwrap-publish"),
+            ("credentialed-release-staging-smoke.yml", "unwrap-one"),
+        )
+        for workflow_name, job_name in workflows:
+            workflow = (ROOT / ".github/workflows" / workflow_name).read_text(
+                encoding="utf-8"
+            )
+            final = workflow_job_steps(workflow, job_name)[-1]
+            run = str(final["text"])
+            start = run.index("<<'PY'\n") + len("<<'PY'\n")
+            end = run.index("          PY\n", start)
+            literal_lines = run[start:end].splitlines()
+            self.assertTrue(literal_lines)
+            self.assertTrue(
+                all(not line or line.startswith("          ") for line in literal_lines)
+            )
+            literal = "\n".join(
+                line[10:] if line else "" for line in literal_lines
+            ) + "\n"
+            self.assertEqual(literal, source)
+            run_body = run.split("        run: |\n", 1)[1]
+            self.assertNotIn("${{", run_body)
+
+        trusted = dt.datetime.fromisoformat(NOW.replace("Z", "+00:00"))
+        random_bytes = bytes(range(10))
+        nonce = "a" * 64
+        expected = prepare_unwrap(
+            self.plan,
+            self.sidecar,
+            self.ciphertext,
+            NOW,
+            random_bytes=random_bytes,
+            runner_nonce=nonce,
+        )
+        actual = release_provider_literal.build_request(
+            self.plan,
+            self.sidecar,
+            self.ciphertext,
+            trusted,
+            random_bytes=random_bytes,
+            runner_nonce=nonce,
+        )
+        self.assertEqual(actual, expected)
+
+        hostile_values: list[tuple[dict[str, object], bytes]] = []
+        for change in (
+            lambda value: value.update(unexpected=True),
+            lambda value: value.update(schema_version=True),
+            lambda value: value.update(size_bytes_ciphertext=999),
+            lambda value: value.update(archiver_workflow_run="https://invalid.test/1"),
+        ):
+            changed = copy.deepcopy(self.sidecar)
+            change(changed)
+            hostile_values.append((changed, self.ciphertext))
+        for change in (
+            lambda value: value.update(unexpected=True),
+            lambda value: value.update(schema_version=True),
+            lambda value: value.update(age_recipient="age1invalid"),
+            lambda value: value.update(wrapped_identity=""),
+            lambda value: value.update(wrapped_identity="YQ="),
+            lambda value: value.update(wrapped_identity="YQ==" * 5000),
+        ):
+            changed = copy.deepcopy(self.sidecar)
+            change(changed["key_envelope"])
+            hostile_values.append((changed, self.ciphertext))
+
+        for sidecar, ciphertext in hostile_values:
+            with self.subTest(sidecar=sidecar):
+                with self.assertRaises(ControllerError):
+                    prepare_unwrap(self.plan, sidecar, ciphertext, NOW)
+                with self.assertRaises(release_provider_literal.ProviderError):
+                    release_provider_literal.build_request(
+                        self.plan,
+                        sidecar,
+                        ciphertext,
+                        trusted,
+                        random_bytes=random_bytes,
+                        runner_nonce=nonce,
+                    )
+
+    def test_literal_provider_scans_runner_authority_files(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = pathlib.Path(temporary)
+            runner = root / "runner"
+            home = root / "home"
+            commands = runner / "_runner_file_commands"
+            aws = home / ".aws"
+            commands.mkdir(parents=True)
+            aws.mkdir(parents=True)
+            environment = {
+                "RUNNER_TEMP": str(runner),
+                "HOME": str(home),
+                "AWS_ACCESS_KEY_ID": "temporary-exact-access-key",
+            }
+            (commands / "safe").write_text("PATH=/usr/bin\n", encoding="utf-8")
+            release_provider_literal.scan_authority_files(environment)
+            (commands / "credential").write_text(
+                "temporary-exact-access-key\n", encoding="utf-8"
+            )
+            with self.assertRaisesRegex(
+                release_provider_literal.ProviderError,
+                "authority remains",
+            ):
+                release_provider_literal.scan_authority_files(environment)
+            (commands / "credential").unlink()
+            (aws / "credentials").write_text(
+                "aws_secret_access_key = residual\n", encoding="utf-8"
+            )
+            with self.assertRaisesRegex(
+                release_provider_literal.ProviderError,
+                "authority remains",
+            ):
+                release_provider_literal.scan_authority_files(environment)
 
     def test_production_credential_preflight_is_manual_and_nonmutating(self) -> None:
         workflow = (
@@ -830,7 +1119,7 @@ class ReleaseControllerTests(unittest.TestCase):
         self.assertIn("environment: release-staging", workflow)
         self.assertIn("repository: leanprover/lean-eval-state-staging", workflow)
         self.assertIn("repository: leanprover/lean-eval-audit", workflow)
-        self.assertIn("ref: ${{ steps.plan.outputs.archive_commit }}", workflow)
+        self.assertIn("ref: ${{ needs.prepare-one.outputs.archive_commit }}", workflow)
         self.assertIn("secrets.STAGING_STATE_READ_KEY", workflow)
         self.assertIn("secrets.AUDIT_READ_KEY", workflow)
         self.assertIn("lean-eval-archive-unwrap-staging", workflow)
@@ -862,23 +1151,27 @@ class ReleaseControllerTests(unittest.TestCase):
         self.assertNotIn("reconstruct_release.py", workflow)
         self.assert_release_invoke_session_boundary(
             workflow,
+            job_name="unwrap-one",
             environment="staging",
             function_name="lean-eval-archive-unwrap-staging",
             session_name="lean-eval-release-staging-smoke",
         )
-        final_step_name = "Consume one capability, drop authority, and verify plaintext"
-        self.assert_final_authority_step(
-            workflow,
-            final_step_name=final_step_name,
-            final_condition="always()",
-            function_name="lean-eval-archive-unwrap-staging",
+        prepare = workflow[
+            workflow.index("  prepare-one:") : workflow.index("  unwrap-one:")
+        ]
+        privileged = workflow[workflow.index("  unwrap-one:") :]
+        self.assertNotIn("id-token: write", prepare)
+        self.assertIn(
+            "permissions:\n      contents: read\n      id-token: write",
+            privileged,
         )
-        self.assert_later_authority_step_is_rejected(
-            workflow,
-            final_step_name=final_step_name,
-            final_condition="always()",
-            function_name="lean-eval-archive-unwrap-staging",
+        tail = (ROOT / "scripts/release_authority_tail.sh").read_text(
+            encoding="utf-8"
         )
+        proof = tail.index("assert_no_authority_environment\n")
+        self.assertGreater(tail.rindex('if [ "$mode" = staging ]'), proof)
+        self.assertGreater(tail.index('"$RUNNER_TEMP/age-bin" --decrypt'), proof)
+        self.assertIn("audit SSH key was not synchronously removed", workflow)
 
     def test_every_external_action_is_pinned_to_a_full_commit(self) -> None:
         action = re.compile(r"^\s*(?:- )?uses:\s*([^\s#]+)", re.MULTILINE)
@@ -892,7 +1185,7 @@ class ReleaseControllerTests(unittest.TestCase):
                     if reference.startswith("./"):
                         continue
                     self.assertRegex(reference, r"^[^@]+@[0-9a-f]{40}$")
-        self.assertEqual(len(references), 23)
+        self.assertEqual(len(references), 28)
 
     def request(self) -> dict[str, object]:
         return prepare_unwrap(

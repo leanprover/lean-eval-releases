@@ -34,6 +34,10 @@ jobs:
           echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
       - name: Check Python syntax
         run: python -m compileall -q scripts tests
+      - name: Check the sanitized release authority tail
+        run: |
+          bash -n scripts/release_authority_tail.sh
+          shellcheck scripts/release_authority_tail.sh
       - name: Lint workflows
         # Disable ambient runner linters; actionlint itself is commit-pinned.
         run: actionlint -shellcheck= -pyflakes=
