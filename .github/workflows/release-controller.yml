@@ -441,6 +441,7 @@ jobs:
       # secret-bearing shell with a closed environment before checkout code.
       - name: Invoke once and exec the sanitized release tail
         if: always()
+        shell: /usr/bin/setsid --wait /usr/bin/bash --noprofile --norc -e {0}
         env:
           AWS_STEP_OUTCOME: ${{ steps.aws.outcome }}
         run: |
@@ -449,7 +450,8 @@ jobs:
           trap - EXIT INT TERM
           set +e
           if [ -n "${RUNNER_TEMP:-}" ] && [ -d "$RUNNER_TEMP" ]; then
-            /usr/bin/rm -rf "$RUNNER_TEMP/reconstructed" "$RUNNER_TEMP/state-views"
+            /usr/bin/rm -rf "$RUNNER_TEMP/reconstructed" \
+              "$RUNNER_TEMP"/.reconstructed-* "$RUNNER_TEMP/state-views"
             /usr/bin/rm -f "$RUNNER_TEMP"/release-*.json "$RUNNER_TEMP"/unwrap-*.json \
               "$RUNNER_TEMP"/identity.age "$RUNNER_TEMP"/source.tar.gz \
               "$RUNNER_TEMP"/archive.tar.age \
@@ -460,6 +462,106 @@ jobs:
           exit "$status"' EXIT INT TERM
           set -euo pipefail
           umask 077
+          IFS= read -r parent_stat < "/proc/$$/stat"
+          read -r -a parent_fields <<< "${parent_stat##*) }"
+          parent_start=${parent_fields[19]}
+          parent_group=${parent_fields[2]}
+          parent_session=${parent_fields[3]}
+          [[ "$parent_start:$parent_group:$parent_session" =~ ^[0-9]+:[0-9]+:[0-9]+$ ]]
+          test "$parent_group" = "$$"
+          test "$parent_session" = "$$"
+          coproc RELEASE_CLEANUP_SUPERVISOR {
+            exec -c /usr/bin/setsid /usr/bin/bash --noprofile --norc -c '
+              cleanup_scratch() {
+                runner_temp=$1
+                if [ -n "$runner_temp" ] && [ -d "$runner_temp" ]; then
+                  /usr/bin/rm -rf "$runner_temp/reconstructed" \
+                    "$runner_temp"/.reconstructed-* "$runner_temp/state-views"
+                  /usr/bin/rm -f "$runner_temp"/release-*.json \
+                    "$runner_temp"/unwrap-*.json "$runner_temp"/identity.age \
+                    "$runner_temp"/source.tar.gz "$runner_temp"/archive.tar.age \
+                    "$runner_temp"/archive-sidecar.json "$runner_temp"/age-bin \
+                    "$runner_temp"/pre-authority-stage.json
+                fi
+              }
+              process_group_live() {
+                local stat_path process_stat
+                local -a process_fields
+                for stat_path in /proc/[0-9]*/stat; do
+                  [ -r "$stat_path" ] || continue
+                  IFS= read -r process_stat < "$stat_path" || continue
+                  read -r -a process_fields <<< "${process_stat##*) }"
+                  if [ "${process_fields[2]:-}" = "$parent_group" ] && \
+                    [ "${process_fields[0]:-}" != Z ]; then
+                    return 0
+                  fi
+                done
+                return 1
+              }
+              parent_identity_reused() {
+                local identity_stat
+                local -a identity_fields
+                [ -r "/proc/$parent_pid/stat" ] || return 1
+                IFS= read -r identity_stat < "/proc/$parent_pid/stat" || return 1
+                read -r -a identity_fields <<< "${identity_stat##*) }"
+                [ "${identity_fields[19]:-}" != "$expected_start" ]
+              }
+              # shellcheck disable=SC2154  # Assigned inside this EXIT trap.
+              trap '\''status=$?
+              trap - EXIT
+              set +e
+              cleanup_scratch "$1"
+              exit "$status"'\'' EXIT
+              trap '\''cleanup_scratch "$1"'\'' INT TERM HUP
+              set -euo pipefail
+              umask 077
+              runner_temp=$1
+              parent_pid=$2
+              expected_start=$3
+              parent_group=$4
+              IFS= read -r current_stat < "/proc/$parent_pid/stat"
+              read -r -a current_fields <<< "${current_stat##*) }"
+              test "${current_fields[19]:-}" = "$expected_start"
+              test "${current_fields[0]:-}" != Z
+              printf "%s\n" lean-eval-release-cleanup-supervisor-ready-v1
+              while [ -r "/proc/$parent_pid/stat" ]; do
+                IFS= read -r current_stat < "/proc/$parent_pid/stat" || break
+                read -r -a current_fields <<< "${current_stat##*) }"
+                [ "${current_fields[19]:-}" = "$expected_start" ] || break
+                [ "${current_fields[0]:-}" != Z ] || break
+                /usr/bin/sleep 0.1
+              done
+              set +e
+              cleanup_scratch "$runner_temp"
+              if process_group_live && ! parent_identity_reused; then
+                /usr/bin/kill -TERM -- "-$parent_group" 2>/dev/null
+                for _ in {1..50}; do
+                  cleanup_scratch "$runner_temp"
+                  process_group_live || break
+                  /usr/bin/sleep 0.05
+                done
+                if process_group_live && ! parent_identity_reused; then
+                  /usr/bin/kill -KILL -- "-$parent_group" 2>/dev/null
+                  while process_group_live && ! parent_identity_reused; do
+                    cleanup_scratch "$runner_temp"
+                    /usr/bin/sleep 0.05
+                  done
+                fi
+              fi
+              cleanup_scratch "$runner_temp"
+            ' lean-eval-release-cleanup-supervisor-v1 \
+              "$RUNNER_TEMP" "$$" "$parent_start" "$parent_group"
+          }
+          supervisor_read=${RELEASE_CLEANUP_SUPERVISOR[0]}
+          supervisor_write=${RELEASE_CLEANUP_SUPERVISOR[1]}
+          IFS= read -r supervisor_ready <&"$supervisor_read"
+          test "$supervisor_ready" = \
+            lean-eval-release-cleanup-supervisor-ready-v1
+          exec {supervisor_read}<&-
+          exec {supervisor_write}>&-
+          unset RELEASE_CLEANUP_SUPERVISOR RELEASE_CLEANUP_SUPERVISOR_PID
+          unset parent_fields parent_group parent_session parent_start parent_stat
+          unset supervisor_read supervisor_ready supervisor_write
           python_bin=$(readlink --canonicalize-existing "$(command -v python)")
           case "$python_bin" in /*) ;; *) exit 1 ;; esac
           [ -x "$python_bin" ]
@@ -1217,52 +1319,6 @@ jobs:
           fi
           unset AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN
           unset ACTIONS_ID_TOKEN_REQUEST_TOKEN ACTIONS_ID_TOKEN_REQUEST_URL
-          IFS= read -r parent_stat < "/proc/$$/stat"
-          read -r -a parent_fields <<< "${parent_stat##*) }"
-          parent_start=${parent_fields[19]}
-          [[ "$parent_start" =~ ^[0-9]+$ ]]
-          coproc RELEASE_CLEANUP_SUPERVISOR {
-            exec -c /usr/bin/bash --noprofile --norc -c '
-              trap '\''status=$?
-              trap - EXIT INT TERM
-              set +e
-              runner_temp=$1
-              if [ -n "$runner_temp" ] && [ -d "$runner_temp" ]; then
-                /usr/bin/rm -rf "$runner_temp/reconstructed" \
-                  "$runner_temp/state-views"
-                /usr/bin/rm -f "$runner_temp"/release-*.json \
-                  "$runner_temp"/unwrap-*.json "$runner_temp"/identity.age \
-                  "$runner_temp"/source.tar.gz "$runner_temp"/archive.tar.age \
-                  "$runner_temp"/archive-sidecar.json "$runner_temp"/age-bin \
-                  "$runner_temp"/pre-authority-stage.json
-              fi
-              exit "$status"'\'' EXIT INT TERM
-              set -euo pipefail
-              umask 077
-              printf "%s\n" lean-eval-release-cleanup-supervisor-ready-v1
-              runner_temp=$1
-              parent_pid=$2
-              expected_start=$3
-              while [ -r "/proc/$parent_pid/stat" ]; do
-                IFS= read -r current_stat < "/proc/$parent_pid/stat" || break
-                read -r -a current_fields <<< "${current_stat##*) }"
-                [ "${current_fields[19]:-}" = "$expected_start" ] || break
-                [ "${current_fields[0]:-}" != Z ] || break
-                /usr/bin/sleep 0.1
-              done
-            ' lean-eval-release-cleanup-supervisor-v1 \
-              "$RUNNER_TEMP" "$$" "$parent_start"
-          }
-          supervisor_read=${RELEASE_CLEANUP_SUPERVISOR[0]}
-          supervisor_write=${RELEASE_CLEANUP_SUPERVISOR[1]}
-          IFS= read -r supervisor_ready <&"$supervisor_read"
-          test "$supervisor_ready" = \
-            lean-eval-release-cleanup-supervisor-ready-v1
-          exec {supervisor_read}<&-
-          exec {supervisor_write}>&-
-          unset RELEASE_CLEANUP_SUPERVISOR RELEASE_CLEANUP_SUPERVISOR_PID
-          unset parent_fields parent_start parent_stat
-          unset supervisor_read supervisor_ready supervisor_write
           exec -c /usr/bin/bash --noprofile --norc -s -- \
             production "$HOME" "$python_bin" "$RUNNER_TEMP" \
             "$GITHUB_STEP_SUMMARY" '' <<'SANITIZED'
@@ -1276,7 +1332,8 @@ jobs:
           trap - EXIT INT TERM
           set +e
           if [ -n "${RUNNER_TEMP:-}" ] && [ -d "$RUNNER_TEMP" ]; then
-            /usr/bin/rm -rf "$RUNNER_TEMP/reconstructed" "$RUNNER_TEMP/state-views"
+            /usr/bin/rm -rf "$RUNNER_TEMP/reconstructed" \
+              "$RUNNER_TEMP"/.reconstructed-* "$RUNNER_TEMP/state-views"
             /usr/bin/rm -f "$RUNNER_TEMP"/release-*.json "$RUNNER_TEMP"/unwrap-*.json \
               "$RUNNER_TEMP"/identity.age "$RUNNER_TEMP"/source.tar.gz \
               "$RUNNER_TEMP"/archive.tar.age "$RUNNER_TEMP"/archive-sidecar.json \
@@ -1453,7 +1510,12 @@ jobs:
           test "$(git rev-parse HEAD)" = "$release_commit"
           test "$(git rev-parse HEAD:scripts/release_authority_tail.sh)" = "$tail_blob"
           test "$(git hash-object scripts/release_authority_tail.sh)" = "$tail_blob"
-          test -z "$(git status --porcelain --untracked-files=all)"
+          if [ "$mode" = production ]; then
+            test -z "$(git status --porcelain --untracked-files=all -- \
+              . ':(exclude)state')"
+          else
+            test -z "$(git status --porcelain --untracked-files=all)"
+          fi
           git diff --quiet HEAD --
           git diff --cached --quiet HEAD --
           if [ "$mode" = production ]; then

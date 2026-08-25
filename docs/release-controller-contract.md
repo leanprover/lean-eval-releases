@@ -47,14 +47,19 @@ as its first command, before resolving Python or inspecting the authority
 result. A direct `exec -c` into the absolute system Bash then replaces the
 secret-bearing shell with an empty-environment process which installs the same
 literal cleanup trap before executing a second literal workflow program, not a
-checkout. After authority variables are unset, an empty-environment cleanup
-supervisor installs its own cancellation trap and reports readiness before
-checkout can execute. It polls the exact authority-process PID plus Linux
+checkout. Before provider validation or the AWS invocation, an
+empty-environment cleanup supervisor enters a session separate from the
+authority process and reports readiness. The authority step itself starts in a
+dedicated session, so its process group can be terminated without killing the
+supervisor. The supervisor polls the exact authority-process PID plus Linux
 process start-time identity; no cleanup pipe or descriptor is inherited by the
-checked-out tail or its subprocesses. It therefore cleans after a failed
-handoff exec or abrupt parent death even though Bash does not run `EXIT`, and a
-surviving descendant cannot delay cleanup. The exact tail installs the same
-synchronous cancellation coverage before sensitive work and replaces it with
+checked-out tail or its subprocesses. After abrupt parent death it scrubs,
+terminates the isolated authority process group, keeps scrubbing while any live
+group member remains, and scrubs once more after the last writer is gone. It
+therefore covers failed handoff exec, parent or process-group death, and
+descendants that would otherwise recreate private scratch. The exact tail
+installs the same synchronous cancellation coverage before sensitive work and
+replaces it with
 mode-specific traps only after its cleanup functions exist. Thus early setup
 failure, cancellation, and a failed closed-environment handoff remove the
 unwrap response, plaintext identity, and every staged private scratch file
@@ -84,6 +89,9 @@ then validates a closed pre-authority staging record, hashes every staged input
 and the age binary, proves the release and production State checkouts remain at
 the exact planned commits with no tracked, cached, or untracked change, and
 proves the tail's working bytes are the exact Git blob at that release commit.
+In production the root status check excludes only the intentional nested
+`state/` checkout, whose exact head and complete cleanliness are checked
+separately; every other root untracked path remains forbidden.
 `scripts/release_sanitizer_literal.sh` is only its
 non-executed review mirror; tests require both workflow heredocs to equal it.
 Only after every literal proof succeeds does it execute the checked-out tail to
@@ -116,7 +124,8 @@ the two exact paths referenced by the release and State Git configurations
 The production failure trap is installed at the beginning of the checked-out
 tail, which can be reached only after the literal authority and checkout proof.
 Any later failure first removes the unwrap response, identity, plaintext tar,
-private archive, sidecar, release plan, reconstruction, and State
+private archive, sidecar, release plan, completed or in-progress hidden
+reconstruction directories, and State
 materialization, preserving only the committed non-source `release.started`
 event needed by retry recording. Only after that synchronous erasure may it
 attempt a compare-and-swap `release.failed`; `INT` and `TERM` skip network
