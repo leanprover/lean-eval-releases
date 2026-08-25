@@ -11,6 +11,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+import textwrap
 import unittest
 
 from scripts import release_provider_literal
@@ -318,8 +319,8 @@ class ReleaseControllerTests(unittest.TestCase):
         final_text = str(after[0]["text"])
         self.assertIn("AWS_STEP_OUTCOME: ${{ steps.aws.outcome }}", final_text)
         self.assertIn(f"--function-name {function_name}", final_text)
-        self.assertIn("exec env -i", final_text)
-        provider, tail = final_text.split("exec env -i", 1)
+        self.assertIn("exec -c /usr/bin/bash", final_text)
+        provider, tail = final_text.split("exec -c /usr/bin/bash", 1)
         for checkout_executable in (
             "scripts/",
             "state/",
@@ -392,7 +393,7 @@ class ReleaseControllerTests(unittest.TestCase):
         )
         proof = sanitizer.index('for proc in "/proc/$$/environ"')
         self.assertIn('"/proc/$$/environ" "/proc/$PPID/environ"', sanitizer)
-        self.assertLess(sanitizer.index("trap literal_cleanup EXIT"), proof)
+        self.assertLess(sanitizer.index("trap 'status=$?"), proof)
         proof_complete = sanitizer.index("trap - EXIT", proof)
         checkout_tail = sanitizer.index(
             "scripts/release_authority_tail.sh", proof_complete
@@ -415,6 +416,21 @@ class ReleaseControllerTests(unittest.TestCase):
         )
         self.assertIn("cmp \"$RUNNER_TEMP/release-started-event.json\"", authority_tail)
         self.assertIn("scripts/classify_release_publication.py", authority_tail)
+        self.assertEqual(authority_tail.count("expected_plaintext=$(jq"), 2)
+        self.assertEqual(authority_tail.count("actual_plaintext=$(sha256sum"), 2)
+        production_decrypt = authority_tail.rindex(
+            '"$RUNNER_TEMP/age-bin" --decrypt'
+        )
+        production_digest = authority_tail.index(
+            "expected_plaintext=$(jq -er",
+            production_decrypt,
+        )
+        production_reconstruct = authority_tail.index(
+            "scripts/reconstruct_release.py",
+            production_digest,
+        )
+        self.assertLess(production_decrypt, production_digest)
+        self.assertLess(production_digest, production_reconstruct)
         self.assertIn("len(expected) != 2 or actual != expected", workflow)
         self.assertIn("audit SSH key was not synchronously removed", workflow)
         validate = (ROOT / ".github/workflows/validate.yml").read_text(
@@ -515,9 +531,24 @@ class ReleaseControllerTests(unittest.TestCase):
     def test_literal_sanitizer_is_the_only_gate_into_checkout_code(self) -> None:
         sanitizer = ROOT / "scripts/release_sanitizer_literal.sh"
         bash = shutil.which("bash")
+        rm = shutil.which("rm")
         self.assertIsNotNone(bash)
+        self.assertIsNotNone(rm)
         with tempfile.TemporaryDirectory() as temporary:
             root = pathlib.Path(temporary)
+            test_sanitizer = root / "release-sanitizer.sh"
+            sanitizer_source = sanitizer.read_text(encoding="utf-8")
+            self.assertEqual(
+                sanitizer_source.count("PATH=/usr/local/bin:/usr/bin:/bin"),
+                1,
+            )
+            test_sanitizer.write_text(
+                sanitizer_source.replace(
+                    "PATH=/usr/local/bin:/usr/bin:/bin",
+                    f"PATH={os.environ['PATH']}",
+                ).replace("/usr/bin/rm", str(rm)),
+                encoding="utf-8",
+            )
             python_bin = root / "python-bin"
             python_bin.write_text("#!/bin/sh\necho 3.11\n", encoding="utf-8")
             python_bin.chmod(0o555)
@@ -598,23 +629,23 @@ class ReleaseControllerTests(unittest.TestCase):
                 "age_binary_sha256": digest("age-bin"),
             }
             proof_path = runner / "pre-authority-stage.json"
-            environment = {
-                "HOME": str(home),
-                "PATH": os.environ["PATH"],
-                "PYTHON_BIN": str(python_bin),
-                "RUNNER_TEMP": str(runner),
-                "GITHUB_STEP_SUMMARY": str(root / "summary.md"),
-                "SUBMISSION_ID": "0198abcd-0000-7000-8000-000000000002",
-            }
-
             def run() -> subprocess.CompletedProcess[str]:
                 return subprocess.run(
-                    [str(bash), str(sanitizer), "staging"],
+                    [
+                        str(bash),
+                        str(test_sanitizer),
+                        "staging",
+                        str(home),
+                        str(python_bin),
+                        str(runner),
+                        str(root / "summary.md"),
+                        "0198abcd-0000-7000-8000-000000000002",
+                    ],
                     cwd=checkout,
                     check=False,
                     capture_output=True,
                     text=True,
-                    env=environment,
+                    env={},
                 )
 
             proof_path.write_text(json.dumps(proof) + "\n", encoding="utf-8")
@@ -639,6 +670,89 @@ class ReleaseControllerTests(unittest.TestCase):
             self.assertNotEqual(rejected.returncode, 0)
             self.assertFalse((runner / "tail-ran").exists())
             self.assertFalse((checkout / "should-not-run").exists())
+
+    def test_final_authority_cleanup_covers_early_and_handoff_failure(self) -> None:
+        bash = shutil.which("bash")
+        rm = shutil.which("rm")
+        self.assertIsNotNone(bash)
+        self.assertIsNotNone(rm)
+        for workflow_name, job_name in (
+            ("release-controller.yml", "unwrap-publish"),
+            ("credentialed-release-staging-smoke.yml", "unwrap-one"),
+        ):
+            workflow = (ROOT / ".github/workflows" / workflow_name).read_text(
+                encoding="utf-8"
+            )
+            final = str(workflow_job_steps(workflow, job_name)[-1]["text"])
+            body = final.split("        run: |\n", 1)[1]
+            self.assertTrue(body.startswith("          trap 'status=$?\n"))
+            set_line = "          set -euo pipefail\n"
+            prologue_end = body.index(set_line) + len(set_line)
+            prologue = textwrap.dedent(body[:prologue_end]).replace(
+                "/usr/bin/rm", str(rm)
+            )
+            handoff = body.index("exec -c /usr/bin/bash")
+            self.assertNotIn(
+                "scripts/release_authority_tail.sh",
+                body[prologue_end:handoff],
+            )
+
+            with tempfile.TemporaryDirectory() as temporary:
+                runner = pathlib.Path(temporary) / "runner"
+                runner.mkdir()
+                private_files = (
+                    "release-plan.json",
+                    "release-started-event.json",
+                    "unwrap-request.json",
+                    "unwrap-response.json",
+                    "unwrap-metadata.json",
+                    "identity.age",
+                    "source.tar.gz",
+                    "archive.tar.age",
+                    "archive-sidecar.json",
+                    "age-bin",
+                    "pre-authority-stage.json",
+                )
+
+                def populate(
+                    cleanup_root: pathlib.Path = runner,
+                    cleanup_files: tuple[str, ...] = private_files,
+                ) -> None:
+                    for name in cleanup_files:
+                        (cleanup_root / name).write_text(
+                            "plaintext_identity_base64=PRIVATE\n",
+                            encoding="utf-8",
+                        )
+                    (cleanup_root / "reconstructed").mkdir()
+                    (cleanup_root / "state-views").mkdir()
+
+                def assert_clean(
+                    cleanup_root: pathlib.Path = runner,
+                    cleanup_files: tuple[str, ...] = private_files,
+                ) -> None:
+                    for name in cleanup_files:
+                        self.assertFalse((cleanup_root / name).exists(), name)
+                    self.assertFalse((cleanup_root / "reconstructed").exists())
+                    self.assertFalse((cleanup_root / "state-views").exists())
+
+                for label, failure in (
+                    ("early", "false\n"),
+                    ("handoff", "exec /definitely/missing/lean-eval-bash\n"),
+                ):
+                    with self.subTest(
+                        workflow=workflow_name,
+                        failure=label,
+                    ):
+                        populate()
+                        failed = subprocess.run(
+                            [str(bash), "-c", prologue + failure],
+                            check=False,
+                            capture_output=True,
+                            text=True,
+                            env={"RUNNER_TEMP": str(runner)},
+                        )
+                        self.assertNotEqual(failed.returncode, 0)
+                        assert_clean()
 
     def test_literal_provider_is_exact_and_prepare_unwrap_equivalent(self) -> None:
         source = (ROOT / "scripts/release_provider_literal.py").read_text(
@@ -690,7 +804,7 @@ class ReleaseControllerTests(unittest.TestCase):
             failure_gate = run.index(
                 'if [ "$provider_status" -ne 0 ]; then', provider_end
             )
-            sanitized_exec = run.index("exec env -i", failure_gate)
+            sanitized_exec = run.index("exec -c /usr/bin/bash", failure_gate)
             self.assertLess(failure_gate, sanitized_exec)
             self.assertNotIn(
                 "scripts/release_authority_tail.sh",

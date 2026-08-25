@@ -1,8 +1,20 @@
 #!/usr/bin/env bash
 
-# Review mirror for the post-env literal embedded in both release workflows.
+# Review mirror for the empty-environment literal in both release workflows.
 # The workflows execute their embedded copies, never this checked-out file.
 
+# shellcheck disable=SC2154  # Assigned inside this first-command EXIT trap.
+trap 'status=$?
+trap - EXIT
+set +e
+if [ -n "${RUNNER_TEMP:-}" ] && [ -d "$RUNNER_TEMP" ]; then
+  /usr/bin/rm -rf "$RUNNER_TEMP/reconstructed" "$RUNNER_TEMP/state-views"
+  /usr/bin/rm -f "$RUNNER_TEMP"/release-*.json "$RUNNER_TEMP"/unwrap-*.json \
+    "$RUNNER_TEMP"/identity.age "$RUNNER_TEMP"/source.tar.gz \
+    "$RUNNER_TEMP"/archive.tar.age "$RUNNER_TEMP"/archive-sidecar.json \
+    "$RUNNER_TEMP"/age-bin "$RUNNER_TEMP"/pre-authority-stage.json
+fi
+exit "$status"' EXIT
 set -euo pipefail
 
 mode=${1:-}
@@ -11,20 +23,20 @@ case "$mode" in
   *) echo "literal release sanitizer mode is invalid" >&2; exit 2 ;;
 esac
 
-literal_cleanup() {
-  local status=$?
-  trap - EXIT
-  set +e
-  if [ -n "${RUNNER_TEMP:-}" ] && [ -d "$RUNNER_TEMP" ]; then
-    rm -rf "$RUNNER_TEMP/reconstructed" "$RUNNER_TEMP/state-views"
-    rm -f "$RUNNER_TEMP"/release-*.json "$RUNNER_TEMP"/unwrap-*.json \
-      "$RUNNER_TEMP"/identity.age "$RUNNER_TEMP"/source.tar.gz \
-      "$RUNNER_TEMP"/archive.tar.age "$RUNNER_TEMP"/archive-sidecar.json \
-      "$RUNNER_TEMP"/age-bin "$RUNNER_TEMP"/pre-authority-stage.json
-  fi
-  exit "$status"
-}
-trap literal_cleanup EXIT
+if [ "$mode" = probe ]; then
+  HOME=${HOME:-}
+  PATH=${PATH:-}
+  RUNNER_TEMP=${RUNNER_TEMP:-}
+else
+  [ "$#" -eq 6 ]
+  HOME=$2
+  PYTHON_BIN=$3
+  RUNNER_TEMP=$4
+  GITHUB_STEP_SUMMARY=$5
+  SUBMISSION_ID=$6
+  PATH=/usr/local/bin:/usr/bin:/bin
+fi
+export HOME PATH
 
 authority_names=(
   AWS_ACCESS_KEY_ID
