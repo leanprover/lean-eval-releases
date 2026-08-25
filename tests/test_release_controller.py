@@ -13,15 +13,18 @@ import shutil
 import signal
 import stat
 import subprocess
+import sys
 import tempfile
 import textwrap
 import time
 import unittest
 
 from scripts import release_provider_literal
+from scripts.reconstruct_release_plan import ReconstructionError, reconstruct
 from scripts.release_controller import (
     ControllerError,
     archive_key_id,
+    authority_descriptor,
     canonical_json,
     capability_digest,
     plan_release_state_transition,
@@ -36,7 +39,8 @@ from scripts.release_controller import (
     uuid7,
     verify_staged_release_state_transition,
 )
-from scripts.release_orchestrator import plan_next
+from scripts.release_orchestrator import plan_next, result_id
+from scripts.release_qualification import build_qualification
 
 ROOT = pathlib.Path(__file__).parents[1]
 NOW = "2026-10-20T06:07:05.000Z"
@@ -180,7 +184,7 @@ class ReleaseControllerTests(unittest.TestCase):
             re.compile(
                 r"- uses: actions/checkout@[0-9a-f]{40}\n"
                 r"        with:\n"
-                r"          ref: main\n"
+                r"          ref: \$\{\{ needs\.prepare-one\.outputs\.release_commit \}\}\n"
                 r"          fetch-depth: 0\n"
                 r"          persist-credentials: true"
             ),
@@ -213,10 +217,12 @@ class ReleaseControllerTests(unittest.TestCase):
         self.assertIn("state_commit=$(git -C state rev-parse HEAD)", started_step)
         self.assertIn('"state_commit=$state_commit"', started_step)
         self.assertIn(
-            'plan_base64=$(base64 --wrap=0 "$RUNNER_TEMP/release-plan.json")',
+            "release_controller.py authority-descriptor",
             started_step,
         )
-        self.assertIn("started_event_base64=$(base64 --wrap=0", started_step)
+        self.assertNotIn("base64", started_step)
+        self.assertNotIn("plan_base64", workflow)
+        self.assertNotIn("started_event_base64", workflow)
         self.assertNotIn("upload-artifact", workflow)
         self.assertNotIn("actions/download-artifact", workflow)
         self.assertIn("--history-only", workflow)
@@ -237,6 +243,347 @@ class ReleaseControllerTests(unittest.TestCase):
         self.assertEqual(controller.count("--protected-main-commit"), 4)
         self.assertNotIn("state.py --root state append", workflow)
         self.assertNotIn("git -C state rebase", workflow)
+
+    def test_cross_job_handoff_discloses_no_private_plan_metadata(self) -> None:
+        queue = json.loads(
+            (ROOT / "tests/fixtures/release-queue-v1.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        task = queue["tasks"][0]
+        sentinels = (
+            "private-owner",
+            "PRIVATE_MODEL_SENTINEL",
+            "PRIVATE_PROMPT_SENTINEL",
+            "PRIVATE_NOTES_SENTINEL",
+        )
+        task["owner_login"] = sentinels[0]
+        task["declared_model"] = sentinels[1]
+        task["production_metadata"] = {
+            "prompt": sentinels[2],
+            "notes": sentinels[3],
+        }
+        task["result_id"] = result_id(
+            task["owner_login"],
+            task["declared_model"],
+            task["problem_id"],
+            task["statement_revision"],
+        )
+        plan = plan_next(queue, NOW)
+        started = started_event(plan, NOW, random_bytes=bytes(range(10)))
+        descriptor = authority_descriptor(
+            plan,
+            "9" * 40,
+            "4" * 40,
+            "production",
+            started,
+        )
+        serialized = canonical_json(descriptor)
+        self.assertEqual(set(descriptor), release_provider_literal.AUTHORITY_DESCRIPTOR_FIELDS)
+        for sentinel in sentinels:
+            self.assertNotIn(sentinel, serialized)
+        with tempfile.TemporaryDirectory() as temporary:
+            scratch = pathlib.Path(temporary)
+            plan_path = scratch / "private-plan.json"
+            started_path = scratch / "private-started.json"
+            output_path = scratch / "authority.json"
+            plan_path.write_text(canonical_json(plan), encoding="utf-8")
+            started_path.write_text(canonical_json(started), encoding="utf-8")
+            completed = subprocess.run(
+                [
+                    sys.executable,
+                    "scripts/release_controller.py",
+                    "authority-descriptor",
+                    "--plan",
+                    str(plan_path),
+                    "--state-commit",
+                    "9" * 40,
+                    "--release-commit",
+                    "4" * 40,
+                    "--environment",
+                    "production",
+                    "--started-event",
+                    str(started_path),
+                    "--output",
+                    str(output_path),
+                ],
+                cwd=ROOT,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            observable = completed.stdout + completed.stderr + output_path.read_text(
+                encoding="utf-8"
+            )
+            for sentinel in sentinels:
+                self.assertNotIn(sentinel, observable)
+
+        for path in (
+            ROOT / ".github/workflows/release-controller.yml",
+            ROOT / ".github/workflows/credentialed-release-staging-smoke.yml",
+        ):
+            workflow = path.read_text(encoding="utf-8")
+            authority_job = (
+                "unwrap-publish" if path.name == "release-controller.yml" else "unwrap-one"
+            )
+            prepare_outputs = workflow.split("    outputs:\n", 1)[1].split(
+                "    steps:\n", 1
+            )[0]
+            for private_name in (
+                "plan_base64",
+                "started_event_base64",
+                "production_metadata",
+                "owner_login",
+                "declared_model",
+                "prompt",
+                "notes",
+            ):
+                self.assertNotIn(private_name, prepare_outputs)
+            self.assertNotIn("upload-artifact", workflow)
+            self.assertNotIn("actions/upload-artifact", workflow)
+            self.assertNotRegex(workflow, r"(?:cat|echo|jq \.)(?:[^\n]*release-plan)")
+            for step in workflow_job_steps(workflow, authority_job):
+                env_surface = str(step["text"]).split("        run: |\n", 1)[0]
+                for private_name in (
+                    "production_metadata",
+                    "owner_login",
+                    "declared_model",
+                    "prompt",
+                    "notes",
+                    "PLAN_BASE64",
+                    "STARTED_EVENT_BASE64",
+                ):
+                    self.assertNotIn(private_name, env_surface)
+
+        tail = (ROOT / "scripts/release_authority_tail.sh").read_text(
+            encoding="utf-8"
+        )
+        summary = tail[tail.index("  {\n", tail.index("GITHUB_STEP_SUMMARY")) :]
+        summary = summary[: summary.index('  } >> "$GITHUB_STEP_SUMMARY"')]
+        for private_name in ("owner", "model", "prompt", "notes"):
+            self.assertNotIn(private_name, summary)
+        self.assertIn("run_exact_python_quiet()", tail)
+        self.assertLess(
+            tail.index("scripts/verify_release_state_contract.py"),
+            tail.index("scripts/reconstruct_release_plan.py"),
+        )
+        self.assertIn(
+            "run_exact_python_quiet state/scripts/state.py --root state materialize",
+            tail,
+        )
+        reconstruction = (
+            ROOT / "scripts/reconstruct_release_plan.py"
+        ).read_text(encoding="utf-8")
+        self.assertGreaterEqual(reconstruction.count("capture_output=True"), 5)
+
+    def test_staging_plan_reconstructs_only_from_exact_state_and_descriptor(
+        self,
+    ) -> None:
+        queue = json.loads(
+            (ROOT / "tests/fixtures/release-queue-v1.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        queue["environment"] = "staging"
+        submission_id = queue["tasks"][0]["submission_id"]
+        plan = staging_smoke_plan(queue, submission_id)
+        release_commit = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=ROOT,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        with tempfile.TemporaryDirectory() as temporary:
+            temporary_root = pathlib.Path(temporary)
+            state = temporary_root / "state"
+            (state / "scripts").mkdir(parents=True)
+            (state / "queue.json").write_text(
+                canonical_json(queue), encoding="utf-8"
+            )
+            (state / "snapshot.json").write_text("{}\n", encoding="utf-8")
+            (state / "scripts/state.py").write_text(
+                textwrap.dedent(
+                    """\
+                    import pathlib
+                    import shutil
+                    import sys
+
+                    root = pathlib.Path(sys.argv[sys.argv.index("--root") + 1])
+                    if "materialize" in sys.argv:
+                        output = pathlib.Path(sys.argv[sys.argv.index("--output") + 1])
+                        output.mkdir(parents=True)
+                        shutil.copyfile(root / "queue.json", output / "release-queue.json")
+                        shutil.copyfile(root / "snapshot.json", output / "release-acceptance-snapshot.json")
+                    """
+                ),
+                encoding="utf-8",
+            )
+            subprocess.run(["git", "init", "-q", state], check=True)
+            subprocess.run(
+                ["git", "-C", state, "config", "user.name", "Test"], check=True
+            )
+            subprocess.run(
+                ["git", "-C", state, "config", "user.email", "test@example.com"],
+                check=True,
+            )
+            subprocess.run(["git", "-C", state, "add", "."], check=True)
+            subprocess.run(["git", "-C", state, "commit", "-qm", "fixture"], check=True)
+            state_commit = subprocess.run(
+                ["git", "-C", state, "rev-parse", "HEAD"],
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout.strip()
+            descriptor = authority_descriptor(
+                plan,
+                state_commit,
+                release_commit,
+                "staging",
+            )
+            scratch = temporary_root / "scratch"
+            scratch.mkdir()
+            reconstructed, reconstructed_started = reconstruct(
+                descriptor,
+                state_root=state,
+                release_root=ROOT,
+                scratch_root=scratch,
+            )
+            self.assertEqual(reconstructed, plan)
+            self.assertIsNone(reconstructed_started)
+            self.assertFalse((scratch / "state-views").exists())
+            changed = copy.deepcopy(descriptor)
+            changed["plan_sha256"] = "0" * 64
+            with self.assertRaisesRegex(
+                ReconstructionError, "plan digest changed"
+            ):
+                reconstruct(
+                    changed,
+                    state_root=state,
+                    release_root=ROOT,
+                    scratch_root=scratch,
+                )
+
+    def test_production_plan_reconstructs_from_exact_started_state_commit(
+        self,
+    ) -> None:
+        queue = json.loads(
+            (ROOT / "tests/fixtures/release-queue-v1.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        snapshot = json.loads(
+            (ROOT / "tests/fixtures/release-acceptance-snapshot-v1.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        contract = json.loads(
+            (
+                ROOT
+                / "configuration/release-controller-credential-contract-v1.json"
+            ).read_text(encoding="utf-8")
+        )
+        release_commit = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=ROOT,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        with tempfile.TemporaryDirectory() as temporary:
+            temporary_root = pathlib.Path(temporary)
+            state = temporary_root / "state"
+            (state / "scripts").mkdir(parents=True)
+            (state / "queue.json").write_text(
+                canonical_json(queue), encoding="utf-8"
+            )
+            (state / "snapshot.json").write_text(
+                canonical_json(snapshot), encoding="utf-8"
+            )
+            (state / "scripts/state.py").write_text(
+                textwrap.dedent(
+                    """\
+                    import pathlib
+                    import shutil
+                    import sys
+
+                    root = pathlib.Path(sys.argv[sys.argv.index("--root") + 1])
+                    if "materialize" in sys.argv:
+                        output = pathlib.Path(sys.argv[sys.argv.index("--output") + 1])
+                        output.mkdir(parents=True)
+                        shutil.copyfile(root / "queue.json", output / "release-queue.json")
+                        shutil.copyfile(root / "snapshot.json", output / "release-acceptance-snapshot.json")
+                    """
+                ),
+                encoding="utf-8",
+            )
+            subprocess.run(["git", "init", "-q", state], check=True)
+            subprocess.run(
+                ["git", "-C", state, "config", "user.name", "Test"], check=True
+            )
+            subprocess.run(
+                ["git", "-C", state, "config", "user.email", "test@example.com"],
+                check=True,
+            )
+            subprocess.run(["git", "-C", state, "add", "."], check=True)
+            subprocess.run(["git", "-C", state, "commit", "-qm", "source"], check=True)
+            source_state_commit = subprocess.run(
+                ["git", "-C", state, "rev-parse", "HEAD"],
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout.strip()
+            qualification = build_qualification(
+                contract,
+                queue,
+                snapshot,
+                environment="production",
+                publication_enabled="true",
+                mode="publication",
+                release_commit=release_commit,
+                state_commit=source_state_commit,
+            )
+            plan = plan_next(queue, NOW, qualification)
+            started = started_event(plan, NOW, random_bytes=bytes(range(10)))
+            event_id = started["event_id"]
+            event_path = state / "events" / event_id[:2] / f"{event_id}.json"
+            result_id_value = started["subject_id"]
+            status_path = (
+                state
+                / "views/result-release-status"
+                / result_id_value[3:5]
+                / f"{result_id_value}.json"
+            )
+            event_path.parent.mkdir(parents=True)
+            status_path.parent.mkdir(parents=True)
+            event_path.write_text(canonical_json(started), encoding="utf-8")
+            status_path.write_text("{}\n", encoding="utf-8")
+            subprocess.run(["git", "-C", state, "add", "."], check=True)
+            subprocess.run(["git", "-C", state, "commit", "-qm", "started"], check=True)
+            started_state_commit = subprocess.run(
+                ["git", "-C", state, "rev-parse", "HEAD"],
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout.strip()
+            descriptor = authority_descriptor(
+                plan,
+                started_state_commit,
+                release_commit,
+                "production",
+                started,
+            )
+            scratch = temporary_root / "scratch"
+            scratch.mkdir()
+            reconstructed, reconstructed_started = reconstruct(
+                descriptor,
+                state_root=state,
+                release_root=ROOT,
+                scratch_root=scratch,
+            )
+            self.assertEqual(reconstructed, plan)
+            self.assertEqual(reconstructed_started, started)
+            self.assertFalse((scratch / "state-views").exists())
 
     def test_every_publication_capable_job_has_cached_latch_guard(self) -> None:
         workflow = (ROOT / ".github/workflows/release-controller.yml").read_text(
@@ -348,7 +695,7 @@ class ReleaseControllerTests(unittest.TestCase):
                     continue
                 self.assertRegex(
                     line.strip(),
-                    r'^(?:test -f|cp) "audit/\$(?:archive_path|sidecar_path)"',
+                    r'^(?:test -f|cp) "audit/\$(?:ARCHIVE_PATH|sidecar_path)"',
                 )
 
         role_arn = (
@@ -519,10 +866,7 @@ class ReleaseControllerTests(unittest.TestCase):
         self.assertIn('"$PYTHON_BIN" -I -c', authority_tail)
         self.assertNotIn('"$PYTHON_BIN" scripts/', authority_tail)
         self.assertNotIn("PYTHONPATH=", authority_tail)
-        self.assertIn(
-            'test -z "$(git status --porcelain --untracked-files=all)"',
-            sanitizer,
-        )
+        self.assertIn(". ':(exclude)state'", sanitizer)
         production_decrypt = authority_tail.rindex(
             '"$RUNNER_TEMP/age-bin" --decrypt'
         )
@@ -550,11 +894,12 @@ class ReleaseControllerTests(unittest.TestCase):
         contract = (ROOT / "docs/release-controller-contract.md").read_text(
             encoding="utf-8"
         )
-        self.assertRegex(
+        self.assertIn(
+            "execution plan and `release.started` body never cross a job-output",
             contract,
-            r"cross\s+the production job-output boundary as base64",
         )
-        self.assertRegex(contract, r"contain no\s+plaintext archive or identity")
+        self.assertRegex(contract, r"Base64 is not\s+treated\s+as confidentiality")
+        self.assertIn("production_metadata.prompt", contract)
         self.assertIn("explicit publication-launch blocker", contract)
         self.assertRegex(
             contract,
@@ -674,7 +1019,7 @@ class ReleaseControllerTests(unittest.TestCase):
             )
 
             inputs = {
-                "release-plan.json": b"{}\n",
+                "release-authority.json": b"{}\n",
                 "archive-sidecar.json": b"{}\n",
                 "archive.tar.age": b"ciphertext",
                 "age-bin": b"#!/bin/sh\nexit 0\n",
@@ -702,6 +1047,25 @@ class ReleaseControllerTests(unittest.TestCase):
                 capture_output=True,
                 text=True,
             ).stdout.strip()
+            state = checkout / "state"
+            state.mkdir()
+            subprocess.run(["git", "init", "-q", state], check=True)
+            subprocess.run(
+                ["git", "-C", state, "config", "user.name", "Test"], check=True
+            )
+            subprocess.run(
+                ["git", "-C", state, "config", "user.email", "test@example.com"],
+                check=True,
+            )
+            (state / "state.json").write_text("{}\n", encoding="utf-8")
+            subprocess.run(["git", "-C", state, "add", "."], check=True)
+            subprocess.run(["git", "-C", state, "commit", "-qm", "fixture"], check=True)
+            state_commit = subprocess.run(
+                ["git", "-C", state, "rev-parse", "HEAD"],
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout.strip()
 
             def digest(name: str) -> str:
                 return hashlib.sha256((runner / name).read_bytes()).hexdigest()
@@ -710,10 +1074,9 @@ class ReleaseControllerTests(unittest.TestCase):
                 "schema_version": 1,
                 "mode": "staging",
                 "release_commit": release_commit,
-                "state_commit": "",
+                "state_commit": state_commit,
                 "authority_tail_blob": tail_blob,
-                "plan_sha256": digest("release-plan.json"),
-                "started_event_sha256": "",
+                "authority_descriptor_sha256": digest("release-authority.json"),
                 "archive_sidecar_sha256": digest("archive-sidecar.json"),
                 "archive_ciphertext_sha256": digest("archive.tar.age"),
                 "age_binary_sha256": digest("age-bin"),
@@ -743,7 +1106,9 @@ class ReleaseControllerTests(unittest.TestCase):
             (runner / "tail-ran").unlink()
 
             proof_path.write_text(json.dumps(proof) + "\n", encoding="utf-8")
-            (runner / "release-plan.json").write_text("tampered\n", encoding="utf-8")
+            (runner / "release-authority.json").write_text(
+                "tampered\n", encoding="utf-8"
+            )
             rejected = run()
             self.assertNotEqual(rejected.returncode, 0)
             self.assertFalse((runner / "tail-ran").exists())
@@ -780,45 +1145,16 @@ class ReleaseControllerTests(unittest.TestCase):
             self.assertFalse((runner / "tail-ran").exists())
             hostile_import.unlink()
 
-            # Production intentionally nests the separately pinned and
-            # separately clean State checkout under the release checkout.
-            # Excluding exactly that path must not mask any other dirt.
-            state = checkout / "state"
-            state.mkdir()
-            subprocess.run(["git", "init", "-q", state], check=True)
-            subprocess.run(
-                ["git", "-C", state, "config", "user.name", "Test"], check=True
-            )
-            subprocess.run(
-                ["git", "-C", state, "config", "user.email", "test@example.com"],
-                check=True,
-            )
-            (state / "state.json").write_text("{}\n", encoding="utf-8")
-            subprocess.run(["git", "-C", state, "add", "."], check=True)
-            subprocess.run(
-                ["git", "-C", state, "commit", "-qm", "state fixture"],
-                check=True,
-            )
-            state_commit = subprocess.run(
-                ["git", "-C", state, "rev-parse", "HEAD"],
-                check=True,
-                capture_output=True,
-                text=True,
-            ).stdout.strip()
+            # Both modes intentionally nest the separately pinned and clean
+            # State checkout. Excluding exactly it must not mask other dirt.
             for name, content in inputs.items():
                 path = runner / name
                 path.write_bytes(content)
                 if name == "age-bin":
                     path.chmod(0o555)
-            started = runner / "release-started-event.json"
-            started.write_text("{}\n", encoding="utf-8")
             production_proof = {
                 **proof,
                 "mode": "production",
-                "state_commit": state_commit,
-                "started_event_sha256": hashlib.sha256(
-                    started.read_bytes()
-                ).hexdigest(),
             }
             proof_path.write_text(
                 json.dumps(production_proof) + "\n", encoding="utf-8"
@@ -843,7 +1179,6 @@ class ReleaseControllerTests(unittest.TestCase):
                 path.write_bytes(content)
                 if name == "age-bin":
                     path.chmod(0o555)
-            started.write_text("{}\n", encoding="utf-8")
             proof_path.write_text(
                 json.dumps(production_proof) + "\n", encoding="utf-8"
             )
@@ -1594,8 +1929,15 @@ class ReleaseControllerTests(unittest.TestCase):
             random_bytes=random_bytes,
             runner_nonce=nonce,
         )
-        actual = release_provider_literal.build_request(
+        descriptor = authority_descriptor(
             self.plan,
+            "5" * 40,
+            "4" * 40,
+            "production",
+            started_event(self.plan, NOW, random_bytes=bytes(range(10))),
+        )
+        actual = release_provider_literal.build_request_from_authority(
+            descriptor,
             self.sidecar,
             self.ciphertext,
             trusted,
@@ -1631,8 +1973,8 @@ class ReleaseControllerTests(unittest.TestCase):
                 with self.assertRaises(ControllerError):
                     prepare_unwrap(self.plan, sidecar, ciphertext, NOW)
                 with self.assertRaises(release_provider_literal.ProviderError):
-                    release_provider_literal.build_request(
-                        self.plan,
+                    release_provider_literal.build_request_from_authority(
+                        descriptor,
                         sidecar,
                         ciphertext,
                         trusted,
@@ -1640,7 +1982,7 @@ class ReleaseControllerTests(unittest.TestCase):
                         runner_nonce=nonce,
                     )
 
-    def test_literal_provider_has_field_by_field_plan_rejection_parity(self) -> None:
+    def test_legacy_full_plan_validators_retain_rejection_parity(self) -> None:
         plan = copy.deepcopy(self.plan)
         plan["request"]["controller"] = {
             "schema_version": 1,
@@ -1763,6 +2105,40 @@ class ReleaseControllerTests(unittest.TestCase):
                 rejected += int(not prepared)
         self.assertGreaterEqual(len(mutations), 100)
         self.assertGreaterEqual(rejected, 100)
+
+    def test_literal_provider_rejects_every_authority_descriptor_field_drift(
+        self,
+    ) -> None:
+        descriptor = authority_descriptor(
+            self.plan,
+            "5" * 40,
+            "4" * 40,
+            "production",
+            started_event(self.plan, NOW, random_bytes=bytes(range(10))),
+        )
+        trusted = dt.datetime.fromisoformat(NOW.replace("Z", "+00:00"))
+        self.assertEqual(
+            set(descriptor), release_provider_literal.AUTHORITY_DESCRIPTOR_FIELDS
+        )
+        for field in sorted(descriptor):
+            with self.subTest(field=field):
+                missing = copy.deepcopy(descriptor)
+                del missing[field]
+                with self.assertRaises(release_provider_literal.ProviderError):
+                    release_provider_literal.build_request_from_authority(
+                        missing, self.sidecar, self.ciphertext, trusted
+                    )
+                changed = copy.deepcopy(descriptor)
+                changed[field] = None
+                with self.assertRaises(release_provider_literal.ProviderError):
+                    release_provider_literal.build_request_from_authority(
+                        changed, self.sidecar, self.ciphertext, trusted
+                    )
+        extra = {**descriptor, "production_metadata": {"prompt": "private"}}
+        with self.assertRaises(release_provider_literal.ProviderError):
+            release_provider_literal.build_request_from_authority(
+                extra, self.sidecar, self.ciphertext, trusted
+            )
 
     def test_literal_provider_scans_runner_authority_files(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -2339,7 +2715,7 @@ class ReleaseControllerTests(unittest.TestCase):
         self.assertNotIn("state-event", workflow)
         self.assertNotIn("git push", workflow)
         self.assertNotIn("upload-artifact", workflow)
-        self.assertNotIn("reconstruct_release.py", workflow)
+        self.assertNotIn("scripts/reconstruct_release.py", workflow)
         self.assert_release_invoke_session_boundary(
             workflow,
             job_name="unwrap-one",
@@ -2359,6 +2735,7 @@ class ReleaseControllerTests(unittest.TestCase):
         tail = (ROOT / "scripts/release_authority_tail.sh").read_text(
             encoding="utf-8"
         )
+        self.assertIn("scripts/reconstruct_release_plan.py", tail)
         sanitizer = (ROOT / "scripts/release_sanitizer_literal.sh").read_text(
             encoding="utf-8"
         )
@@ -2405,7 +2782,7 @@ class ReleaseControllerTests(unittest.TestCase):
                     if reference.startswith("./"):
                         continue
                     self.assertRegex(reference, r"^[^@]+@[0-9a-f]{40}$")
-        self.assertEqual(len(references), 28)
+        self.assertEqual(len(references), 29)
 
     def request(self) -> dict[str, object]:
         return prepare_unwrap(
