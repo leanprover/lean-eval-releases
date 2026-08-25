@@ -259,6 +259,7 @@ jobs:
   unwrap-publish:
     needs: prepare-one
     if: >-
+      vars.PUBLICATION_ENABLED == 'true' &&
       needs.prepare-one.outputs.kind == 'execution' &&
       needs.prepare-one.outputs.archive_commit != '' &&
       needs.prepare-one.outputs.plan_base64 != '' &&

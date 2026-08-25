@@ -139,10 +139,19 @@ cleanup and leave the committed `release.started` for the next controller's
 one-hour interrupted-run recovery.
 
 Both split production jobs require environment-scoped keys and therefore name
-`release-production`. The second environment deployment occurs after
-`release.started`, and its protection rules, variables, and secrets are mutable
-external state. This is an explicit publication-launch blocker, not a property
-proved by repository CI. A read-only GitHub API check on 2026-08-25 showed its
+`release-production`. Both job-level conditions independently require the live
+`PUBLICATION_ENABLED` repository variable to equal `true`. If an operator
+removes or disables the latch after `release.started` but while the authority
+job is still queued, GitHub skips that job before it receives deploy keys or
+OIDC permission; the committed start remains for interrupted-run recovery once
+the latch is deliberately re-enabled. Job conditions do not revoke authority
+from a job which has already started, so an emergency stop at that later point
+must also cancel the run or revoke the scoped external credentials. The second
+environment deployment occurs after `release.started`, and its protection
+rules, variables, and secrets are mutable external state.
+This is an explicit publication-launch blocker, not a property proved by
+repository CI.
+A read-only GitHub API check on 2026-08-25 showed its
 only protection rule was the protected-branch policy: no reviewers and no wait
 timer, so that snapshot would not introduce another manual approval or timer.
 An authenticated operator must read back and record the environment protection

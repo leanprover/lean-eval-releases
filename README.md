@@ -91,8 +91,12 @@ then invoke this provider-neutral reconstruction tool.
 
 `Publish due source release` is the credentialed production controller. Its
 daily schedule is inert unless the repository variable `PUBLICATION_ENABLED`
-is exactly `true`; a manual run additionally requires an explicit confirmation.
-It also refuses any repository or ref other than the exact upstream `main`.
+is exactly `true`; both the preparation job and the downstream publication
+authority job independently evaluate that live latch. Disabling it while the
+authority job is queued after `release.started` prevents that job from starting
+and leaves the committed start for recovery after deliberate re-enablement. A
+manual run additionally requires an explicit confirmation. The workflow also
+refuses any repository or ref other than the exact upstream `main`.
 An unprivileged preparation job materializes the private production State
 repository through a read/write deploy key scoped only to that repository,
 selects at most one due result, atomically stages `release.started` and its

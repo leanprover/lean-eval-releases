@@ -88,6 +88,53 @@ def workflow_job_steps(workflow: str, job_name: str) -> list[dict[str, object]]:
     return steps
 
 
+def workflow_jobs(workflow: str) -> dict[str, str]:
+    """Return exact top-level job blocks from this workflow subset."""
+    lines = workflow.splitlines()
+    jobs_start = lines.index("jobs:")
+    starts = [
+        index
+        for index in range(jobs_start + 1, len(lines))
+        if re.match(r"^  [A-Za-z0-9_-]+:\s*$", lines[index])
+    ]
+    jobs: dict[str, str] = {}
+    for position, start in enumerate(starts):
+        end = starts[position + 1] if position + 1 < len(starts) else len(lines)
+        name = lines[start].strip().removesuffix(":")
+        jobs[name] = "\n".join(lines[start:end]) + "\n"
+    return jobs
+
+
+def workflow_job_condition(job: str) -> str:
+    """Return one folded, conjunctive job condition."""
+    lines = job.splitlines()
+    condition_start = lines.index("    if: >-") + 1
+    condition: list[str] = []
+    for line in lines[condition_start:]:
+        if line and not line.startswith("      "):
+            break
+        if line:
+            condition.append(line.strip())
+    if not condition:
+        raise AssertionError("job condition is empty")
+    return " ".join(condition)
+
+
+def evaluate_workflow_condition(condition: str, context: dict[str, object]) -> bool:
+    """Evaluate the closed expression subset used by production job guards."""
+    references = re.compile(
+        r"\b(?:github|inputs|needs|vars)\.[A-Za-z0-9_.-]+"
+    )
+    expression = references.sub(
+        lambda match: repr(context.get(match.group(0), "")),
+        condition,
+    )
+    expression = expression.replace("&&", " and ").replace("||", " or ")
+    expression = expression.replace(" == true", " == True")
+    expression = expression.replace(" == false", " == False")
+    return bool(eval(expression, {"__builtins__": {}}, {}))
+
+
 class ReleaseControllerTests(unittest.TestCase):
     def setUp(self) -> None:
         queue = json.loads(
@@ -200,6 +247,71 @@ class ReleaseControllerTests(unittest.TestCase):
         self.assertEqual(controller.count("--protected-main-commit"), 4)
         self.assertNotIn("state.py --root state append", workflow)
         self.assertNotIn("git -C state rebase", workflow)
+
+    def test_every_publication_capable_job_rechecks_live_latch(self) -> None:
+        workflow = (ROOT / ".github/workflows/release-controller.yml").read_text(
+            encoding="utf-8"
+        )
+        jobs = workflow_jobs(workflow)
+        publication_markers = (
+            "git -C state push origin HEAD:main",
+            "id-token: write",
+            "secrets.RELEASE_PUBLISH_KEY",
+        )
+        publication_jobs = {
+            name
+            for name, block in jobs.items()
+            if any(marker in block for marker in publication_markers)
+        }
+        self.assertEqual(publication_jobs, {"prepare-one", "unwrap-publish"})
+
+        ready: dict[str, object] = {
+            "github.repository": "leanprover/lean-eval-releases",
+            "github.ref": "refs/heads/main",
+            "github.event_name": "schedule",
+            "inputs.confirm_publication": False,
+            "needs.prepare-one.outputs.kind": "execution",
+            "needs.prepare-one.outputs.archive_commit": "a" * 40,
+            "needs.prepare-one.outputs.plan_base64": "plan",
+            "needs.prepare-one.outputs.state_commit": "b" * 40,
+            "needs.prepare-one.outputs.recorded": "true",
+        }
+        latch = "vars.PUBLICATION_ENABLED == 'true'"
+        for name in sorted(publication_jobs):
+            with self.subTest(job=name):
+                condition = workflow_job_condition(jobs[name])
+                self.assertEqual(condition.count(latch), 1)
+                self.assertTrue(
+                    evaluate_workflow_condition(
+                        condition,
+                        {**ready, "vars.PUBLICATION_ENABLED": "true"},
+                    )
+                )
+                self.assertFalse(
+                    evaluate_workflow_condition(
+                        condition,
+                        {**ready, "vars.PUBLICATION_ENABLED": "false"},
+                    )
+                )
+                self.assertFalse(
+                    evaluate_workflow_condition(
+                        condition,
+                        {**ready, "vars.PUBLICATION_ENABLED": ""},
+                    )
+                )
+
+        self.assertTrue(
+            evaluate_workflow_condition(
+                workflow_job_condition(jobs["prepare-one"]),
+                {**ready, "vars.PUBLICATION_ENABLED": "true"},
+            )
+        )
+        self.assertFalse(
+            evaluate_workflow_condition(
+                workflow_job_condition(jobs["unwrap-publish"]),
+                {**ready, "vars.PUBLICATION_ENABLED": "false"},
+            )
+        )
 
     def assert_release_invoke_session_boundary(
         self,
