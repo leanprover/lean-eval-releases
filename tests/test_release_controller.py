@@ -8,6 +8,7 @@ import json
 import os
 import pathlib
 import re
+import shlex
 import shutil
 import signal
 import stat
@@ -233,6 +234,10 @@ class ReleaseControllerTests(unittest.TestCase):
                     else "Invoke once and exec the sanitized staging tail"
                 ),
                 "if": "always()",
+                "shell": (
+                    "/usr/bin/setsid --wait /usr/bin/bash "
+                    "--noprofile --norc -e {0}"
+                ),
                 "env": "",
                 "run": "|",
             },
@@ -654,12 +659,12 @@ class ReleaseControllerTests(unittest.TestCase):
                 "age_binary_sha256": digest("age-bin"),
             }
             proof_path = runner / "pre-authority-stage.json"
-            def run() -> subprocess.CompletedProcess[str]:
+            def run(mode: str = "staging") -> subprocess.CompletedProcess[str]:
                 return subprocess.run(
                     [
                         str(bash),
                         str(test_sanitizer),
-                        "staging",
+                        mode,
                         str(home),
                         str(python_bin),
                         str(runner),
@@ -716,11 +721,73 @@ class ReleaseControllerTests(unittest.TestCase):
             self.assertFalse((runner / "tail-ran").exists())
             hostile_import.unlink()
 
+            # Production intentionally nests the separately pinned and
+            # separately clean State checkout under the release checkout.
+            # Excluding exactly that path must not mask any other dirt.
+            state = checkout / "state"
+            state.mkdir()
+            subprocess.run(["git", "init", "-q", state], check=True)
+            subprocess.run(
+                ["git", "-C", state, "config", "user.name", "Test"], check=True
+            )
+            subprocess.run(
+                ["git", "-C", state, "config", "user.email", "test@example.com"],
+                check=True,
+            )
+            (state / "state.json").write_text("{}\n", encoding="utf-8")
+            subprocess.run(["git", "-C", state, "add", "."], check=True)
+            subprocess.run(
+                ["git", "-C", state, "commit", "-qm", "state fixture"],
+                check=True,
+            )
+            state_commit = subprocess.run(
+                ["git", "-C", state, "rev-parse", "HEAD"],
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout.strip()
+            for name, content in inputs.items():
+                path = runner / name
+                path.write_bytes(content)
+                if name == "age-bin":
+                    path.chmod(0o555)
+            started = runner / "release-started-event.json"
+            started.write_text("{}\n", encoding="utf-8")
+            production_proof = {
+                **proof,
+                "mode": "production",
+                "state_commit": state_commit,
+                "started_event_sha256": hashlib.sha256(
+                    started.read_bytes()
+                ).hexdigest(),
+            }
+            proof_path.write_text(
+                json.dumps(production_proof) + "\n", encoding="utf-8"
+            )
+            accepted = run("production")
+            self.assertEqual(accepted.returncode, 0, accepted.stderr)
+            (runner / "tail-ran").unlink()
+
+            proof_path.write_text(
+                json.dumps(production_proof) + "\n", encoding="utf-8"
+            )
+            (checkout / "other-untracked").write_text("hostile\n", encoding="utf-8")
+            rejected = run("production")
+            self.assertNotEqual(rejected.returncode, 0)
+            self.assertFalse((runner / "tail-ran").exists())
+            (checkout / "other-untracked").unlink()
+
     def test_final_authority_cleanup_covers_early_and_handoff_failure(self) -> None:
         bash = shutil.which("bash")
+        kill = shutil.which("kill")
         rm = shutil.which("rm")
+        setsid = shutil.which("setsid")
+        sleep = shutil.which("sleep")
         self.assertIsNotNone(bash)
+        self.assertIsNotNone(kill)
         self.assertIsNotNone(rm)
+        self.assertIsNotNone(setsid)
+        self.assertIsNotNone(sleep)
         for workflow_name, job_name in (
             ("release-controller.yml", "unwrap-publish"),
             ("credentialed-release-staging-smoke.yml", "unwrap-one"),
@@ -742,6 +809,10 @@ class ReleaseControllerTests(unittest.TestCase):
             prologue = textwrap.dedent(body[:prologue_end]).replace(
                 "/usr/bin/rm", str(rm)
             )
+            supervisor_start = body.index(
+                'IFS= read -r parent_stat < "/proc/$$/stat"'
+            )
+            provider_start = body.index("python_bin=")
             authority_unset = body.index(
                 "unset AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN"
             )
@@ -752,17 +823,34 @@ class ReleaseControllerTests(unittest.TestCase):
             self.assertLess(authority_unset, handoff)
             self.assertNotIn("exec 9", body)
             self.assertIn("coproc RELEASE_CLEANUP_SUPERVISOR", body)
+            self.assertIn("exec -c /usr/bin/setsid /usr/bin/bash", body)
+            self.assertIn('test "$parent_group" = "$$"', body)
+            self.assertIn('test "$parent_session" = "$$"', body)
             self.assertIn("' EXIT INT TERM", body[:prologue_end])
-            self.assertLess(body.index("umask 077"), body.index("python_bin="))
+            self.assertLess(supervisor_start, provider_start)
+            self.assertLess(provider_start, authority_unset)
+            self.assertLess(supervisor_start, body.index('"$python_bin" -I -'))
+            self.assertLess(supervisor_start, body.index("aws lambda invoke"))
             self.assertNotIn(
                 "scripts/release_authority_tail.sh",
                 body[prologue_end:handoff],
             )
             supervisor_boundary = textwrap.dedent(
-                body[authority_unset:handoff]
-            ).replace("/usr/bin/bash", str(bash)).replace(
-                "/usr/bin/rm", str(rm)
-            ).replace("/usr/bin/sleep", str(shutil.which("sleep")))
+                body[supervisor_start:provider_start]
+            )
+            for source, target in (
+                ("/usr/bin/bash", bash),
+                ("/usr/bin/kill", kill),
+                ("/usr/bin/rm", rm),
+                ("/usr/bin/setsid", setsid),
+                ("/usr/bin/sleep", sleep),
+            ):
+                supervisor_boundary = supervisor_boundary.replace(
+                    source, str(target)
+                )
+
+            def isolated_command(script: str) -> list[str]:
+                return [str(setsid), "--wait", str(bash), "-c", script]
 
             with tempfile.TemporaryDirectory() as temporary:
                 runner = pathlib.Path(temporary) / "runner"
@@ -791,6 +879,7 @@ class ReleaseControllerTests(unittest.TestCase):
                             encoding="utf-8",
                         )
                     (cleanup_root / "reconstructed").mkdir()
+                    (cleanup_root / ".reconstructed-private").mkdir()
                     (cleanup_root / "state-views").mkdir()
 
                 def assert_clean(
@@ -800,6 +889,9 @@ class ReleaseControllerTests(unittest.TestCase):
                     for name in cleanup_files:
                         self.assertFalse((cleanup_root / name).exists(), name)
                     self.assertFalse((cleanup_root / "reconstructed").exists())
+                    self.assertEqual(
+                        list(cleanup_root.glob(".reconstructed-*")), []
+                    )
                     self.assertFalse((cleanup_root / "state-views").exists())
 
                 for label, failure in (
@@ -817,7 +909,7 @@ class ReleaseControllerTests(unittest.TestCase):
                     ):
                         populate()
                         failed = subprocess.run(
-                            [str(bash), "-c", failure],
+                            isolated_command(failure),
                             check=False,
                             capture_output=True,
                             text=True,
@@ -904,7 +996,7 @@ class ReleaseControllerTests(unittest.TestCase):
                     """
                 )
                 clean_supervisor = subprocess.run(
-                    [str(bash), "-c", supervisor_probe],
+                    isolated_command(supervisor_probe),
                     check=False,
                     capture_output=True,
                     text=True,
@@ -921,12 +1013,12 @@ class ReleaseControllerTests(unittest.TestCase):
                 allow_exec = runner / "allow-supervisor-exec"
                 checkout_started = runner / "checkout-started"
                 delayed_boundary = supervisor_boundary.replace(
-                    f"exec -c {bash}",
+                    f"exec -c {setsid} {bash}",
                     textwrap.dedent(
                         f"""\
                         printf '%s\\n' "$BASHPID" > {pre_exec}
                         while [ ! -e {allow_exec} ]; do :; done
-                        exec -c {bash}
+                        exec -c {setsid} {bash}
                         """
                     ).rstrip(),
                     1,
@@ -938,7 +1030,7 @@ class ReleaseControllerTests(unittest.TestCase):
                     """
                 )
                 delayed = subprocess.Popen(
-                    [str(bash), "-c", delayed_probe],
+                    isolated_command(delayed_probe),
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.PIPE,
                     text=True,
@@ -966,8 +1058,44 @@ class ReleaseControllerTests(unittest.TestCase):
                 self.assertEqual(delayed.returncode, 0, delayed_stderr)
                 self.assertTrue(checkout_started.exists())
 
-                sleep = shutil.which("sleep")
-                self.assertIsNotNone(sleep)
+                # Killing the exact parent before the supervisor reports ready
+                # must still permit the already-forked supervisor to sanitize.
+                populate()
+                pre_ready = runner / "pre-ready"
+                allow_ready = runner / "allow-ready"
+                pre_ready_boundary = supervisor_boundary.replace(
+                    f"exec -c {setsid} {bash}",
+                    textwrap.dedent(
+                        f"""\
+                        printf '%s\\n' "$BASHPID" > {pre_ready}
+                        while [ ! -e {allow_ready} ]; do :; done
+                        exec -c {setsid} {bash}
+                        """
+                    ).rstrip(),
+                    1,
+                )
+                pre_ready_process = subprocess.Popen(
+                    isolated_command(
+                        prologue + pre_ready_boundary + "while :; do :; done\n"
+                    ),
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    env={"RUNNER_TEMP": str(runner)},
+                )
+                deadline = time.monotonic() + 5
+                while not pre_ready.exists() and time.monotonic() < deadline:
+                    time.sleep(0.01)
+                self.assertTrue(pre_ready.exists())
+                os.kill(pre_ready_process.pid, signal.SIGKILL)
+                self.assertNotEqual(pre_ready_process.wait(timeout=5), 0)
+                allow_ready.write_text("continue\n", encoding="utf-8")
+                deadline = time.monotonic() + 5
+                while any(
+                    (runner / name).exists() for name in private_files
+                ) and time.monotonic() < deadline:
+                    time.sleep(0.01)
+                assert_clean()
+
                 for signal_value in (
                     signal.SIGINT,
                     signal.SIGTERM,
@@ -995,7 +1123,7 @@ class ReleaseControllerTests(unittest.TestCase):
                             """
                         )
                         signaled = subprocess.Popen(
-                            [str(bash), "-c", signaled_script],
+                            isolated_command(signaled_script),
                             stdout=subprocess.DEVNULL,
                             stderr=subprocess.DEVNULL,
                             text=True,
@@ -1020,8 +1148,97 @@ class ReleaseControllerTests(unittest.TestCase):
                         ) and time.monotonic() < deadline:
                             time.sleep(0.01)
                         assert_clean()
-                        os.kill(child_pid, 0)
-                        os.kill(child_pid, signal.SIGTERM)
+                        deadline = time.monotonic() + 5
+                        while (
+                            pathlib.Path(f"/proc/{child_pid}").exists()
+                            and time.monotonic() < deadline
+                        ):
+                            time.sleep(0.01)
+
+                # A surviving foreground writer must be terminated, and a
+                # write racing the first scrub must be removed by the repeated
+                # cleanup pass before the supervisor exits.
+                populate()
+                writer_ready = runner / "writer-ready"
+                allow_writer = runner / "allow-writer"
+                writer_ran = runner / "writer-ran"
+                writer_code = textwrap.dedent(
+                    f"""\
+                    import pathlib
+                    import signal
+                    import time
+
+                    signal.signal(signal.SIGTERM, signal.SIG_IGN)
+                    pathlib.Path({str(writer_ready)!r}).write_text("ready")
+                    allow = pathlib.Path({str(allow_writer)!r})
+                    while not allow.exists():
+                        time.sleep(0.01)
+                    target = pathlib.Path({str(runner / 'reconstructed/source')!r})
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    target.write_text("PRIVATE")
+                    pathlib.Path({str(writer_ran)!r}).write_text("ran")
+                    while True:
+                        time.sleep(1)
+                    """
+                )
+                writer_script = (
+                    prologue
+                    + supervisor_boundary
+                    + f"{shutil.which('python')} -c {shlex.quote(writer_code)}\n"
+                    + "true\n"
+                )
+                writer_parent = subprocess.Popen(
+                    isolated_command(writer_script),
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    env={"RUNNER_TEMP": str(runner)},
+                )
+                deadline = time.monotonic() + 5
+                while not writer_ready.exists() and time.monotonic() < deadline:
+                    time.sleep(0.01)
+                self.assertTrue(writer_ready.exists())
+                os.kill(writer_parent.pid, signal.SIGKILL)
+                self.assertNotEqual(writer_parent.wait(timeout=5), 0)
+                deadline = time.monotonic() + 5
+                while (runner / "source.tar.gz").exists() and time.monotonic() < deadline:
+                    time.sleep(0.01)
+                allow_writer.write_text("continue\n", encoding="utf-8")
+                deadline = time.monotonic() + 8
+                while (
+                    (not writer_ran.exists() or (runner / "reconstructed").exists())
+                    and time.monotonic() < deadline
+                ):
+                    time.sleep(0.01)
+                self.assertTrue(writer_ran.exists())
+                assert_clean()
+
+                # The supervisor has its own session, so killing the entire
+                # authority process group cannot suppress cleanup.
+                populate()
+                group_ready = runner / "group-ready"
+                group_script = (
+                    prologue
+                    + supervisor_boundary
+                    + f"printf ready > {group_ready}\nwhile :; do :; done\n"
+                )
+                grouped = subprocess.Popen(
+                    isolated_command(group_script),
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    env={"RUNNER_TEMP": str(runner)},
+                )
+                deadline = time.monotonic() + 5
+                while not group_ready.exists() and time.monotonic() < deadline:
+                    time.sleep(0.01)
+                self.assertTrue(group_ready.exists())
+                os.killpg(os.getpgid(grouped.pid), signal.SIGKILL)
+                self.assertNotEqual(grouped.wait(timeout=5), 0)
+                deadline = time.monotonic() + 5
+                while any(
+                    (runner / name).exists() for name in private_files
+                ) and time.monotonic() < deadline:
+                    time.sleep(0.01)
+                assert_clean()
 
     def test_production_failure_scrubs_before_retryable_recovery(self) -> None:
         authority_tail = (
@@ -1053,6 +1270,7 @@ class ReleaseControllerTests(unittest.TestCase):
             for name in (*sensitive, "release-started-event.json"):
                 (runner / name).write_text("private\n", encoding="utf-8")
             (runner / "reconstructed").mkdir()
+            (runner / ".reconstructed-private").mkdir()
             (runner / "state-views").mkdir()
             recovery_entered = runner / "recovery-entered"
             allow_recovery = runner / "allow-recovery"
@@ -1096,6 +1314,7 @@ class ReleaseControllerTests(unittest.TestCase):
             for name in sensitive:
                 self.assertFalse((runner / name).exists(), name)
             self.assertFalse((runner / "reconstructed").exists())
+            self.assertEqual(list(runner.glob(".reconstructed-*")), [])
             self.assertFalse((runner / "state-views").exists())
             self.assertTrue((runner / "release-started-event.json").exists())
             allow_recovery.write_text("continue\n", encoding="utf-8")

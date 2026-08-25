@@ -7,7 +7,8 @@ trap 'status=$?
 trap - EXIT INT TERM
 set +e
 if [ -n "${RUNNER_TEMP:-}" ] && [ -d "$RUNNER_TEMP" ]; then
-  /usr/bin/rm -rf "$RUNNER_TEMP/reconstructed" "$RUNNER_TEMP/state-views"
+  /usr/bin/rm -rf "$RUNNER_TEMP/reconstructed" \
+    "$RUNNER_TEMP"/.reconstructed-* "$RUNNER_TEMP/state-views"
   /usr/bin/rm -f "$RUNNER_TEMP"/release-*.json "$RUNNER_TEMP"/unwrap-*.json \
     "$RUNNER_TEMP"/identity.age "$RUNNER_TEMP"/source.tar.gz \
     "$RUNNER_TEMP"/archive.tar.age "$RUNNER_TEMP"/archive-sidecar.json \
@@ -31,7 +32,8 @@ remove_sensitive_scratch() {
   if [ -z "${RUNNER_TEMP:-}" ] || [ ! -d "$RUNNER_TEMP" ]; then
     return
   fi
-  rm -rf "$RUNNER_TEMP/reconstructed" "$RUNNER_TEMP/state-views"
+  rm -rf "$RUNNER_TEMP/reconstructed" \
+    "$RUNNER_TEMP"/.reconstructed-* "$RUNNER_TEMP/state-views"
   for path in "$RUNNER_TEMP"/release-*.json; do
     if [ "$path" != "$RUNNER_TEMP/release-started-event.json" ]; then
       rm -f "$path"

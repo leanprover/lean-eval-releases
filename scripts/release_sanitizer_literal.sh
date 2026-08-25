@@ -8,7 +8,8 @@ trap 'status=$?
 trap - EXIT INT TERM
 set +e
 if [ -n "${RUNNER_TEMP:-}" ] && [ -d "$RUNNER_TEMP" ]; then
-  /usr/bin/rm -rf "$RUNNER_TEMP/reconstructed" "$RUNNER_TEMP/state-views"
+  /usr/bin/rm -rf "$RUNNER_TEMP/reconstructed" \
+    "$RUNNER_TEMP"/.reconstructed-* "$RUNNER_TEMP/state-views"
   /usr/bin/rm -f "$RUNNER_TEMP"/release-*.json "$RUNNER_TEMP"/unwrap-*.json \
     "$RUNNER_TEMP"/identity.age "$RUNNER_TEMP"/source.tar.gz \
     "$RUNNER_TEMP"/archive.tar.age "$RUNNER_TEMP"/archive-sidecar.json \
@@ -185,7 +186,12 @@ tail_blob=$(jq -er .authority_tail_blob "$proof")
 test "$(git rev-parse HEAD)" = "$release_commit"
 test "$(git rev-parse HEAD:scripts/release_authority_tail.sh)" = "$tail_blob"
 test "$(git hash-object scripts/release_authority_tail.sh)" = "$tail_blob"
-test -z "$(git status --porcelain --untracked-files=all)"
+if [ "$mode" = production ]; then
+  test -z "$(git status --porcelain --untracked-files=all -- \
+    . ':(exclude)state')"
+else
+  test -z "$(git status --porcelain --untracked-files=all)"
+fi
 git diff --quiet HEAD --
 git diff --cached --quiet HEAD --
 if [ "$mode" = production ]; then
