@@ -24,20 +24,77 @@ than the reviewed production role ARN. Its 15-minute assumed-role session adds
 an inline session policy that permits only `lambda:InvokeFunction` on the exact
 qualified `lean-eval-archive-unwrap-production:live` alias plus
 `sts:GetCallerIdentity`, and the credential action rejects any account other
-than `161072922960`. These source controls narrow the live role's permissions;
-they do not replace the required external trust-policy and identity-policy
-review.
+than `161072922960`. The pinned action's reviewed `action.yml` at
+`e6de054238d6b7531b4efff3b6587d9aade6a06c` explicitly declares
+`allowed-account-ids`; this is not an ignored workflow input. These source
+controls narrow the live role's permissions; they do not replace the required
+external trust-policy and identity-policy review.
 
 GitHub injects the OIDC request handle separately into every step of a job with
-`id-token: write`; clearing one step's process or `$GITHUB_ENV` cannot constrain
-a later step. Consequently the credential action is followed by exactly one
-final repository-authored step. That step immediately drops its fresh OIDC
-request handle, invokes the exact Lambda once, validates the response without
-AWS credentials in the child process, then drops the assumed credentials before
-decryption. Reconstruction, publication, terminal or retryable-failure State
-handling, and trap-based source cleanup all remain inside that same step. No
-later repository-authored process can receive a new OIDC request handle; only
-the pinned credential action's post-job cleanup remains.
+`id-token: write`; clearing a shell variable or `$GITHUB_ENV` cannot erase the
+process-start environment or constrain another step. Planning, qualification,
+recovery, and `release.started` therefore run in a preparation job with no OIDC
+permission. The separate authority job executes only pinned actions and
+literal workflow shell/Python before and during role assumption; it never
+executes a checked-out program while AWS or OIDC authority exists. The
+credential action is followed by exactly one final authored step. Its literal
+provider phase creates and invokes the exact one-use capability, then
+`exec env -i` replaces the secret-bearing shell with a closed-environment
+process before the checked-out tail begins.
+
+The literal provider includes the same closed sidecar and key-envelope checks
+as `prepare_unwrap`: exact fields and integer schema versions, canonical UUIDs,
+repository and commit identifiers, canonical/nonempty bounded wrapped identity,
+recipient and adapter grammar, ciphertext size and all three digest bindings,
+and the exact archiver-run URL. `scripts/release_provider_literal.py` is a
+non-executed review mirror; tests require both workflow heredocs to equal it
+byte-for-byte and compare its accepted request with `prepare_unwrap` under
+fixed time and randomness. The capability is still created immediately before
+invocation, never passed between jobs, so approval or runner queue time cannot
+consume its five-minute lifetime.
+
+The tail's first operation scans both `/proc/self/environ` and its runner
+parent's `/proc` environment for AWS credentials and GitHub OIDC request
+handles. GitHub's runner is expected to pass step-scoped values only to the
+spawned step process, not retain them in the runner process; inability to read
+either environment or any surviving authority name fails closed. Only after
+that proof does the tail validate the Lambda response, decrypt, reconstruct,
+publish, write terminal or retryable-failure State, and run trap-based source
+cleanup. The encrypted audit object remains in its private checkout; neither
+the identity nor plaintext nor private archive crosses a job boundary or is
+uploaded. No later authored step can receive a new OIDC request handle; only
+the pinned actions' post-job cleanup remains.
+
+Before invocation, literal code also scans the current AWS/OIDC values and
+their canonical variable names under `$RUNNER_TEMP/_runner_file_commands` and
+`$HOME/.aws`; the sanitized tail repeats the name scan before checkout code.
+Symlinks, special files, unreadable paths, and bounded-scan overflow fail
+closed. This proves only those runner-owned credential locations and the two
+process environments; it does not claim a whole-disk or other-process memory
+erasure proof. The audit checkout uses pinned checkout v7 with
+`persist-credentials: false`, whose main action synchronously removes its SSH
+key before returning. Literal runtime code additionally proves that no audit
+Git auth remains and that the only private-key files left in production are
+the two exact paths referenced by the release and State Git configurations
+(zero remain in staging).
+
+The production failure trap is installed before environment guards or proofs.
+After authority is proven, any failure attempts a compare-and-swap
+`release.failed`; after publication it preserves recovery semantics instead.
+If the tail is missing, State checkout is unavailable, or the authority proof
+itself fails, executing checked-out recovery code would violate the boundary,
+so the trap cleans what it safely can and leaves the committed
+`release.started` for the next controller's one-hour interrupted-run recovery.
+
+Both split production jobs require environment-scoped keys and therefore name
+`release-production`. A read-only GitHub API check on 2026-08-25 showed its
+only protection rule was the protected-branch policy: no reviewers and no wait
+timer, so the second deployment does not introduce another manual approval or
+timer after `release.started`. This must be read back again before enabling the
+publication latch. The workflow-level non-cancelling concurrency group prevents
+a later controller from recovering while the authority job is still queued or
+running; the one-hour stale threshold applies only after that workflow ends or
+is interrupted.
 
 The manual production OIDC preflight tests only that separate trust boundary.
 An environment-free guard requires the exact upstream `main` ref and explicit

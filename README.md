@@ -93,10 +93,11 @@ then invoke this provider-neutral reconstruction tool.
 daily schedule is inert unless the repository variable `PUBLICATION_ENABLED`
 is exactly `true`; a manual run additionally requires an explicit confirmation.
 It also refuses any repository or ref other than the exact upstream `main`.
-It materializes the private production State repository through a read/write
-deploy key scoped only to that repository, selects at most one due result,
-atomically stages `release.started` and its exact targeted result release-status
-replacement, and commits them with a non-forced compare-and-swap push. A
+An unprivileged preparation job materializes the private production State
+repository through a read/write deploy key scoped only to that repository,
+selects at most one due result, atomically stages `release.started` and its
+exact targeted result release-status replacement, and commits them with a
+non-forced compare-and-swap push. That job has no OIDC permission. A
 missing, stale, or mismatched status fails closed, and a rejected push is never
 rebased onto another State head. The controller then retrieves the exact audit
 commit and verifies that the schema-version-3 sidecar, KMS envelope, and
@@ -111,11 +112,21 @@ Before assumption, the workflow compares the environment role variable with
 the reviewed production ARN. The resulting 15-minute session is restricted
 again to the exact qualified production unwrap Lambda alias (plus caller
 identity) and fails if AWS returns credentials for another account.
-Because GitHub reinjects OIDC handles per step, the credential action is
-followed by one final repository-authored step. It drops OIDC before invoking
-checked-out code and drops AWS before decrypting; reconstruction, publication,
-State completion or failure, and cleanup then finish without a later step that
-could reacquire OIDC.
+Because GitHub injects OIDC handles into every step of an `id-token: write`
+job, unwrap runs in a separate job that executes only pinned actions and
+literal workflow code before role assumption. The credential action is
+followed by exactly one final authored step. Its literal provider phase builds
+and consumes the one-use capability only after exact sidecar/envelope
+validation and a bounded scan of runner credential-file locations. It then
+uses `exec env -i` to replace the secret-bearing shell with a process whose
+environment contains no AWS or OIDC handle before any checked-out program
+executes. The checked-out tail proves that both its own `/proc` environment and
+its runner parent's environment are clean, repeats the credential-name file
+scan, then decrypts, reconstructs, publishes, records terminal or retryable
+State, and removes private scratch. The runner parent is expected not to carry
+step-scoped variables because it supplies them only when spawning the step; an
+unreadable or contaminated parent environment fails closed. No identity,
+plaintext, or private archive is transferred between jobs or uploaded.
 
 Before planning, the controller checks both full-history Git checkouts against
 the closed credential contract, requires exact tracked-clean `origin/main`
@@ -132,6 +143,10 @@ recorded as retryable. If a runner disappears after `release.started`, the next
 scheduled controller run waits one hour, then either records a retryable
 interruption or proves an already-published tree and records
 `release.published`; this closes the push-succeeded/callback-lost ambiguity.
+The production environment currently has no reviewer or wait-timer rule, so
+its two split jobs do not create a second manual approval after
+`release.started`; the runbook must reverify that external fact before enabling
+publication.
 Owner publication changes are folded into the State-owned release queue, so an
 opt-out ordered before `release.started` is not executable work.
 
@@ -197,10 +212,12 @@ policy.
 `Prove one credentialed staging release unwrap` is the non-publishing launch
 gate for this boundary. Given an accepted staging submission, it derives the
 exact queued release from validated staging State, checks out the pinned audit
-commit with separate read-only keys, consumes one staging release-purpose
-capability, drops AWS and OIDC authority, and verifies the decrypted tarball
-against the private sidecar. It neither reconstructs before the embargo nor
-writes State or this repository, and it uploads no artifact.
+commit with separate read-only keys, and consumes one staging release-purpose
+capability. Planning runs in a job with no OIDC. The separate unwrap job uses
+the same literal-provider/`exec env -i` process boundary as production and
+verifies the decrypted tarball against the private sidecar only after its
+`/proc` authority proof. It neither reconstructs before the embargo nor writes
+State or this repository, and it uploads no artifact.
 Before executing any checked-out staging State code, the workflow requires the
 checkout to be clean, complete-history, and exact `origin/main`, to descend from
 the reviewed staging release contract, and to retain its exact reviewed
@@ -208,8 +225,8 @@ the reviewed staging release contract, and to retain its exact reviewed
 The workflow also refuses a role variable other than the reviewed staging ARN
 and restricts its 15-minute session to the exact qualified staging unwrap
 Lambda alias (plus caller identity) in account `161072922960`.
-Its consume-and-verify step is likewise the final repository-authored step and
-uses an exit trap to clear authority and all private scratch on both success and
+Its invoke-and-sanitized-tail step is likewise the final authored step, and the
+tail uses an exit trap to remove all private scratch on both success and
 failure.
 
 `scripts/plan_release_removal.py` is the Git-read-only first response tool for
