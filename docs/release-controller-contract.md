@@ -42,23 +42,23 @@ provider phase validates the complete execution plan, creates and invokes the
 exact one-use capability, and refuses every failure without executing checkout
 code. Only a successful provider and Lambda invocation reach the
 empty-environment `exec -c` handoff.
-The final step installs a literal scratch-cleanup `EXIT` trap as its first
-command, before resolving Python or inspecting the authority result. A direct
-`exec -c` into the absolute system Bash then replaces the secret-bearing shell
-with an empty-environment process which installs the same literal cleanup trap
-before executing a second literal workflow program, not a checkout. A literal
-cleanup watchdog is created only after the authority shell unsets every AWS and
-OIDC variable, and it immediately replaces its short-lived coprocess fork with
-an empty-environment `exec -c`; only the private scratch path crosses that exec
-as a positional argument. The sanitized watchdog emits a fixed readiness token
-over its dedicated output pipe. The trusted parent must read that exact token
-before it duplicates the watchdog input onto the descriptor inherited by the
-sanitizer and checked-out tail, so the handoff cannot race the watchdog's
-environment-clearing exec. Closing that descriptor, including after a failed
-handoff exec, wakes the watchdog and triggers the same cleanup. Thus both early
-setup failure and a failed closed-environment handoff remove the unwrap
-response, plaintext identity, and every staged private scratch file without
-executing checkout code.
+The final step installs literal scratch-cleanup `EXIT`, `INT`, and `TERM` traps
+as its first command, before resolving Python or inspecting the authority
+result. A direct `exec -c` into the absolute system Bash then replaces the
+secret-bearing shell with an empty-environment process which installs the same
+literal cleanup trap before executing a second literal workflow program, not a
+checkout. After authority variables are unset, an empty-environment cleanup
+supervisor installs its own cancellation trap and reports readiness before
+checkout can execute. It polls the exact authority-process PID plus Linux
+process start-time identity; no cleanup pipe or descriptor is inherited by the
+checked-out tail or its subprocesses. It therefore cleans after a failed
+handoff exec or abrupt parent death even though Bash does not run `EXIT`, and a
+surviving descendant cannot delay cleanup. The exact tail installs the same
+synchronous cancellation coverage before sensitive work and replaces it with
+mode-specific traps only after its cleanup functions exist. Thus early setup
+failure, cancellation, and a failed closed-environment handoff remove the
+unwrap response, plaintext identity, and every staged private scratch file
+without executing checkout recovery code.
 
 The literal provider mirrors the whole execution-plan validator used by
 `prepare_unwrap`, including every closed nested field set, deterministic result
@@ -82,12 +82,16 @@ spawned step process, not retain them in the runner process; inability to read
 either environment or any surviving authority name fails closed. The sanitizer
 then validates a closed pre-authority staging record, hashes every staged input
 and the age binary, proves the release and production State checkouts remain at
-the exact planned commits, and proves the tail's working bytes are the exact Git
-blob at that release commit. `scripts/release_sanitizer_literal.sh` is only its
+the exact planned commits with no tracked, cached, or untracked change, and
+proves the tail's working bytes are the exact Git blob at that release commit.
+`scripts/release_sanitizer_literal.sh` is only its
 non-executed review mirror; tests require both workflow heredocs to equal it.
 Only after every literal proof succeeds does it execute the checked-out tail to
 validate the Lambda response, decrypt, reconstruct, publish, write terminal or
-retryable-failure State, and run trap-based source cleanup. The encrypted audit
+retryable-failure State, and run trap-based source cleanup. Every checked-out
+Python entry point runs under `-I` through a literal launcher which adds only
+that exact-clean checkout's script directory after isolated standard-library
+startup, blocking ambient or untracked import shadowing. The encrypted audit
 sidecar's plaintext-tar SHA-256 is compared with the decrypted bytes in both
 staging and production before any source parser or reconstruction can run. The
 encrypted audit object remains in its private checkout; neither the identity
@@ -111,11 +115,17 @@ the two exact paths referenced by the release and State Git configurations
 
 The production failure trap is installed at the beginning of the checked-out
 tail, which can be reached only after the literal authority and checkout proof.
-Any later failure attempts a compare-and-swap `release.failed`; after
-publication it preserves recovery semantics instead. If role assumption,
-provider validation, Lambda invocation, literal sanitation, pre-authority
-staging, or exact-checkout proof fails, executing checked-out recovery code
-would violate the boundary. Those failure paths perform only literal scratch
+Any later failure first removes the unwrap response, identity, plaintext tar,
+private archive, sidecar, release plan, reconstruction, and State
+materialization, preserving only the committed non-source `release.started`
+event needed by retry recording. Only after that synchronous erasure may it
+attempt a compare-and-swap `release.failed`; `INT` and `TERM` skip network
+recovery entirely and leave the next controller to reconcile the committed
+start. After publication it preserves recovery semantics instead. If role
+assumption, provider validation, Lambda invocation, literal sanitation,
+pre-authority staging, or exact-checkout proof fails, executing checked-out
+recovery code would violate the boundary. Those failure paths perform only
+literal scratch
 cleanup and leave the committed `release.started` for the next controller's
 one-hour interrupted-run recovery.
 
