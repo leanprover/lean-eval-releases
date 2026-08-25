@@ -283,33 +283,124 @@ jobs:
             --trusted-now "$trusted_now" \
             --output "$RUNNER_TEMP/unwrap-request.json"
 
+      - name: Require the exact production release Invoke role
+        if: steps.plan.outputs.kind == 'execution'
+        env:
+          CONFIGURED_ROLE_ARN: ${{ vars.AWS_RELEASE_UNWRAP_ROLE_ARN }}
+        run: |
+          set -euo pipefail
+          test "$CONFIGURED_ROLE_ARN" = \
+            arn:aws:iam::161072922960:role/lean-eval-release-unwrap-invoker-production
+
       - name: Assume the production Invoke-only release role
         if: steps.plan.outputs.kind == 'execution'
+        id: aws
         uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c
         with:
           role-to-assume: ${{ vars.AWS_RELEASE_UNWRAP_ROLE_ARN }}
           aws-region: us-east-1
+          role-duration-seconds: 900
           role-session-name: lean-eval-release-controller
+          retry-max-attempts: 4
+          allowed-account-ids: 161072922960
+          output-credentials: false
+          output-env-credentials: true
+          unset-current-credentials: true
+          inline-session-policy: >-
+            {"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":"lambda:InvokeFunction","Resource":"arn:aws:lambda:us-east-1:161072922960:function:lean-eval-archive-unwrap-production:live"},{"Effect":"Allow","Action":"sts:GetCallerIdentity","Resource":"*"}]}
           mask-aws-account-id: true
 
-      - name: Consume capability, drop AWS authority, and decrypt locally
-        if: steps.plan.outputs.kind == 'execution'
+      - name: Consume capability and finish one release under one authority boundary
+        if: always() && steps.started.outputs.recorded == 'true'
+        env:
+          AWS_STEP_OUTCOME: ${{ steps.aws.outcome }}
         run: |
           set -euo pipefail
-          cleanup() {
-            unset AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN
+          publication_recorded=false
+
+          clear_oidc() {
             unset ACTIONS_ID_TOKEN_REQUEST_TOKEN ACTIONS_ID_TOKEN_REQUEST_URL
+            {
+              echo 'ACTIONS_ID_TOKEN_REQUEST_TOKEN='
+              echo 'ACTIONS_ID_TOKEN_REQUEST_URL='
+            } >> "$GITHUB_ENV"
+          }
+
+          clear_authority() {
+            unset AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN
+            clear_oidc
             {
               echo 'AWS_ACCESS_KEY_ID='
               echo 'AWS_SECRET_ACCESS_KEY='
               echo 'AWS_SESSION_TOKEN='
-              echo 'ACTIONS_ID_TOKEN_REQUEST_TOKEN='
-              echo 'ACTIONS_ID_TOKEN_REQUEST_URL='
             } >> "$GITHUB_ENV"
-            rm -f "$RUNNER_TEMP/identity.age" "$RUNNER_TEMP/unwrap-response.json" \
-              "$RUNNER_TEMP/unwrap-metadata.json" "$RUNNER_TEMP/unwrap-request.json"
           }
-          trap cleanup EXIT
+
+          remove_scratch() {
+            rm -rf "$RUNNER_TEMP/reconstructed" "$RUNNER_TEMP/state-views"
+            rm -f "$RUNNER_TEMP"/release-*.json "$RUNNER_TEMP"/unwrap-*.json \
+              "$RUNNER_TEMP"/identity.age "$RUNNER_TEMP"/source.tar.gz \
+              "$RUNNER_TEMP"/archive.tar.age "$RUNNER_TEMP"/archive-sidecar.json \
+              "$RUNNER_TEMP"/age-bin
+          }
+
+          record_retryable_failure() (
+            set -euo pipefail
+            python scripts/release_controller.py state-event failed \
+              --started-event "$RUNNER_TEMP/release-started-event.json" \
+              --trusted-now "$(date --utc +%Y-%m-%dT%H:%M:%S.000Z)" \
+              --reason-code controller_failed \
+              --retryable true \
+              --output "$RUNNER_TEMP/release-failed-event.json"
+            state_head=$(git -C state rev-parse HEAD)
+            python scripts/release_controller.py stage-state-transition \
+              --state-root state \
+              --event "$RUNNER_TEMP/release-failed-event.json" \
+              --protected-state-head "$state_head" \
+              --output "$RUNNER_TEMP/release-failed-transition.json"
+            event_id=$(jq -er .event_id "$RUNNER_TEMP/release-failed-event.json")
+            event_path=$(jq -er .event_path "$RUNNER_TEMP/release-failed-transition.json")
+            status_path=$(jq -er .status_path "$RUNNER_TEMP/release-failed-transition.json")
+            test -f "state/$event_path"
+            test -f "state/$status_path"
+            python state/scripts/state.py --root state \
+              --protected-main-commit "$state_head" validate
+            python scripts/release_controller.py verify-staged-state-transition \
+              --state-root state \
+              --event "$RUNNER_TEMP/release-failed-event.json" \
+              --plan "$RUNNER_TEMP/release-failed-transition.json"
+            git -C state commit -m "Record failed release $event_id"
+            test "$(git -C state rev-parse HEAD^)" = "$state_head"
+            git -C state push origin HEAD:main
+          )
+
+          finish() {
+            local status=$?
+            local failure_status=0
+            trap - EXIT
+            set +e
+            clear_authority
+            if [ "$status" -ne 0 ] && [ "$publication_recorded" = false ]; then
+              record_retryable_failure
+              failure_status=$?
+            fi
+            remove_scratch
+            if [ "$status" -eq 0 ] && [ "$failure_status" -ne 0 ]; then
+              status=$failure_status
+            fi
+            exit "$status"
+          }
+          trap finish EXIT
+
+          # GitHub injects a fresh OIDC request handle into every step in an
+          # id-token job. This is the final repository-authored step, and the
+          # handle is discarded before any checked-out program executes.
+          clear_oidc
+          if [ "$AWS_STEP_OUTCOME" != success ]; then
+            echo "production release role assumption did not succeed" >&2
+            exit 1
+          fi
+
           aws lambda invoke \
             --function-name lean-eval-archive-unwrap-production \
             --qualifier live \
@@ -322,19 +413,15 @@ jobs:
               --response "$RUNNER_TEMP/unwrap-response.json" \
               --metadata "$RUNNER_TEMP/unwrap-metadata.json" \
               --output "$RUNNER_TEMP/identity.age"
-          unset AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN
-          unset ACTIONS_ID_TOKEN_REQUEST_TOKEN ACTIONS_ID_TOKEN_REQUEST_URL
+          clear_authority
+          test -z "${AWS_ACCESS_KEY_ID:-}"
+          test -z "${AWS_SECRET_ACCESS_KEY:-}"
+          test -z "${AWS_SESSION_TOKEN:-}"
+          test -z "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}"
+          test -z "${ACTIONS_ID_TOKEN_REQUEST_URL:-}"
+
           "$RUNNER_TEMP/age-bin" --decrypt --identity "$RUNNER_TEMP/identity.age" \
             --output "$RUNNER_TEMP/source.tar.gz" "$RUNNER_TEMP/archive.tar.age"
-          cleanup
-          trap - EXIT
-
-      - name: Reconstruct and validate the exact public allowlist
-        if: steps.plan.outputs.kind == 'execution'
-        id: reconstruct
-        run: |
-          set -euo pipefail
-          unset ACTIONS_ID_TOKEN_REQUEST_TOKEN ACTIONS_ID_TOKEN_REQUEST_URL
           trusted_now=$(date --utc +%Y-%m-%dT%H:%M:%S.000Z)
           python scripts/reconstruct_release.py \
             "$RUNNER_TEMP/release-plan.json" \
@@ -349,17 +436,9 @@ jobs:
             --state-acceptance-snapshot \
               "$RUNNER_TEMP/state-views/release-acceptance-snapshot.json" \
             --bundle-root "$RUNNER_TEMP/reconstructed"
-          echo "trusted_now=$trusted_now" >> "$GITHUB_OUTPUT"
           rm -f "$RUNNER_TEMP/source.tar.gz" "$RUNNER_TEMP/archive.tar.age" \
-            "$RUNNER_TEMP/archive-sidecar.json"
+            "$RUNNER_TEMP/archive-sidecar.json" "$RUNNER_TEMP/identity.age"
 
-      - name: Publish one append-only release commit
-        if: steps.plan.outputs.kind == 'execution'
-        id: publish
-        env:
-          TRUSTED_NOW: ${{ steps.reconstruct.outputs.trusted_now }}
-        run: |
-          set -euo pipefail
           result_id=$(jq -r .request.result.result_id "$RUNNER_TEMP/release-plan.json")
           release_path=$(jq -r .request.release.path "$RUNNER_TEMP/release-plan.json")
           submission_id=$(jq -r .request.submission.submission_id "$RUNNER_TEMP/release-plan.json")
@@ -393,7 +472,7 @@ jobs:
             fi
             cp "$RUNNER_TEMP/reconstructed/release-manifest.json" release-manifest.json
             python scripts/validate_manifest.py release-manifest.json \
-              --trusted-as-of "$TRUSTED_NOW" \
+              --trusted-as-of "$trusted_now" \
               --state-acceptance-snapshot \
                 "$RUNNER_TEMP/state-views/release-acceptance-snapshot.json" \
               --bundle-root .
@@ -412,27 +491,14 @@ jobs:
             exit 1
           fi
           [[ "$tree_digest" =~ ^[0-9a-f]{64}$ ]]
-          {
-            echo "repository_commit=$repository_commit"
-            echo "tree_digest=$tree_digest"
-            echo "release_path=$release_path"
-          } >> "$GITHUB_OUTPUT"
+          publication_recorded=true
 
-      - name: Build and append release.published
-        if: steps.publish.outputs.repository_commit != ''
-        id: terminal
-        env:
-          REPOSITORY_COMMIT: ${{ steps.publish.outputs.repository_commit }}
-          TREE_DIGEST: ${{ steps.publish.outputs.tree_digest }}
-          RELEASE_PATH: ${{ steps.publish.outputs.release_path }}
-        run: |
-          set -euo pipefail
           python scripts/release_controller.py state-event published \
             --started-event "$RUNNER_TEMP/release-started-event.json" \
             --trusted-now "$(date --utc +%Y-%m-%dT%H:%M:%S.000Z)" \
-            --repository-commit "$REPOSITORY_COMMIT" \
-            --tree-digest "$TREE_DIGEST" \
-            --release-path "$RELEASE_PATH" \
+            --repository-commit "$repository_commit" \
+            --tree-digest "$tree_digest" \
+            --release-path "$release_path" \
             --output "$RUNNER_TEMP/release-terminal-event.json"
           state_head=$(git -C state rev-parse HEAD)
           python scripts/release_controller.py stage-state-transition \
@@ -454,43 +520,3 @@ jobs:
           git -C state commit -m "Record published release $event_id"
           test "$(git -C state rev-parse HEAD^)" = "$state_head"
           git -C state push origin HEAD:main
-          touch "$RUNNER_TEMP/release-terminal-recorded"
-
-      - name: Record a retryable failure if publication did not occur
-        if: always() && steps.started.outputs.recorded == 'true' && steps.publish.outputs.repository_commit == ''
-        run: |
-          set -euo pipefail
-          python scripts/release_controller.py state-event failed \
-            --started-event "$RUNNER_TEMP/release-started-event.json" \
-            --trusted-now "$(date --utc +%Y-%m-%dT%H:%M:%S.000Z)" \
-            --reason-code controller_failed \
-            --retryable true \
-            --output "$RUNNER_TEMP/release-failed-event.json"
-          state_head=$(git -C state rev-parse HEAD)
-          python scripts/release_controller.py stage-state-transition \
-            --state-root state \
-            --event "$RUNNER_TEMP/release-failed-event.json" \
-            --protected-state-head "$state_head" \
-            --output "$RUNNER_TEMP/release-failed-transition.json"
-          event_id=$(jq -er .event_id "$RUNNER_TEMP/release-failed-event.json")
-          event_path=$(jq -er .event_path "$RUNNER_TEMP/release-failed-transition.json")
-          status_path=$(jq -er .status_path "$RUNNER_TEMP/release-failed-transition.json")
-          test -f "state/$event_path"
-          test -f "state/$status_path"
-          python state/scripts/state.py --root state \
-            --protected-main-commit "$state_head" validate
-          python scripts/release_controller.py verify-staged-state-transition \
-            --state-root state \
-            --event "$RUNNER_TEMP/release-failed-event.json" \
-            --plan "$RUNNER_TEMP/release-failed-transition.json"
-          git -C state commit -m "Record failed release $event_id"
-          test "$(git -C state rev-parse HEAD^)" = "$state_head"
-          git -C state push origin HEAD:main
-
-      - name: Remove controller scratch
-        if: always()
-        run: |
-          rm -rf "$RUNNER_TEMP/reconstructed" "$RUNNER_TEMP/state-views"
-          rm -f "$RUNNER_TEMP"/release-*.json "$RUNNER_TEMP"/unwrap-*.json \
-            "$RUNNER_TEMP"/identity.age "$RUNNER_TEMP"/source.tar.gz \
-            "$RUNNER_TEMP"/archive.tar.age "$RUNNER_TEMP"/archive-sidecar.json

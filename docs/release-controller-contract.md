@@ -19,6 +19,26 @@ The environment's OIDC release-unwrapper role remains separately restricted to
 the production unwrap Lambda. Neither this contract nor the qualification tool
 creates, installs, reads, or tests an AWS credential.
 
+The publishing job independently refuses an environment role variable other
+than the reviewed production role ARN. Its 15-minute assumed-role session adds
+an inline session policy that permits only `lambda:InvokeFunction` on the exact
+qualified `lean-eval-archive-unwrap-production:live` alias plus
+`sts:GetCallerIdentity`, and the credential action rejects any account other
+than `161072922960`. These source controls narrow the live role's permissions;
+they do not replace the required external trust-policy and identity-policy
+review.
+
+GitHub injects the OIDC request handle separately into every step of a job with
+`id-token: write`; clearing one step's process or `$GITHUB_ENV` cannot constrain
+a later step. Consequently the credential action is followed by exactly one
+final repository-authored step. That step immediately drops its fresh OIDC
+request handle, invokes the exact Lambda once, validates the response without
+AWS credentials in the child process, then drops the assumed credentials before
+decryption. Reconstruction, publication, terminal or retryable-failure State
+handling, and trap-based source cleanup all remain inside that same step. No
+later repository-authored process can receive a new OIDC request handle; only
+the pinned credential action's post-job cleanup remains.
+
 The manual production OIDC preflight tests only that separate trust boundary.
 An environment-free guard requires the exact upstream `main` ref and explicit
 publication-disabled confirmation before the protected `release-production`
