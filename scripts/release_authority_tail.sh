@@ -161,6 +161,10 @@ cmp "$RUNNER_TEMP/release-started-event.json" \
 test "$("$RUNNER_TEMP/age-bin" --version)" = v1.3.1
 "$RUNNER_TEMP/age-bin" --decrypt --identity "$RUNNER_TEMP/identity.age" \
   --output "$RUNNER_TEMP/source.tar.gz" "$RUNNER_TEMP/archive.tar.age"
+expected_plaintext=$(jq -er .sha256_plaintext_tar \
+  "$RUNNER_TEMP/archive-sidecar.json")
+actual_plaintext=$(sha256sum "$RUNNER_TEMP/source.tar.gz" | awk '{print $1}')
+test "$actual_plaintext" = "$expected_plaintext"
 trusted_now=$(date --utc +%Y-%m-%dT%H:%M:%S.000Z)
 "$PYTHON_BIN" scripts/reconstruct_release.py \
   "$RUNNER_TEMP/release-plan.json" \

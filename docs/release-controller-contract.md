@@ -40,9 +40,19 @@ executes a checked-out program while AWS or OIDC authority exists. The
 credential action is followed by exactly one final authored step. Its literal
 provider phase validates the complete execution plan, creates and invokes the
 exact one-use capability, and refuses every failure without executing checkout
-code. Only a successful provider and Lambda invocation reach `exec env -i`.
-That replaces the secret-bearing shell with a closed-environment process which
-executes a second literal workflow program, not a checkout.
+code. Only a successful provider and Lambda invocation reach the
+empty-environment `exec -c` handoff.
+The final step installs a literal scratch-cleanup `EXIT` trap as its first
+command, before resolving Python or inspecting the authority result. A direct
+`exec -c` into the absolute system Bash then replaces the secret-bearing shell
+with an empty-environment process which installs the same literal cleanup trap
+before executing a second literal workflow program, not a checkout. A literal
+cleanup watchdog holds the read end of an inherited pipe; the final authority
+process, sanitizer, and checked-out tail retain its write descriptor, so even
+an `exec` failure (for which Bash does not run `EXIT`) closes the pipe and
+triggers the same cleanup. Thus both early setup failure and a failed
+closed-environment handoff remove the unwrap response, plaintext identity, and
+every staged private scratch file without executing checkout code.
 
 The literal provider mirrors the whole execution-plan validator used by
 `prepare_unwrap`, including every closed nested field set, deterministic result
@@ -72,10 +82,12 @@ non-executed review mirror; tests require both workflow heredocs to equal it.
 Only after every literal proof succeeds does it execute the checked-out tail to
 validate the Lambda response, decrypt, reconstruct, publish, write terminal or
 retryable-failure State, and run trap-based source cleanup. The encrypted audit
-object remains in its private checkout; neither the identity nor plaintext nor
-private archive crosses a job boundary or is uploaded. No later authored step
-can receive a new OIDC request handle; only the pinned actions' post-job cleanup
-remains.
+sidecar's plaintext-tar SHA-256 is compared with the decrypted bytes in both
+staging and production before any source parser or reconstruction can run. The
+encrypted audit object remains in its private checkout; neither the identity
+nor plaintext nor private archive crosses a job boundary or is uploaded. No
+later authored step can receive a new OIDC request handle; only the pinned
+actions' post-job cleanup remains.
 
 Before invocation, literal code also scans the current AWS/OIDC values and
 their canonical variable names under `$RUNNER_TEMP/_runner_file_commands` and
