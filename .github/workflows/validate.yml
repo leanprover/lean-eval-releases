@@ -41,7 +41,9 @@ jobs:
           shellcheck scripts/release_sanitizer_literal.sh
           shellcheck scripts/release_authority_tail.sh
       - name: Lint workflows
-        # Disable ambient runner linters; actionlint itself is commit-pinned.
+        # The authored shell mirrors above deliberately use the hosted
+        # ShellCheck. Disable actionlint's ambient ShellCheck/Pyflakes
+        # integrations; only actionlint itself is commit-pinned here.
         run: actionlint -shellcheck= -pyflakes=
       - name: Run release tooling tests
         run: python -m unittest discover -s tests -v

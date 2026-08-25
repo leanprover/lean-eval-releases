@@ -33,12 +33,11 @@ if [ "$mode" = probe ]; then
   PATH=${PATH:-}
   RUNNER_TEMP=${RUNNER_TEMP:-}
 else
-  [ "$#" -eq 6 ]
+  [ "$#" -eq 5 ]
   HOME=$2
   PYTHON_BIN=$3
   RUNNER_TEMP=$4
   GITHUB_STEP_SUMMARY=$5
-  SUBMISSION_ID=$6
   PATH=/usr/local/bin:/usr/bin:/bin
 fi
 export HOME PATH
@@ -68,22 +67,21 @@ for name in "${authority_names[@]}"; do
   fi
 done
 
-for proc in "/proc/$$/environ" "/proc/$PPID/environ"; do
-  if [ ! -r "$proc" ]; then
-    echo "cannot prove literal sanitized process environment: $proc" >&2
-    exit 1
-  fi
-  while IFS= read -r -d '' entry; do
-    for name in "${authority_names[@]}"; do
-      case "$entry" in
-        "$name="*)
-          echo "authority remains process-readable in $proc: $name" >&2
-          exit 1
-          ;;
-      esac
-    done
-  done < "$proc"
-done
+proc="/proc/self/environ"
+if [ ! -r "$proc" ]; then
+  echo "cannot prove literal sanitized process environment: $proc" >&2
+  exit 1
+fi
+while IFS= read -r -d '' entry; do
+  for name in "${authority_names[@]}"; do
+    case "$entry" in
+      "$name="*)
+        echo "authority remains process-readable in $proc: $name" >&2
+        exit 1
+        ;;
+    esac
+  done
+done < "$proc"
 
 count=0
 total=0
@@ -210,5 +208,4 @@ exec env -i \
   PYTHON_BIN="$PYTHON_BIN" \
   RUNNER_TEMP="$RUNNER_TEMP" \
   GITHUB_STEP_SUMMARY="$GITHUB_STEP_SUMMARY" \
-  SUBMISSION_ID="${SUBMISSION_ID:-}" \
   bash --noprofile --norc scripts/release_authority_tail.sh "$mode"

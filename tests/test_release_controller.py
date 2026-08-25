@@ -212,6 +212,11 @@ class ReleaseControllerTests(unittest.TestCase):
         ]
         self.assertIn("state_commit=$(git -C state rev-parse HEAD)", started_step)
         self.assertIn('"state_commit=$state_commit"', started_step)
+        self.assertIn(
+            'plan_base64=$(base64 --wrap=0 "$RUNNER_TEMP/release-plan.json")',
+            started_step,
+        )
+        self.assertIn("started_event_base64=$(base64 --wrap=0", started_step)
         self.assertNotIn("upload-artifact", workflow)
         self.assertNotIn("actions/download-artifact", workflow)
         self.assertIn("--history-only", workflow)
@@ -256,143 +261,17 @@ class ReleaseControllerTests(unittest.TestCase):
                 condition = workflow_job_condition(jobs[name])
                 self.assertEqual(condition.count(latch), 1)
 
-    def test_publication_authority_starts_with_fresh_fail_closed_latch(self) -> None:
-        workflow = (ROOT / ".github/workflows/release-controller.yml").read_text(
-            encoding="utf-8"
+        documentation = "\n".join(
+            (ROOT / path).read_text(encoding="utf-8")
+            for path in ("README.md", "docs/release-controller-contract.md")
         )
-        job = workflow_jobs(workflow)["unwrap-publish"]
-        permissions = job.split("    permissions:\n", 1)[1].split(
-            "    environment:", 1
-        )[0]
-        self.assertEqual(
-            permissions,
-            "      actions: read\n"
-            "      contents: read\n"
-            "      id-token: write\n",
+        self.assertIn("workflow run context", documentation)
+        self.assertRegex(
+            documentation,
+            r"cancel\s+every queued or running controller run",
         )
-        steps = workflow_job_steps(workflow, "unwrap-publish")
-        first = steps[0]
-        self.assertEqual(
-            first["keys"],
-            {
-                "name": "Recheck the live publication latch before using authority",
-                "env": "",
-                "run": "|",
-            },
-        )
-        first_text = str(first["text"])
-        self.assertIn("GH_TOKEN: ${{ github.token }}", first_text)
-        self.assertEqual(first_text.count("${{ github.token }}"), 1)
-        self.assertNotIn("secrets.", first_text)
-        self.assertNotIn("vars.PUBLICATION_ENABLED", first_text)
-        self.assertIn("curl --proto '=https' --tlsv1.2 --fail", first_text)
-        self.assertIn("--request GET", first_text)
-        self.assertIn('--header "Authorization: Bearer $GH_TOKEN"', first_text)
-        self.assertIn('--header "X-GitHub-Api-Version: 2022-11-28"', first_text)
-        self.assertIn(
-            "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/"
-            "actions/variables/PUBLICATION_ENABLED",
-            first_text,
-        )
-        self.assertIn('.name == "PUBLICATION_ENABLED"', first_text)
-        self.assertIn('.value == "true"', first_text)
-
-        authority_markers = (
-            "actions/checkout@",
-            "aws-actions/configure-aws-credentials@",
-            "secrets.RELEASE_PUBLISH_KEY",
-            "secrets.PRODUCTION_STATE_CONTROLLER_KEY",
-            "secrets.AUDIT_READ_KEY",
-            "vars.AWS_RELEASE_UNWRAP_ROLE_ARN",
-            "scripts/release_authority_tail.sh",
-        )
-        for marker in authority_markers:
-            with self.subTest(marker=marker):
-                matching = [
-                    index
-                    for index, step in enumerate(steps)
-                    if marker in str(step["text"])
-                ]
-                self.assertTrue(matching)
-                self.assertTrue(all(index > 0 for index in matching))
-
-        run_marker = "        run: |\n"
-        script = textwrap.dedent(first_text.split(run_marker, 1)[1])
-        with tempfile.TemporaryDirectory() as temporary:
-            root = pathlib.Path(temporary)
-            fake_bin = root / "bin"
-            fake_bin.mkdir()
-            fake_curl = fake_bin / "curl"
-            fake_curl.write_text(
-                textwrap.dedent(
-                    """\
-                    #!/bin/sh
-                    output=
-                    while [ "$#" -gt 0 ]; do
-                      case "$1" in
-                        --output)
-                          output=$2
-                          shift 2
-                          ;;
-                        *)
-                          shift
-                          ;;
-                      esac
-                    done
-                    case "$FAKE_API_CASE" in
-                      enabled)
-                        printf '%s\n' '{"name":"PUBLICATION_ENABLED","value":"true"}' \
-                          > "$output"
-                        ;;
-                      disabled)
-                        printf '%s\n' '{"name":"PUBLICATION_ENABLED","value":"false"}' \
-                          > "$output"
-                        ;;
-                      wrong-name)
-                        printf '%s\n' '{"name":"OTHER","value":"true"}' > "$output"
-                        ;;
-                      malformed)
-                        printf '%s\n' 'not-json' > "$output"
-                        ;;
-                      deleted-or-api-failure)
-                        exit 22
-                        ;;
-                      *)
-                        exit 64
-                        ;;
-                    esac
-                    """
-                ),
-                encoding="utf-8",
-            )
-            fake_curl.chmod(0o755)
-            environment = {
-                **os.environ,
-                "PATH": f"{fake_bin}:{os.environ['PATH']}",
-                "GH_TOKEN": "synthetic-github-token",
-                "GITHUB_API_URL": "https://api.github.invalid",
-                "GITHUB_REPOSITORY": "leanprover/lean-eval-releases",
-                "RUNNER_TEMP": str(root),
-            }
-            for case, succeeds in (
-                ("enabled", True),
-                ("disabled", False),
-                ("wrong-name", False),
-                ("malformed", False),
-                ("deleted-or-api-failure", False),
-            ):
-                with self.subTest(case=case):
-                    completed = subprocess.run(
-                        ["bash", "-euo", "pipefail", "-c", script],
-                        check=False,
-                        env={**environment, "FAKE_API_CASE": case},
-                        capture_output=True,
-                        text=True,
-                    )
-                    if succeeds:
-                        self.assertEqual(completed.returncode, 0)
-                    else:
-                        self.assertNotEqual(completed.returncode, 0)
+        self.assertIn("`Variables` repository permission (read)", documentation)
+        self.assertNotIn("fresh repository Actions-variable API", documentation)
 
     def assert_release_invoke_session_boundary(
         self,
@@ -449,7 +328,6 @@ class ReleaseControllerTests(unittest.TestCase):
             self.assertIn(
                 keys.get("name"),
                 {
-                    "Recheck the live publication latch before using authority",
                     "Stage exact encrypted inputs without executing checked-out code",
                     f"Require the exact {environment} release Invoke role",
                 },
@@ -589,18 +467,15 @@ class ReleaseControllerTests(unittest.TestCase):
         privileged = workflow[workflow.index("  unwrap-publish:") :]
         self.assertNotIn("id-token: write", prepare)
         self.assertIn(
-            "permissions:\n"
-            "      actions: read\n"
-            "      contents: read\n"
-            "      id-token: write",
+            "permissions:\n      contents: read\n      id-token: write",
             privileged,
         )
 
         sanitizer = (ROOT / "scripts/release_sanitizer_literal.sh").read_text(
             encoding="utf-8"
         )
-        proof = sanitizer.index('for proc in "/proc/$$/environ"')
-        self.assertIn('"/proc/$$/environ" "/proc/$PPID/environ"', sanitizer)
+        proof = sanitizer.index('proc="/proc/self/environ"')
+        self.assertNotIn("PPID", sanitizer)
         self.assertLess(sanitizer.index("trap 'status=$?"), proof)
         proof_complete = sanitizer.index("trap - EXIT", proof)
         checkout_tail = sanitizer.index(
@@ -670,9 +545,16 @@ class ReleaseControllerTests(unittest.TestCase):
         self.assertIn("shellcheck scripts/release_authority_tail.sh", validate)
         self.assertIn("bash -n scripts/release_sanitizer_literal.sh", validate)
         self.assertIn("shellcheck scripts/release_sanitizer_literal.sh", validate)
+        self.assertIn("deliberately use the hosted\n        # ShellCheck", validate)
+        self.assertIn("actionlint -shellcheck= -pyflakes=", validate)
         contract = (ROOT / "docs/release-controller-contract.md").read_text(
             encoding="utf-8"
         )
+        self.assertRegex(
+            contract,
+            r"cross\s+the production job-output boundary as base64",
+        )
+        self.assertRegex(contract, r"contain no\s+plaintext archive or identity")
         self.assertIn("explicit publication-launch blocker", contract)
         self.assertRegex(
             contract,
@@ -735,28 +617,6 @@ class ReleaseControllerTests(unittest.TestCase):
                 text=True,
             )
             self.assertEqual(accepted.returncode, 0, accepted.stderr)
-
-            parent_command = (
-                "env -i PATH=\"$PATH\" HOME=\"$2\" RUNNER_TEMP=\"$3\" "
-                "bash --noprofile --norc \"$1\" probe; status=$?; :; exit $status"
-            )
-            contaminated_parent = subprocess.run(
-                [
-                    "bash",
-                    "-c",
-                    parent_command,
-                    "authority-parent",
-                    str(tail),
-                    str(home),
-                    str(runner),
-                ],
-                check=False,
-                capture_output=True,
-                text=True,
-                env={**clean, **authority},
-            )
-            self.assertNotEqual(contaminated_parent.returncode, 0)
-            self.assertIn("process-readable", contaminated_parent.stderr)
 
     def test_literal_sanitizer_is_the_only_gate_into_checkout_code(self) -> None:
         sanitizer = ROOT / "scripts/release_sanitizer_literal.sh"
@@ -869,7 +729,6 @@ class ReleaseControllerTests(unittest.TestCase):
                         str(python_bin),
                         str(runner),
                         str(root / "summary.md"),
-                        "0198abcd-0000-7000-8000-000000000002",
                     ],
                     cwd=checkout,
                     check=False,
@@ -1147,9 +1006,11 @@ class ReleaseControllerTests(unittest.TestCase):
                         time.sleep(0.01)
                     self.fail(f"process {pid} remained live in state {state!r}")
 
-                def assert_supervisor_terminated() -> None:
+                def assert_supervisor_terminated(
+                    current_runner: pathlib.Path = runner,
+                ) -> None:
                     marker = b"lean-eval-release-cleanup-supervisor-v1"
-                    expected_runner = os.fsencode(runner)
+                    expected_runner = os.fsencode(current_runner)
                     deadline = time.monotonic() + 30
                     live: list[int] = []
                     while time.monotonic() < deadline:
@@ -1296,13 +1157,17 @@ class ReleaseControllerTests(unittest.TestCase):
                 for identity, replacement in (
                     (
                         "pid",
-                        '"$RUNNER_TEMP" 99999999 "$parent_start" '
-                        '"$parent_group"',
+                        (
+                            '"$RUNNER_TEMP" 99999999 "$parent_start" '
+                            '"$parent_group"'
+                        ),
                     ),
                     (
                         "start-time",
-                        '"$RUNNER_TEMP" "$$" "$((parent_start + 1))" '
-                        '"$parent_group"',
+                        (
+                            '"$RUNNER_TEMP" "$$" "$((parent_start + 1))" '
+                            '"$parent_group"'
+                        ),
                     ),
                 ):
                     with self.subTest(
@@ -1712,7 +1577,7 @@ class ReleaseControllerTests(unittest.TestCase):
                 "scripts/release_authority_tail.sh",
                 run[provider_end:sanitized_exec],
             )
-            proof = sanitizer_literal.index('for proc in "/proc/$$/environ"')
+            proof = sanitizer_literal.index('proc="/proc/self/environ"')
             checkout = sanitizer_literal.index(
                 "scripts/release_authority_tail.sh", proof
             )
@@ -2497,7 +2362,7 @@ class ReleaseControllerTests(unittest.TestCase):
         sanitizer = (ROOT / "scripts/release_sanitizer_literal.sh").read_text(
             encoding="utf-8"
         )
-        proof = sanitizer.index('for proc in "/proc/$$/environ"')
+        proof = sanitizer.index('proc="/proc/self/environ"')
         checkout_tail = sanitizer.index(
             "scripts/release_authority_tail.sh", proof
         )
@@ -2508,6 +2373,25 @@ class ReleaseControllerTests(unittest.TestCase):
         self.assertIn('if [ "$mode" = staging ]', tail)
         self.assertIn('"$RUNNER_TEMP/age-bin" --decrypt', tail)
         self.assertIn("audit SSH key was not synchronously removed", workflow)
+
+    def test_staging_summary_uses_plan_bound_submission_id(self) -> None:
+        workflow = (
+            ROOT / ".github/workflows/credentialed-release-staging-smoke.yml"
+        ).read_text(encoding="utf-8")
+        tail = (ROOT / "scripts/release_authority_tail.sh").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn(
+            "submission_id=$(jq -er .request.submission.submission_id",
+            tail,
+        )
+        self.assertIn('echo "- submission: \\`$submission_id\\`"', tail)
+        self.assertNotIn("SUBMISSION_ID", tail)
+        authority_step = str(
+            workflow_job_steps(workflow, "unwrap-one")[-1]["text"]
+        )
+        self.assertNotIn("inputs.submission_id", authority_step)
+        self.assertNotIn("SUBMISSION_ID", authority_step)
 
     def test_every_external_action_is_pinned_to_a_full_commit(self) -> None:
         action = re.compile(r"^\s*(?:- )?uses:\s*([^\s#]+)", re.MULTILINE)

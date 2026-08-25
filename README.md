@@ -92,22 +92,21 @@ then invoke this provider-neutral reconstruction tool.
 `Publish due source release` is the credentialed production controller. Its
 daily schedule is inert unless the repository variable `PUBLICATION_ENABLED`
 is exactly `true`. Both jobs retain a job-level latch check as defense in depth,
-but GitHub may evaluate that context from the workflow run's cached state. The
-authority job can therefore start after a later disable. Its first step uses
-only `github.token` to fetch the repository Actions variable afresh and requires
-its exact value to remain `true`; deletion, `false`, or any API failure stops
-the job. That check precedes every workflow step that references a State,
-release, or audit key and every AWS/OIDC or publication action. GitHub may
-provision environment secrets when the job starts, so the repository contract
-claims only that workflow code does not reference or use them before the fresh
-check passes. A manual run additionally requires an explicit confirmation. The
-workflow also refuses any repository or ref other than the exact upstream
-`main`.
-An unprivileged preparation job materializes the private production State
+but GitHub evaluates each condition from the workflow run context; it is not a
+live revocation mechanism and a queued job must not be assumed to observe a
+later variable change. After disabling the variable, operators must cancel
+every queued or running controller run. An emergency stop must additionally
+revoke the scoped production keys or unwrap role, or block the job with
+`release-production` environment protection. A manual run additionally
+requires an explicit confirmation. The workflow also refuses any repository
+or ref other than the exact upstream `main`.
+A State-writing preparation job materializes the private production State
 repository through a read/write deploy key scoped only to that repository,
 selects at most one due result, atomically stages `release.started` and its
 exact targeted result release-status replacement, and commits them with a
-non-forced compare-and-swap push. That job has no OIDC permission. A
+non-forced compare-and-swap push under the run-context latch. The authority
+boundary described below does not remove that State-key authority; the job has
+no OIDC permission. A
 missing, stale, or mismatched status fails closed, and a rejected push is never
 rebased onto another State head. The controller then retrieves the exact audit
 commit and verifies that the schema-version-3 sidecar, KMS envelope, and
@@ -130,12 +129,12 @@ and consumes the one-use capability only after exact sidecar/envelope
 validation and a bounded scan of runner credential-file locations. It then
 uses `exec env -i` to replace the secret-bearing shell with a process whose
 environment contains no AWS or OIDC handle before any checked-out program
-executes. The checked-out tail proves that both its own `/proc` environment and
-its runner parent's environment are clean, repeats the credential-name file
-scan, then decrypts, reconstructs, publishes, records terminal or retryable
-State, and removes private scratch. The runner parent is expected not to carry
-step-scoped variables because it supplies them only when spawning the step; an
-unreadable or contaminated parent environment fails closed. No identity,
+executes. The checked-out tail proves its own `/proc` environment is clean,
+repeats the credential-name file scan, then decrypts, reconstructs, publishes,
+records terminal or retryable State, and removes private scratch. The canonical
+execution plan and source-free `release.started` event cross the production
+job-output boundary as base64 control data; they contain no plaintext archive
+or identity and are neither logged nor uploaded as artifacts. No identity,
 plaintext, or private archive is transferred between jobs or uploaded.
 
 Before planning, the controller checks both full-history Git checkouts against
@@ -153,6 +152,10 @@ release-queue bytes, and acceptance-snapshot bytes into the execution plan.
 Reconstruction rechecks the acceptance snapshot binding. The detailed
 authority, compare-and-swap, idempotence, and recovery contract is in
 [`docs/release-controller-contract.md`](docs/release-controller-contract.md).
+The validation workflow's private pinned-State integration is intentionally
+limited to exact upstream protected `main`; a branch `workflow_dispatch` does
+not receive the production State key. This preserves the secret boundary
+rather than weakening it to make branch validation convenient.
 
 No plaintext or identity artifact is uploaded. A pre-publication failure is
 recorded as retryable. If a runner disappears after `release.started`, the next
@@ -232,8 +235,10 @@ commit with separate read-only keys, and consumes one staging release-purpose
 capability. Planning runs in a job with no OIDC. The separate unwrap job uses
 the same literal-provider/`exec env -i` process boundary as production and
 verifies the decrypted tarball against the private sidecar only after its
-`/proc` authority proof. It neither reconstructs before the embargo nor writes
-State or this repository, and it uploads no artifact.
+`/proc` authority proof. Its displayed submission ID is derived from that
+validated execution plan, never from the unbound dispatch input passed to the
+authority job. It neither reconstructs before the embargo nor writes State or
+this repository, and it uploads no artifact.
 Before executing any checked-out staging State code, the workflow requires the
 checkout to be clean, complete-history, and exact `origin/main`, to descend from
 the reviewed staging release contract, and to retain its exact reviewed
