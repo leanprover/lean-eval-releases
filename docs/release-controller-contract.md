@@ -1,11 +1,12 @@
 # Production release controller contract
 
-The automatic controller has two independent gates. GitHub must run the exact
+The automatic controller has two run-admission gates. GitHub must run the exact
 `leanprover/lean-eval-releases` `main` ref in the protected
 `release-production` environment, and the repository variable
 `PUBLICATION_ENABLED` must be exactly `true`. The tracked repository does not
-set that variable. The manual credential preflight instead requires it to be
-absent or exactly `false`, so the same run cannot qualify publication.
+set that variable. The variable gate is evaluated from workflow run context,
+not as live revocation. The manual credential preflight instead requires it to
+be absent or exactly `false`, so the same run cannot qualify publication.
 
 [`configuration/release-controller-credential-contract-v1.json`](../configuration/release-controller-credential-contract-v1.json)
 is the closed, reviewed Git authority contract. It names three non-overlapping
@@ -80,12 +81,12 @@ mutate every plan field and nested object to prove rejection parity. The
 capability is still created immediately before invocation, never passed between
 jobs, so approval or runner queue time cannot consume its five-minute lifetime.
 
-The post-`env -i` literal sanitizer scans both `/proc/self/environ` and its
-runner parent's `/proc` environment for AWS credentials and GitHub OIDC request
-handles. GitHub's runner is expected to pass step-scoped values only to the
-spawned step process, not retain them in the runner process; inability to read
-either environment or any surviving authority name fails closed. The sanitizer
-then validates a closed pre-authority staging record, hashes every staged input
+The post-`env -i` literal sanitizer scans `/proc/self/environ` for AWS
+credentials and GitHub OIDC request handles; inability to read that environment
+or any surviving authority name fails closed. It makes no claim about the
+runner-parent process because `/usr/bin/setsid --wait` may fork depending on
+process-group topology. The sanitizer then validates a closed pre-authority
+staging record, hashes every staged input
 and the age binary, proves the release and production State checkouts remain at
 the exact planned commits with no tracked, cached, or untracked change, and
 proves the tail's working bytes are the exact Git blob at that release commit.
@@ -106,20 +107,26 @@ encrypted audit object remains in its private checkout; neither the identity
 nor plaintext nor private archive crosses a job boundary or is uploaded. No
 later authored step can receive a new OIDC request handle; only the pinned
 actions' post-job cleanup remains.
+The canonical execution plan and source-free `release.started` event do cross
+the production job-output boundary as base64 control data. They contain no
+plaintext archive or identity, and workflow code neither logs them nor uploads
+them as artifacts.
 
 Before invocation, literal code also scans the current AWS/OIDC values and
 their canonical variable names under `$RUNNER_TEMP/_runner_file_commands` and
 `$HOME/.aws`; the post-`env -i` literal sanitizer repeats the name scan before
 checkout code.
 Symlinks, special files, unreadable paths, and bounded-scan overflow fail
-closed. This proves only those runner-owned credential locations and the two
-process environments; it does not claim a whole-disk or other-process memory
-erasure proof. The audit checkout uses pinned checkout v7 with
+closed. This proves only those runner-owned credential locations and the
+sanitized process environment; it does not claim a whole-disk or other-process
+memory erasure proof. The audit checkout uses pinned checkout v7 with
 `persist-credentials: false`, whose main action synchronously removes its SSH
 key before returning. Literal runtime code additionally proves that no audit
-Git auth remains and that the only private-key files left in production are
-the two exact paths referenced by the release and State Git configurations
-(zero remain in staging).
+Git auth remains. Its private-key sweep is deliberately limited to regular
+files directly under the top level of `$RUNNER_TEMP`: production requires
+exactly the two paths referenced by the release and State Git configurations,
+while staging requires zero matches. It does not claim a recursive runner-disk
+private-key inventory.
 
 The production failure trap is installed at the beginning of the checked-out
 tail, which can be reached only after the literal authority and checkout proof.
@@ -140,28 +147,22 @@ one-hour interrupted-run recovery.
 
 Both split production jobs require environment-scoped keys and therefore name
 `release-production`. Both job-level conditions retain a
-`PUBLICATION_ENABLED == 'true'` check as defense in depth, but GitHub may
-evaluate the downstream condition from the workflow run's cached variable
-context. The authority job can therefore start after an operator removes or
-disables the latch while it is queued. Its literal first step uses only
-`github.token` to issue a fresh repository Actions-variable API GET and requires
-the returned name and value to be exactly `PUBLICATION_ENABLED` and `true`.
-Deletion, `false`, malformed data, authentication or permission failure, and
-every other API failure stop the job closed. The check runs before checkout,
-before any workflow step references the production State, release, or audit
-deploy keys, and before any AWS/OIDC command, role assumption, or publication
-action.
-
-Naming the environment means GitHub may provision its secrets when the job
-starts; this source contract does not claim otherwise. It proves that workflow
-code does not reference, pass, or use those secrets, and cannot assume AWS,
-until the fresh check passes. Once that check has passed, a later latch change
-does not revoke authority, so an emergency stop must cancel the run or revoke
-the scoped external credentials. If the fresh check stops an authority job
-after `release.started`, the committed start remains for interrupted-run
-recovery after deliberate re-enablement. The second environment deployment
-occurs after `release.started`, and its protection rules, variables, and secrets
-are mutable external state.
+`PUBLICATION_ENABLED == 'true'` check as defense in depth, but GitHub evaluates
+them from the workflow run context. They are not a live revocation
+mechanism, and a queued job must not be assumed to observe a later variable
+change. The workflow deliberately does not attempt a REST re-read with
+`github.token`: the repository-variable endpoint requires the separate
+`Variables` repository permission (read), which is not an available
+`GITHUB_TOKEN` workflow `permissions` key. This boundary applies specifically
+to the authority job: `prepare-one`
+can already use the production State key and append `release.started` under its
+run-context latch. After disabling the variable, operators must cancel every
+queued or running controller run and allow the committed start to follow the
+documented interrupted-run recovery path. For an emergency stop they must also
+revoke the scoped production keys or unwrap role, or use
+`release-production` environment protection to block authority. The second
+environment deployment occurs after `release.started`, and its protection
+rules, variables, and secrets are mutable external state.
 This is an explicit publication-launch blocker, not a property proved by
 repository CI.
 A read-only GitHub API check on 2026-08-25 showed its

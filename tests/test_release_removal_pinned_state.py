@@ -52,6 +52,11 @@ class PinnedStateWorkflowTests(unittest.TestCase):
         )
         self.assertIn("github.event_name != 'pull_request'", workflow)
         self.assertIn("github.ref == 'refs/heads/main'", workflow)
+        documentation = (ROOT / "README.md").read_text(encoding="utf-8")
+        self.assertRegex(
+            documentation,
+            r"branch `workflow_dispatch` does\s+not receive",
+        )
         self.assertIn(
             "LEAN_EVAL_PINNED_STATE_ROOT: "
             "${{ github.workspace }}/.pinned-state-contract",

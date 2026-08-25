@@ -174,7 +174,8 @@ esac
 
 if [ "$mode" = staging ]; then
   : "${GITHUB_STEP_SUMMARY:?}"
-  : "${SUBMISSION_ID:?}"
+  submission_id=$(jq -er .request.submission.submission_id \
+    "$RUNNER_TEMP/release-plan.json")
   require_private_regular "$RUNNER_TEMP/unwrap-request.json"
   require_private_regular "$RUNNER_TEMP/unwrap-response.json"
   require_private_regular "$RUNNER_TEMP/unwrap-metadata.json"
@@ -209,7 +210,7 @@ _read_release_sources(pathlib.Path(sys.argv[1]))
   {
     echo '### Credentialed staging release boundary passed'
     echo
-    echo "- submission: \`$SUBMISSION_ID\`"
+    echo "- submission: \`$submission_id\`"
     echo "- audit commit: \`$audit_commit\`"
     echo "- ciphertext SHA-256: \`$ciphertext_digest\`"
     echo '- plaintext matched the private sidecar and was discarded without publication or artifact upload'
