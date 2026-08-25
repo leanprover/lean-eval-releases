@@ -139,16 +139,29 @@ cleanup and leave the committed `release.started` for the next controller's
 one-hour interrupted-run recovery.
 
 Both split production jobs require environment-scoped keys and therefore name
-`release-production`. Both job-level conditions independently require the live
-`PUBLICATION_ENABLED` repository variable to equal `true`. If an operator
-removes or disables the latch after `release.started` but while the authority
-job is still queued, GitHub skips that job before it receives deploy keys or
-OIDC permission; the committed start remains for interrupted-run recovery once
-the latch is deliberately re-enabled. Job conditions do not revoke authority
-from a job which has already started, so an emergency stop at that later point
-must also cancel the run or revoke the scoped external credentials. The second
-environment deployment occurs after `release.started`, and its protection
-rules, variables, and secrets are mutable external state.
+`release-production`. Both job-level conditions retain a
+`PUBLICATION_ENABLED == 'true'` check as defense in depth, but GitHub may
+evaluate the downstream condition from the workflow run's cached variable
+context. The authority job can therefore start after an operator removes or
+disables the latch while it is queued. Its literal first step uses only
+`github.token` to issue a fresh repository Actions-variable API GET and requires
+the returned name and value to be exactly `PUBLICATION_ENABLED` and `true`.
+Deletion, `false`, malformed data, authentication or permission failure, and
+every other API failure stop the job closed. The check runs before checkout,
+before any workflow step references the production State, release, or audit
+deploy keys, and before any AWS/OIDC command, role assumption, or publication
+action.
+
+Naming the environment means GitHub may provision its secrets when the job
+starts; this source contract does not claim otherwise. It proves that workflow
+code does not reference, pass, or use those secrets, and cannot assume AWS,
+until the fresh check passes. Once that check has passed, a later latch change
+does not revoke authority, so an emergency stop must cancel the run or revoke
+the scoped external credentials. If the fresh check stops an authority job
+after `release.started`, the committed start remains for interrupted-run
+recovery after deliberate re-enablement. The second environment deployment
+occurs after `release.started`, and its protection rules, variables, and secrets
+are mutable external state.
 This is an explicit publication-launch blocker, not a property proved by
 repository CI.
 A read-only GitHub API check on 2026-08-25 showed its
