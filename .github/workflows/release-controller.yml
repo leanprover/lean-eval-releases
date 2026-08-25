@@ -266,12 +266,34 @@ jobs:
       needs.prepare-one.outputs.state_commit != '' &&
       needs.prepare-one.outputs.recorded == 'true'
     permissions:
+      actions: read
       contents: read
       id-token: write
     environment: release-production
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
+      - name: Recheck the live publication latch before using authority
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          umask 077
+          response=$(mktemp "$RUNNER_TEMP/publication-latch.XXXXXX.json")
+          trap 'rm -f "$response"' EXIT
+          curl --proto '=https' --tlsv1.2 --fail --silent --show-error \
+            --request GET \
+            --header "Accept: application/vnd.github+json" \
+            --header "Authorization: Bearer $GH_TOKEN" \
+            --header "X-GitHub-Api-Version: 2022-11-28" \
+            "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/actions/variables/PUBLICATION_ENABLED" \
+            --output "$response"
+          jq -e '
+            type == "object" and
+            .name == "PUBLICATION_ENABLED" and
+            .value == "true"
+          ' "$response" >/dev/null
+
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           ref: main

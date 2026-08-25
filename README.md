@@ -91,12 +91,18 @@ then invoke this provider-neutral reconstruction tool.
 
 `Publish due source release` is the credentialed production controller. Its
 daily schedule is inert unless the repository variable `PUBLICATION_ENABLED`
-is exactly `true`; both the preparation job and the downstream publication
-authority job independently evaluate that live latch. Disabling it while the
-authority job is queued after `release.started` prevents that job from starting
-and leaves the committed start for recovery after deliberate re-enablement. A
-manual run additionally requires an explicit confirmation. The workflow also
-refuses any repository or ref other than the exact upstream `main`.
+is exactly `true`. Both jobs retain a job-level latch check as defense in depth,
+but GitHub may evaluate that context from the workflow run's cached state. The
+authority job can therefore start after a later disable. Its first step uses
+only `github.token` to fetch the repository Actions variable afresh and requires
+its exact value to remain `true`; deletion, `false`, or any API failure stops
+the job. That check precedes every workflow step that references a State,
+release, or audit key and every AWS/OIDC or publication action. GitHub may
+provision environment secrets when the job starts, so the repository contract
+claims only that workflow code does not reference or use them before the fresh
+check passes. A manual run additionally requires an explicit confirmation. The
+workflow also refuses any repository or ref other than the exact upstream
+`main`.
 An unprivileged preparation job materializes the private production State
 repository through a read/write deploy key scoped only to that repository,
 selects at most one due result, atomically stages `release.started` and its
