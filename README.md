@@ -131,11 +131,17 @@ plaintext, or private archive is transferred between jobs or uploaded.
 Before planning, the controller checks both full-history Git checkouts against
 the closed credential contract, requires exact tracked-clean `origin/main`
 commits, and requires production State to descend from the reviewed release
-event contract. A source-free qualification binds the exact controller commit,
-State commit and event provenance, release-queue bytes, and acceptance-snapshot
-bytes into the execution plan. Reconstruction rechecks the acceptance snapshot
-binding. The detailed authority, compare-and-swap, idempotence, and recovery
-contract is in
+event contract. That reviewed production State contract is commit
+`6799522f7fe57263de4a66499e52ce4bfda69baa`, root tree
+`b63b8290d1bc779d9a981ea3f9e4dbc2b848c635`, with README blob
+`d2487d0330b708e856bdcd79ba114631355225a7`, docs tree
+`3e9957ffc1a7b653d940d3b8020b583ea2fae0f3`, schema tree
+`3043a7b6afa042577645e0520ee9bd105a15424a`, and scripts tree
+`4e2c39cac2510716577a7fd6d13abf0f9cf26976`. A source-free qualification
+binds the exact controller commit, State commit and event provenance,
+release-queue bytes, and acceptance-snapshot bytes into the execution plan.
+Reconstruction rechecks the acceptance snapshot binding. The detailed
+authority, compare-and-swap, idempotence, and recovery contract is in
 [`docs/release-controller-contract.md`](docs/release-controller-contract.md).
 
 No plaintext or identity artifact is uploaded. A pre-publication failure is

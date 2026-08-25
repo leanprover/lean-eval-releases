@@ -55,13 +55,13 @@ class ReleaseRemovalPlanTests(unittest.TestCase):
     def test_pinned_state_contract_manifest_is_exact(self) -> None:
         self.assertEqual(
             removal_module.STATE_REMOVAL_CONTRACT_COMMIT,
-            "a53c658a2de2188675134dc2890285fbaa17cf5a",
+            "6799522f7fe57263de4a66499e52ce4bfda69baa",
         )
         self.assertEqual(
             removal_module.STATE_REMOVAL_CONTRACT_TREES,
             {
-                "schema": "3111bf02bd9983a8712425923de8fca6ba696469",
-                "scripts": "f9fe278ef1ea062bc21a3fafc7ddea7ab758a099",
+                "schema": "3043a7b6afa042577645e0520ee9bd105a15424a",
+                "scripts": "4e2c39cac2510716577a7fd6d13abf0f9cf26976",
             },
         )
         self.assertEqual(
@@ -84,8 +84,8 @@ class ReleaseRemovalPlanTests(unittest.TestCase):
                 ),
                 "schema/state-event-v1.schema.json": (
                     "100644",
-                    "0a251ef99440360b39245b6a55036f30de5c8cd7",
-                    "7ee83581b6e7bb7769afe130a394b41613e9cf24b8643777e63990c448da7cc0",
+                    "151d2de843c963efb5057a3e26cb6fd65f446312",
+                    "73598fb935b14ce9e9a02a1d49ee443f8f18b1fe9ed9d13e069ecb8fa2b8ab73",
                 ),
                 "schema/result-overlays-v1.schema.json": (
                     "100644",
@@ -94,8 +94,8 @@ class ReleaseRemovalPlanTests(unittest.TestCase):
                 ),
                 "scripts/materialize_state.py": (
                     "100755",
-                    "9152f9f651017503b4674d3e5df0df575361b3bd",
-                    "4fa2bfa89c434b5cdbec27ea433a34ea0d247afa74ca8f2f65b9dbf2d9b5b092",
+                    "3bc4af9360aa3199391bb29790a21755ba62d842",
+                    "c5b26fab538b4b0920d20246d1821c2995a439e8c543e5c68de9a80487dbe6d5",
                 ),
                 "scripts/public_projection.py": (
                     "100755",
@@ -109,8 +109,8 @@ class ReleaseRemovalPlanTests(unittest.TestCase):
                 ),
                 "scripts/validate_state.py": (
                     "100755",
-                    "3b08937b9f4a620d021babbe7eca29887202ce90",
-                    "1ab00bd3f915a3d46e57edc5a5274528f16e43b7344269da5fe62a8e8708a254",
+                    "19b4801ca6b7d9edc4f43d9e55bc86a6b24ac315",
+                    "07d19fc4d30222cd0bbeccd246397737203301fa79e748bb6a2ac041c510c6f7",
                 ),
             },
         )

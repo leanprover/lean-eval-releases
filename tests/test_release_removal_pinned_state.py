@@ -21,10 +21,16 @@ from plan_release_removal import plan_removal
 from release_removal import finalize_release_containment, finalize_state_corrections
 from release_tree import tree_digest
 
-STATE_CONTRACT_COMMIT = "a53c658a2de2188675134dc2890285fbaa17cf5a"
+STATE_CONTRACT_COMMIT = "6799522f7fe57263de4a66499e52ce4bfda69baa"
+STATE_CONTRACT_TREE = "b63b8290d1bc779d9a981ea3f9e4dbc2b848c635"
+STATE_CONTRACT_ROOTS = {
+    "README.md": "d2487d0330b708e856bdcd79ba114631355225a7",
+    "docs": "3e9957ffc1a7b653d940d3b8020b583ea2fae0f3",
+    "schema": "3043a7b6afa042577645e0520ee9bd105a15424a",
+    "scripts": "4e2c39cac2510716577a7fd6d13abf0f9cf26976",
+}
 STATE_CONTRACT_TREES = {
-    "schema": "3111bf02bd9983a8712425923de8fca6ba696469",
-    "scripts": "f9fe278ef1ea062bc21a3fafc7ddea7ab758a099",
+    path: STATE_CONTRACT_ROOTS[path] for path in ("schema", "scripts")
 }
 STATE_REPOSITORY = "leanprover/lean-eval-state"
 RELEASE_REPOSITORY = "leanprover/lean-eval-releases"
@@ -140,6 +146,23 @@ class PinnedStateConsumerIntegrationTests(unittest.TestCase):
             ),
             STATE_CONTRACT_COMMIT,
         )
+        self.assertEqual(
+            self.git(
+                self.state_source,
+                "rev-parse",
+                f"{STATE_CONTRACT_COMMIT}^{{tree}}",
+            ),
+            STATE_CONTRACT_TREE,
+        )
+        for path, object_id in STATE_CONTRACT_ROOTS.items():
+            self.assertEqual(
+                self.git(
+                    self.state_source,
+                    "rev-parse",
+                    f"{STATE_CONTRACT_COMMIT}:{path}",
+                ),
+                object_id,
+            )
         for path, tree in STATE_CONTRACT_TREES.items():
             self.assertEqual(
                 self.git(
