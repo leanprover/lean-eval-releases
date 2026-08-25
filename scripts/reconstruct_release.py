@@ -20,30 +20,56 @@ import tarfile
 import tempfile
 from typing import Any
 
-from embargo import eligible_at, parse_utc_milliseconds
-from release_orchestrator import (
-    COMMIT,
-    DIGEST,
-    LOGIN,
-    PROBLEM,
-    REPOSITORY,
-    RESULT_ID,
-    UUID7,
-    ReleaseError,
-    _fields,
-    _match,
-    _object,
-    _production_metadata,
-    _safe_integer,
-    _timestamp,
-    canonical_archive_path,
-    canonical_json_digest,
-    canonical_release_path,
-    result_id,
-    validate_controller_binding,
-)
-from release_tree import TreeError, tree_digest
-from validate_manifest import load_state_snapshot, validate_manifest
+if __package__:
+    from .embargo import eligible_at, parse_utc_milliseconds
+    from .release_orchestrator import (
+        COMMIT,
+        DIGEST,
+        LOGIN,
+        PROBLEM,
+        REPOSITORY,
+        RESULT_ID,
+        UUID7,
+        ReleaseError,
+        _fields,
+        _match,
+        _object,
+        _production_metadata,
+        _safe_integer,
+        _timestamp,
+        canonical_archive_path,
+        canonical_json_digest,
+        canonical_release_path,
+        result_id,
+        validate_controller_binding,
+    )
+    from .release_tree import TreeError, tree_digest
+    from .validate_manifest import load_state_snapshot, validate_manifest
+else:
+    from embargo import eligible_at, parse_utc_milliseconds
+    from release_orchestrator import (
+        COMMIT,
+        DIGEST,
+        LOGIN,
+        PROBLEM,
+        REPOSITORY,
+        RESULT_ID,
+        UUID7,
+        ReleaseError,
+        _fields,
+        _match,
+        _object,
+        _production_metadata,
+        _safe_integer,
+        _timestamp,
+        canonical_archive_path,
+        canonical_json_digest,
+        canonical_release_path,
+        result_id,
+        validate_controller_binding,
+    )
+    from release_tree import TreeError, tree_digest
+    from validate_manifest import load_state_snapshot, validate_manifest
 
 MAX_COMPRESSED_ARCHIVE_BYTES = 10 * 1024 * 1024
 MAX_ARCHIVE_MEMBERS = 4096
@@ -462,8 +488,8 @@ def main(argv: list[str] | None = None) -> int:
         ReconstructionError,
         TreeError,
         ValueError,
-    ) as error:
-        print(f"error: {error}", file=sys.stderr)
+    ):
+        print("release source reconstruction failed closed", file=sys.stderr)
         return 1
     print(
         json.dumps(

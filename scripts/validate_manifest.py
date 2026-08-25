@@ -12,8 +12,12 @@ import stat
 import sys
 from typing import Any
 
-from embargo import eligible_at, parse_utc_milliseconds
-from release_tree import TreeError, tree_digest
+if __package__:
+    from .embargo import eligible_at, parse_utc_milliseconds
+    from .release_tree import TreeError, tree_digest
+else:
+    from embargo import eligible_at, parse_utc_milliseconds
+    from release_tree import TreeError, tree_digest
 
 SHA256 = re.compile(r"[0-9a-f]{64}")
 RESULT_ID = re.compile(r"r2_[0-9a-f]{64}")

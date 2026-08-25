@@ -21,19 +21,34 @@ import subprocess
 import sys
 from typing import Any
 
-from reconstruct_release import _validate_execution_plan
-from release_orchestrator import (
-    COMMIT,
-    DIGEST,
-    PROBLEM,
-    REPOSITORY,
-    RESULT_ID,
-    UUID7,
-    ReleaseError,
-    plan_next,
-    validate_release_queue,
-)
-from release_tree import tree_digest
+if __package__:
+    from .reconstruct_release import _validate_execution_plan
+    from .release_orchestrator import (
+        COMMIT,
+        DIGEST,
+        PROBLEM,
+        REPOSITORY,
+        RESULT_ID,
+        UUID7,
+        ReleaseError,
+        plan_next,
+        validate_release_queue,
+    )
+    from .release_tree import tree_digest
+else:
+    from reconstruct_release import _validate_execution_plan
+    from release_orchestrator import (
+        COMMIT,
+        DIGEST,
+        PROBLEM,
+        REPOSITORY,
+        RESULT_ID,
+        UUID7,
+        ReleaseError,
+        plan_next,
+        validate_release_queue,
+    )
+    from release_tree import tree_digest
 
 ARCHIVE_KEY_ID = re.compile(r"ak1_[0-9a-f]{64}")
 ADAPTER = re.compile(r"[a-z][a-z0-9-]{0,63}-v[1-9][0-9]*")

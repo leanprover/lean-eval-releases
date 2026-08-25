@@ -69,8 +69,16 @@ runpy.run_path(str(path), run_name="__main__")
 }
 
 run_exact_python_quiet() {
+  local phase=$1
+  shift
+  case "$phase" in
+    authority-contract|manifest-validation|plan-reconstruction|\
+      publication-classification|source-reconstruction|source-validation|\
+      state-materialization|state-validation) ;;
+    *) echo "private release phase is invalid" >&2; return 1 ;;
+  esac
   if ! run_exact_python "$@" >/dev/null 2>&1; then
-    echo "private release validation failed closed" >&2
+    echo "private release failed closed: $phase" >&2
     return 1
   fi
 }
@@ -179,7 +187,8 @@ esac
 [ -x "$PYTHON_BIN" ]
 "$PYTHON_BIN" -I -c 'import sys; assert sys.version_info[:2] == (3, 11)'
 
-run_exact_python_quiet scripts/verify_release_state_contract.py \
+run_exact_python_quiet authority-contract \
+  scripts/verify_release_state_contract.py \
   --environment "$mode" \
   --state-root state
 
@@ -196,7 +205,7 @@ if [ "$mode" = production ]; then
     --started-event-output "$RUNNER_TEMP/release-started-event.json"
   )
 fi
-run_exact_python "${reconstruct_arguments[@]}"
+run_exact_python_quiet plan-reconstruction "${reconstruct_arguments[@]}"
 unset reconstruct_arguments
 require_private_regular "$RUNNER_TEMP/release-plan.json"
 if [ "$mode" = production ]; then
@@ -224,16 +233,9 @@ if [ "$mode" = staging ]; then
     "$RUNNER_TEMP/archive-sidecar.json")
   actual_plaintext=$(sha256sum "$RUNNER_TEMP/source.tar.gz" | awk '{print $1}')
   test "$actual_plaintext" = "$expected_plaintext"
-  "$PYTHON_BIN" -I -c '
-import pathlib
-import sys
-
-scripts = pathlib.Path("scripts").resolve(strict=True)
-sys.path.insert(0, str(scripts))
-from reconstruct_release import _read_release_sources
-
-_read_release_sources(pathlib.Path(sys.argv[1]))
-' "$RUNNER_TEMP/source.tar.gz"
+  run_exact_python_quiet source-validation \
+    scripts/validate_release_source_archive.py \
+    --plaintext-tar "$RUNNER_TEMP/source.tar.gz"
   ciphertext_digest=$(jq -r .sha256_ciphertext \
     "$RUNNER_TEMP/archive-sidecar.json")
   audit_commit=$(jq -er .request.archive.archive_commit \
@@ -258,8 +260,10 @@ git -C state show "HEAD:$started_event_path" \
   > "$RUNNER_TEMP/committed-release-started-event.json"
 cmp "$RUNNER_TEMP/release-started-event.json" \
   "$RUNNER_TEMP/committed-release-started-event.json"
-run_exact_python_quiet state/scripts/state.py --root state validate
-run_exact_python_quiet state/scripts/state.py --root state materialize \
+run_exact_python_quiet state-validation \
+  state/scripts/state.py --root state validate
+run_exact_python_quiet state-materialization \
+  state/scripts/state.py --root state materialize \
   --output "$RUNNER_TEMP/state-views"
 
 require_private_regular "$RUNNER_TEMP/unwrap-request.json"
@@ -280,14 +284,14 @@ expected_plaintext=$(jq -er .sha256_plaintext_tar \
 actual_plaintext=$(sha256sum "$RUNNER_TEMP/source.tar.gz" | awk '{print $1}')
 test "$actual_plaintext" = "$expected_plaintext"
 trusted_now=$(date --utc +%Y-%m-%dT%H:%M:%S.000Z)
-run_exact_python scripts/reconstruct_release.py \
+run_exact_python_quiet source-reconstruction scripts/reconstruct_release.py \
   "$RUNNER_TEMP/release-plan.json" \
   --plaintext-tar "$RUNNER_TEMP/source.tar.gz" \
   --trusted-as-of "$trusted_now" \
   --state-acceptance-snapshot \
     "$RUNNER_TEMP/state-views/release-acceptance-snapshot.json" \
   --output-root "$RUNNER_TEMP/reconstructed"
-run_exact_python scripts/validate_manifest.py \
+run_exact_python_quiet manifest-validation scripts/validate_manifest.py \
   "$RUNNER_TEMP/reconstructed/release-manifest.json" \
   --trusted-as-of "$trusted_now" \
   --state-acceptance-snapshot \
@@ -300,7 +304,8 @@ result_id=$(jq -r .request.result.result_id "$RUNNER_TEMP/release-plan.json")
 release_path=$(jq -r .request.release.path "$RUNNER_TEMP/release-plan.json")
 submission_id=$(jq -r .request.submission.submission_id \
   "$RUNNER_TEMP/release-plan.json")
-run_exact_python scripts/classify_release_publication.py \
+run_exact_python_quiet publication-classification \
+  scripts/classify_release_publication.py \
   --release-root . \
   --reconstructed-root "$RUNNER_TEMP/reconstructed" \
   --release-path "$release_path" \
@@ -314,7 +319,8 @@ if [ "$publication_kind" = existing ]; then
   git show "$repository_commit:release-manifest.json" \
     > "$RUNNER_TEMP/publishing-manifest.json"
   generated_at=$(jq -er .generated_at "$RUNNER_TEMP/publishing-manifest.json")
-  run_exact_python scripts/validate_manifest.py "$RUNNER_TEMP/publishing-manifest.json" \
+  run_exact_python_quiet manifest-validation scripts/validate_manifest.py \
+    "$RUNNER_TEMP/publishing-manifest.json" \
     --trusted-as-of "$generated_at" \
     --state-acceptance-snapshot \
       "$RUNNER_TEMP/state-views/release-acceptance-snapshot.json" \
@@ -331,7 +337,8 @@ elif [ "$publication_kind" = new ]; then
       "sources/$submission_id.tar.gz"
   fi
   cp "$RUNNER_TEMP/reconstructed/release-manifest.json" release-manifest.json
-  run_exact_python scripts/validate_manifest.py release-manifest.json \
+  run_exact_python_quiet manifest-validation scripts/validate_manifest.py \
+    release-manifest.json \
     --trusted-as-of "$trusted_now" \
     --state-acceptance-snapshot \
       "$RUNNER_TEMP/state-views/release-acceptance-snapshot.json" \

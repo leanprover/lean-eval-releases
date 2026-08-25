@@ -16,14 +16,24 @@ import subprocess
 import sys
 from typing import Any
 
-from release_orchestrator import (
-    COMMIT,
-    STATE_RELEASE_CONTRACT_COMMIT,
-    STATE_RELEASE_CONTRACT_TREES,
-    canonical_json_digest,
-    validate_release_queue,
-)
-from validate_manifest import load_state_snapshot
+if __package__:
+    from .release_orchestrator import (
+        COMMIT,
+        STATE_RELEASE_CONTRACT_COMMIT,
+        STATE_RELEASE_CONTRACT_TREES,
+        canonical_json_digest,
+        validate_release_queue,
+    )
+    from .validate_manifest import load_state_snapshot
+else:
+    from release_orchestrator import (
+        COMMIT,
+        STATE_RELEASE_CONTRACT_COMMIT,
+        STATE_RELEASE_CONTRACT_TREES,
+        canonical_json_digest,
+        validate_release_queue,
+    )
+    from validate_manifest import load_state_snapshot
 
 CONTRACT_FIELDS = {
     "schema_version",

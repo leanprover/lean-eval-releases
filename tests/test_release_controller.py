@@ -14,6 +14,7 @@ import signal
 import stat
 import subprocess
 import sys
+import tarfile
 import tempfile
 import textwrap
 import time
@@ -368,13 +369,117 @@ class ReleaseControllerTests(unittest.TestCase):
             tail.index("scripts/reconstruct_release_plan.py"),
         )
         self.assertIn(
-            "run_exact_python_quiet state/scripts/state.py --root state materialize",
+            "run_exact_python_quiet state-materialization",
             tail,
         )
         reconstruction = (
             ROOT / "scripts/reconstruct_release_plan.py"
         ).read_text(encoding="utf-8")
         self.assertGreaterEqual(reconstruction.count("capture_output=True"), 5)
+
+    def test_release_plan_module_imports_without_pythonpath(self) -> None:
+        environment = os.environ.copy()
+        environment.pop("PYTHONPATH", None)
+        completed = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                "from scripts.reconstruct_release_plan import reconstruct; "
+                "assert callable(reconstruct)",
+            ],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            env=environment,
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+
+    def test_private_archive_failures_never_log_hostile_member_names(self) -> None:
+        sentinel = "PRIVATE_SOURCE_MEMBER_NAME_SENTINEL"
+        with tempfile.TemporaryDirectory() as temporary:
+            scratch = pathlib.Path(temporary)
+            plaintext = scratch / "source.tar.gz"
+            with tarfile.open(plaintext, mode="w:gz") as archive:
+                member = tarfile.TarInfo(f"source/Submission/{sentinel}.lean")
+                member.type = tarfile.SYMTYPE
+                member.linkname = "Submission.lean"
+                archive.addfile(member)
+
+            plan_path = scratch / "release-plan.json"
+            plan_path.write_text(canonical_json(self.plan), encoding="utf-8")
+            commands = (
+                (
+                    "source-validation",
+                    [
+                        "scripts/validate_release_source_archive.py",
+                        "--plaintext-tar",
+                        str(plaintext),
+                    ],
+                    "release source validation failed closed\n",
+                ),
+                (
+                    "source-reconstruction",
+                    [
+                        "scripts/reconstruct_release.py",
+                        str(plan_path),
+                        "--plaintext-tar",
+                        str(plaintext),
+                        "--trusted-as-of",
+                        NOW,
+                        "--state-acceptance-snapshot",
+                        "tests/fixtures/release-acceptance-snapshot-v1.json",
+                        "--output-root",
+                        str(scratch / "reconstructed"),
+                    ],
+                    "release source reconstruction failed closed\n",
+                ),
+            )
+            for phase, arguments, expected_stderr in commands:
+                with self.subTest(phase=phase):
+                    completed = subprocess.run(
+                        [sys.executable, *arguments],
+                        cwd=ROOT,
+                        capture_output=True,
+                        text=True,
+                    )
+                    self.assertNotEqual(completed.returncode, 0)
+                    self.assertEqual(completed.stdout, "")
+                    self.assertEqual(completed.stderr, expected_stderr)
+                    self.assertNotIn(sentinel, completed.stderr)
+
+            tail = (ROOT / "scripts/release_authority_tail.sh").read_text(
+                encoding="utf-8"
+            )
+            functions = tail[
+                tail.index("run_exact_python() {") : tail.index(
+                    "require_private_regular() {"
+                )
+            ]
+            bash = shutil.which("bash")
+            self.assertIsNotNone(bash)
+            wrapped = subprocess.run(
+                [
+                    str(bash),
+                    "-c",
+                    functions
+                    + "\nrun_exact_python_quiet source-validation "
+                    + "scripts/validate_release_source_archive.py "
+                    + '"$1" "$2"\n',
+                    "release-private-log-test",
+                    "--plaintext-tar",
+                    str(plaintext),
+                ],
+                cwd=ROOT,
+                capture_output=True,
+                text=True,
+                env={"PYTHON_BIN": sys.executable},
+            )
+            self.assertNotEqual(wrapped.returncode, 0)
+            self.assertEqual(
+                wrapped.stderr,
+                "private release failed closed: source-validation\n",
+            )
+            self.assertNotIn(sentinel, wrapped.stderr)
 
     def test_staging_plan_reconstructs_only_from_exact_state_and_descriptor(
         self,
