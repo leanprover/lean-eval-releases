@@ -262,8 +262,10 @@ def validate_manifest(
                 raise ManifestError(f"{result_id}: release path must not traverse a symlink")
             try:
                 actual_tree_digest = tree_digest(release_root)
-            except (OSError, TreeError) as error:
-                raise ManifestError(f"{result_id}: release tree is not canonical: {error}") from error
+            except (OSError, TreeError):
+                raise ManifestError(
+                    f"{result_id}: release tree is not canonical"
+                ) from None
             if actual_tree_digest != release_tree_sha256:
                 raise ManifestError(
                     f"{result_id}: release tree bytes do not match release_tree_sha256"
@@ -288,8 +290,8 @@ def main(argv: list[str] | None = None) -> int:
             trusted_submissions=load_state_snapshot(state),
             bundle_root=args.bundle_root,
         )
-    except (OSError, UnicodeError, json.JSONDecodeError, ManifestError, ValueError) as error:
-        print(f"error: {error}", file=sys.stderr)
+    except (OSError, UnicodeError, json.JSONDecodeError, ManifestError, ValueError):
+        print("release manifest validation failed closed", file=sys.stderr)
         return 1
     print(f"validated {count} delayed release entry or entries")
     return 0

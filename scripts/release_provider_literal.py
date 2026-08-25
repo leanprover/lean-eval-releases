@@ -869,6 +869,6 @@ def main(argv: list[str] | None = None) -> int:
 if __name__ == "__main__":
     try:
         raise SystemExit(main())
-    except (KeyError, OSError, ProviderError, UnicodeError, ValueError) as error:
-        print(f"literal provider failed closed: {error}", file=sys.stderr)
-        raise SystemExit(1) from error
+    except (KeyError, OSError, ProviderError, UnicodeError, ValueError):
+        print("literal provider failed closed", file=sys.stderr)
+        raise SystemExit(1) from None

@@ -217,13 +217,13 @@ def _safe_member_name(name: str) -> pathlib.PurePosixPath:
         or "\x00" in name
         or any(ord(character) <= 0x1F or ord(character) == 0x7F for character in name)
     ):
-        raise ReconstructionError(f"archive member has an unsafe name: {name!r}")
+        raise ReconstructionError("archive member has an unsafe name")
     raw = name.removesuffix("/")
     if not raw or any(part in {"", ".", ".."} for part in raw.split("/")):
-        raise ReconstructionError(f"archive member escapes its root: {name!r}")
+        raise ReconstructionError("archive member escapes its root")
     path = pathlib.PurePosixPath(name)
     if path.is_absolute():
-        raise ReconstructionError(f"archive member escapes its root: {name!r}")
+        raise ReconstructionError("archive member escapes its root")
     return path
 
 
@@ -247,20 +247,16 @@ def _read_release_sources(plaintext_tar: pathlib.Path) -> dict[str, bytes]:
                 path = _safe_member_name(member.name)
                 canonical_name = path.as_posix()
                 if canonical_name in seen:
-                    raise ReconstructionError(
-                        f"plaintext archive repeats member {canonical_name!r}"
-                    )
+                    raise ReconstructionError("plaintext archive repeats a member")
                 seen.add(canonical_name)
                 if not (member.isdir() or member.isreg()):
                     raise ReconstructionError(
-                        f"plaintext archive contains a link or special member: {canonical_name!r}"
+                        "plaintext archive contains a link or special member"
                     )
                 if member.isdir():
                     continue
                 if member.size < 0 or member.size > MAX_ARCHIVE_MEMBER_BYTES:
-                    raise ReconstructionError(
-                        f"archive member size is unsafe: {canonical_name!r}"
-                    )
+                    raise ReconstructionError("archive member size is unsafe")
                 declared_total += member.size
                 if declared_total > MAX_ARCHIVE_TOTAL_BYTES:
                     raise ReconstructionError(
@@ -279,25 +275,17 @@ def _read_release_sources(plaintext_tar: pathlib.Path) -> dict[str, bytes]:
                 if relative is None:
                     continue
                 if member.size > MAX_RELEASE_FILE_BYTES:
-                    raise ReconstructionError(
-                        f"release source is too large: {canonical_name!r}"
-                    )
+                    raise ReconstructionError("release source is too large")
                 extracted = archive.extractfile(member)
                 if extracted is None:
-                    raise ReconstructionError(
-                        f"cannot read release source {canonical_name!r}"
-                    )
+                    raise ReconstructionError("cannot read release source")
                 content = extracted.read(MAX_RELEASE_FILE_BYTES + 1)
                 if len(content) != member.size or len(content) > MAX_RELEASE_FILE_BYTES:
-                    raise ReconstructionError(
-                        f"release source size mismatch: {canonical_name!r}"
-                    )
+                    raise ReconstructionError("release source size mismatch")
                 try:
                     content.decode("utf-8")
-                except UnicodeDecodeError as error:
-                    raise ReconstructionError(
-                        f"release source is not UTF-8: {canonical_name!r}"
-                    ) from error
+                except UnicodeDecodeError:
+                    raise ReconstructionError("release source is not UTF-8") from None
                 selected[relative.as_posix()] = content
                 selected_total += len(content)
                 if (
@@ -419,7 +407,10 @@ def reconstruct_one(
         submission_id = request["submission"]["submission_id"]
         bundle_relative = f"sources/{submission_id}.tar.gz"
         bundle_digest = _write_deterministic_bundle(staging / bundle_relative, sources)
-        release_digest = tree_digest(release_root)
+        try:
+            release_digest = tree_digest(release_root)
+        except TreeError:
+            raise ReconstructionError("release tree is not canonical") from None
         manifest = {
             "schema_version": 1,
             "release_id": f"lean-eval-{generated[:10]}",

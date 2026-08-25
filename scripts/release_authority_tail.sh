@@ -73,7 +73,8 @@ run_exact_python_quiet() {
   shift
   case "$phase" in
     authority-contract|manifest-validation|plan-reconstruction|\
-      publication-classification|source-reconstruction|source-validation|\
+      identity-validation|publication-classification|publication-write|\
+      source-decryption|source-reconstruction|source-validation|\
       state-materialization|state-validation) ;;
     *) echo "private release phase is invalid" >&2; return 1 ;;
   esac
@@ -219,15 +220,21 @@ if [ "$mode" = staging ]; then
   require_private_regular "$RUNNER_TEMP/unwrap-request.json"
   require_private_regular "$RUNNER_TEMP/unwrap-response.json"
   require_private_regular "$RUNNER_TEMP/unwrap-metadata.json"
-  run_exact_python scripts/release_controller.py unwrap-identity \
+  run_exact_python_quiet identity-validation \
+    scripts/release_controller.py unwrap-identity \
     --request "$RUNNER_TEMP/unwrap-request.json" \
     --response "$RUNNER_TEMP/unwrap-response.json" \
     --metadata "$RUNNER_TEMP/unwrap-metadata.json" \
     --output "$RUNNER_TEMP/identity.age"
   require_private_regular "$RUNNER_TEMP/identity.age"
   test "$("$RUNNER_TEMP/age-bin" --version)" = v1.3.1
-  "$RUNNER_TEMP/age-bin" --decrypt --identity "$RUNNER_TEMP/identity.age" \
-    --output "$RUNNER_TEMP/source.tar.gz" "$RUNNER_TEMP/archive.tar.age"
+  if ! "$RUNNER_TEMP/age-bin" --decrypt \
+    --identity "$RUNNER_TEMP/identity.age" \
+    --output "$RUNNER_TEMP/source.tar.gz" \
+    "$RUNNER_TEMP/archive.tar.age" >/dev/null 2>&1; then
+    echo "private release failed closed: source-decryption" >&2
+    exit 1
+  fi
   require_private_regular "$RUNNER_TEMP/source.tar.gz"
   expected_plaintext=$(jq -r .sha256_plaintext_tar \
     "$RUNNER_TEMP/archive-sidecar.json")
@@ -269,15 +276,21 @@ run_exact_python_quiet state-materialization \
 require_private_regular "$RUNNER_TEMP/unwrap-request.json"
 require_private_regular "$RUNNER_TEMP/unwrap-response.json"
 require_private_regular "$RUNNER_TEMP/unwrap-metadata.json"
-run_exact_python scripts/release_controller.py unwrap-identity \
+run_exact_python_quiet identity-validation \
+  scripts/release_controller.py unwrap-identity \
   --request "$RUNNER_TEMP/unwrap-request.json" \
   --response "$RUNNER_TEMP/unwrap-response.json" \
   --metadata "$RUNNER_TEMP/unwrap-metadata.json" \
   --output "$RUNNER_TEMP/identity.age"
 require_private_regular "$RUNNER_TEMP/identity.age"
 test "$("$RUNNER_TEMP/age-bin" --version)" = v1.3.1
-"$RUNNER_TEMP/age-bin" --decrypt --identity "$RUNNER_TEMP/identity.age" \
-  --output "$RUNNER_TEMP/source.tar.gz" "$RUNNER_TEMP/archive.tar.age"
+if ! "$RUNNER_TEMP/age-bin" --decrypt \
+  --identity "$RUNNER_TEMP/identity.age" \
+  --output "$RUNNER_TEMP/source.tar.gz" \
+  "$RUNNER_TEMP/archive.tar.age" >/dev/null 2>&1; then
+  echo "private release failed closed: source-decryption" >&2
+  exit 1
+fi
 require_private_regular "$RUNNER_TEMP/source.tar.gz"
 expected_plaintext=$(jq -er .sha256_plaintext_tar \
   "$RUNNER_TEMP/archive-sidecar.json")
@@ -329,30 +342,22 @@ if [ "$publication_kind" = existing ]; then
     '.entries[] | select(.result_id == $result and .release_path == $path) | .release_tree_sha256' \
     "$RUNNER_TEMP/publishing-manifest.json")
 elif [ "$publication_kind" = new ]; then
-  mkdir -p "$(dirname "$release_path")" sources
-  cp -a "$RUNNER_TEMP/reconstructed/$release_path" "$release_path"
-  if [ "$(jq -r .bundle_exists \
-    "$RUNNER_TEMP/release-publication-classification.json")" = false ]; then
-    cp "$RUNNER_TEMP/reconstructed/sources/$submission_id.tar.gz" \
-      "sources/$submission_id.tar.gz"
-  fi
-  cp "$RUNNER_TEMP/reconstructed/release-manifest.json" release-manifest.json
-  run_exact_python_quiet manifest-validation scripts/validate_manifest.py \
-    release-manifest.json \
+  run_exact_python_quiet publication-write scripts/publish_release.py \
+    --release-root . \
+    --reconstructed-root "$RUNNER_TEMP/reconstructed" \
+    --release-path "$release_path" \
+    --submission-id "$submission_id" \
+    --classification \
+      "$RUNNER_TEMP/release-publication-classification.json" \
     --trusted-as-of "$trusted_now" \
     --state-acceptance-snapshot \
       "$RUNNER_TEMP/state-views/release-acceptance-snapshot.json" \
-    --bundle-root .
-  tree_digest=$(jq -er --arg result "$result_id" --arg path "$release_path" \
-    '.entries[] | select(.result_id == $result and .release_path == $path) | .release_tree_sha256' \
-    release-manifest.json)
-  git config user.name lean-eval-release-controller
-  git config user.email lean-eval-release-controller@users.noreply.github.com
-  git add "$release_path" "sources/$submission_id.tar.gz" release-manifest.json
-  git diff --cached --check
-  git commit -m "Publish delayed source $result_id"
-  git push origin HEAD:main
-  repository_commit=$(git rev-parse HEAD)
+    --output "$RUNNER_TEMP/release-publication-result.json"
+  require_private_regular "$RUNNER_TEMP/release-publication-result.json"
+  tree_digest=$(jq -er .release_tree_sha256 \
+    "$RUNNER_TEMP/release-publication-result.json")
+  repository_commit=$(jq -er .repository_commit \
+    "$RUNNER_TEMP/release-publication-result.json")
 else
   echo "publication classifier returned an unknown kind" >&2
   exit 1

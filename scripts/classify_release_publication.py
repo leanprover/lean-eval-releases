@@ -11,7 +11,10 @@ import subprocess
 import sys
 from typing import Any
 
-from release_tree import TreeError, canonical_release_files
+if __package__:
+    from .release_tree import TreeError, canonical_release_files
+else:
+    from release_tree import TreeError, canonical_release_files
 
 RESULT_ID = re.compile(r"r2_[0-9a-f]{64}")
 SUBMISSION_ID = re.compile(
@@ -90,37 +93,42 @@ def _regular_file(path: pathlib.Path, root: pathlib.Path, label: str) -> pathlib
 def _stable_release_projection(root: pathlib.Path) -> dict[str, bytes]:
     try:
         files = canonical_release_files(root)
-    except (OSError, TreeError) as error:
-        raise PublicationClassificationError("release tree is not canonical") from error
-    projection: dict[str, bytes] = {}
-    resolved_root = root.resolve(strict=True)
-    for relative in files:
-        name = relative.as_posix()
-        if name == "LICENSE":
-            continue
-        file_path = _regular_file(resolved_root / relative, resolved_root, name)
-        if name == "metadata.json":
-            try:
+        projection: dict[str, bytes] = {}
+        resolved_root = root.resolve(strict=True)
+        for relative in files:
+            name = relative.as_posix()
+            if name == "LICENSE":
+                continue
+            file_path = _regular_file(resolved_root / relative, resolved_root, name)
+            if name == "metadata.json":
                 metadata = json.loads(file_path.read_text(encoding="utf-8"))
-            except (OSError, UnicodeError, json.JSONDecodeError) as error:
-                raise PublicationClassificationError(
-                    "metadata.json is invalid"
-                ) from error
-            if not isinstance(metadata, dict) or "generated_at" not in metadata:
-                raise PublicationClassificationError("metadata.json lacks generated_at")
-            stable = {
-                key: value for key, value in metadata.items() if key != "generated_at"
-            }
-            projection[name] = json.dumps(
-                stable,
-                ensure_ascii=False,
-                allow_nan=False,
-                separators=(",", ":"),
-                sort_keys=True,
-            ).encode("utf-8")
-        else:
-            projection[name] = file_path.read_bytes()
-    return projection
+                if not isinstance(metadata, dict) or "generated_at" not in metadata:
+                    raise PublicationClassificationError(
+                        "metadata.json lacks generated_at"
+                    )
+                stable = {
+                    key: value
+                    for key, value in metadata.items()
+                    if key != "generated_at"
+                }
+                projection[name] = json.dumps(
+                    stable,
+                    ensure_ascii=False,
+                    allow_nan=False,
+                    separators=(",", ":"),
+                    sort_keys=True,
+                ).encode("utf-8")
+            else:
+                projection[name] = file_path.read_bytes()
+        return projection
+    except (
+        OSError,
+        UnicodeError,
+        json.JSONDecodeError,
+        TreeError,
+        PublicationClassificationError,
+    ):
+        raise PublicationClassificationError("release tree is not canonical") from None
 
 
 def _oldest_undeleted_addition(
@@ -311,8 +319,8 @@ def main(argv: list[str] | None = None) -> int:
         args.output.write_text(
             json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8"
         )
-    except (OSError, UnicodeError, PublicationClassificationError) as error:
-        print(f"error: {error}", file=sys.stderr)
+    except (OSError, UnicodeError, PublicationClassificationError):
+        print("release publication classification failed closed", file=sys.stderr)
         return 1
     return 0
 
