@@ -78,6 +78,7 @@ MAX_ARCHIVE_TOTAL_BYTES = 1024 * 1024 * 1024
 MAX_RELEASE_FILES = 1024
 MAX_RELEASE_FILE_BYTES = 8 * 1024 * 1024
 MAX_RELEASE_TOTAL_BYTES = 32 * 1024 * 1024
+MAX_SAFE_INTEGER = 9_007_199_254_740_991
 
 
 class ReconstructionError(ValueError):
@@ -88,13 +89,22 @@ def _validate_execution_plan(value: Any) -> dict[str, Any]:
     plan = _object(value, "release plan")
     _fields(
         plan,
-        {"schema_version", "kind", "started_transition", "request"},
+        {
+            "schema_version",
+            "kind",
+            "exhausted_task_count",
+            "started_transition",
+            "request",
+        },
         "release plan",
     )
     if plan["schema_version"] != 1 or isinstance(plan["schema_version"], bool):
         raise ReconstructionError("release plan schema_version must be integer 1")
     if plan["kind"] != "execution":
         raise ReconstructionError("release plan must contain one execution")
+    exhausted = plan["exhausted_task_count"]
+    if type(exhausted) is not int or not 0 <= exhausted <= MAX_SAFE_INTEGER:
+        raise ReconstructionError("release plan exhausted_task_count is invalid")
 
     started = _object(plan["started_transition"], "started_transition")
     _fields(
@@ -221,6 +231,8 @@ def _safe_member_name(name: str) -> pathlib.PurePosixPath:
     raw = name.removesuffix("/")
     if not raw or any(part in {"", ".", ".."} for part in raw.split("/")):
         raise ReconstructionError("archive member escapes its root")
+    if any(part.rstrip(" .").casefold() == ".git" for part in raw.split("/")):
+        raise ReconstructionError("archive member uses a Git-reserved path")
     path = pathlib.PurePosixPath(name)
     if path.is_absolute():
         raise ReconstructionError("archive member escapes its root")

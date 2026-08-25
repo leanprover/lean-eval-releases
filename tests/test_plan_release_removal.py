@@ -322,7 +322,7 @@ class ReleaseRemovalPlanTests(unittest.TestCase):
 
         state_initial_commit = self.git(state_root, "rev-parse", "HEAD")
         state_contract_raw: dict[str, bytes] = {}
-        for path, (mode, _blob, _sha256) in (
+        for path, (mode, _blob_oid, _sha256) in (
             removal_module.STATE_REMOVAL_CONTRACT_COMPONENTS.items()
         ):
             state_contract_raw[path] = self.write_json(

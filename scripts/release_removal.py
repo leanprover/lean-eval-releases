@@ -44,6 +44,19 @@ MAX_IDENTITIES_BYTES = 128 * 1024
 MAX_INCIDENT_RESULTS = 128
 SYNTHETIC_FIXTURE_MARKER = ".lean-eval-synthetic-release-removal-fixture"
 SYNTHETIC_FIXTURE_BYTES = b"harmless synthetic release-removal qualification only\n"
+EXACT_PYTHON_LAUNCHER = """\
+import pathlib
+import runpy
+import sys
+
+path = pathlib.Path(sys.argv[1])
+if path.is_symlink() or not path.is_file():
+    raise SystemExit("exact Python entry point is not a regular file")
+path = path.resolve(strict=True)
+sys.path.insert(0, str(path.parent))
+sys.argv = sys.argv[1:]
+runpy.run_path(str(path), run_name="__main__")
+"""
 PLAN_FIELDS = {
     "schema_version",
     "kind",
@@ -1222,7 +1235,14 @@ def _run_state_tool(root: pathlib.Path, script: str, *arguments: str) -> None:
     environment["PYTHONDONTWRITEBYTECODE"] = "1"
     try:
         subprocess.run(
-            [sys.executable, str(root / "scripts" / script), *arguments],
+            [
+                sys.executable,
+                "-I",
+                "-c",
+                EXACT_PYTHON_LAUNCHER,
+                str(root / "scripts" / script),
+                *arguments,
+            ],
             cwd=root,
             check=True,
             capture_output=True,

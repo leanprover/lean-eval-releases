@@ -134,6 +134,7 @@ def qualify_repository(
     contract_trees: dict[str, str] | None = None,
     *,
     reject_untracked: bool = False,
+    expected_head: str | None = None,
 ) -> str:
     resolved = root.resolve(strict=True)
     if root.is_symlink() or not resolved.is_dir():
@@ -151,8 +152,37 @@ def qualify_repository(
         raise QualificationError("qualified repository origin is invalid")
     head = _git(resolved, "rev-parse", "HEAD")
     remote_main = _git(resolved, "rev-parse", "refs/remotes/origin/main")
-    if COMMIT.fullmatch(head) is None or head != remote_main:
-        raise QualificationError("qualified repository is not exact origin/main")
+    if COMMIT.fullmatch(head) is None:
+        raise QualificationError("qualified repository head is invalid")
+    if expected_head is None:
+        if head != remote_main:
+            raise QualificationError("qualified repository is not exact origin/main")
+    else:
+        if COMMIT.fullmatch(expected_head) is None or head != expected_head:
+            raise QualificationError("qualified repository is not the expected head")
+        try:
+            subprocess.run(
+                [
+                    "git",
+                    "-C",
+                    str(resolved),
+                    "merge-base",
+                    "--is-ancestor",
+                    expected_head,
+                    remote_main,
+                ],
+                check=True,
+                capture_output=True,
+                timeout=10,
+            )
+        except (
+            OSError,
+            subprocess.CalledProcessError,
+            subprocess.TimeoutExpired,
+        ) as error:
+            raise QualificationError(
+                "qualified repository expected head is not on origin/main"
+            ) from error
     if _git(resolved, "diff", "--name-only", "HEAD"):
         raise QualificationError("qualified repository has tracked changes")
     if reject_untracked and _git(resolved, "ls-files", "--others"):

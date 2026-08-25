@@ -14,8 +14,10 @@ import sys
 from typing import Any
 
 if __package__:
+    from .release_tree import canonical_release_files, projected_digest
     from .validate_manifest import load_state_snapshot, validate_manifest
 else:
+    from release_tree import canonical_release_files, projected_digest
     from validate_manifest import load_state_snapshot, validate_manifest
 
 COMMIT = re.compile(r"[0-9a-f]{40}")
@@ -59,6 +61,26 @@ def _release_relative(value: str) -> pathlib.PurePosixPath:
     return relative
 
 
+def _committed_blob(root: pathlib.Path, path: str) -> bytes:
+    listing = _git(root, "ls-tree", "-z", "HEAD", "--", path)
+    try:
+        metadata, listed_path = listing.removesuffix(b"\0").split(b"\t", 1)
+        mode, kind, blob = metadata.split(b" ", 2)
+        blob_text = blob.decode("ascii")
+    except (UnicodeError, ValueError):
+        raise PublicationError("published Git projection is invalid") from None
+    if (
+        listing.count(b"\0") != 1
+        or not listing.endswith(b"\0")
+        or listed_path != path.encode("utf-8")
+        or mode != b"100644"
+        or kind != b"blob"
+        or COMMIT.fullmatch(blob_text) is None
+    ):
+        raise PublicationError("published Git projection is invalid")
+    return _git(root, "cat-file", "blob", blob_text)
+
+
 def _write_private_json(path: pathlib.Path, value: dict[str, Any]) -> None:
     if path.exists() or path.is_symlink():
         raise PublicationError("publication result already exists")
@@ -67,23 +89,21 @@ def _write_private_json(path: pathlib.Path, value: dict[str, Any]) -> None:
         flags |= os.O_NOFOLLOW
     descriptor = os.open(path, flags, 0o600)
     try:
-        with os.fdopen(descriptor, "w", encoding="utf-8") as output:
-            output.write(
-                json.dumps(
-                    value,
-                    ensure_ascii=True,
-                    allow_nan=False,
-                    separators=(",", ":"),
-                    sort_keys=True,
-                )
-                + "\n"
-            )
+        output = os.fdopen(descriptor, "w", encoding="utf-8")
     except Exception:
-        try:
-            os.close(descriptor)
-        except OSError:
-            pass
+        os.close(descriptor)
         raise
+    with output:
+        output.write(
+            json.dumps(
+                value,
+                ensure_ascii=True,
+                allow_nan=False,
+                separators=(",", ":"),
+                sort_keys=True,
+            )
+            + "\n"
+        )
 
 
 def publish(
@@ -171,14 +191,29 @@ def publish(
         "user.email",
         "lean-eval-release-controller@users.noreply.github.com",
     )
+    expected_staged = {
+        f"{release_path}/{relative_file.as_posix()}"
+        for relative_file in canonical_release_files(target_release)
+    }
+    expected_staged.add("release-manifest.json")
+    if not classification["bundle_exists"]:
+        expected_staged.add(f"sources/{submission_id}.tar.gz")
     _git(
         release_root,
         "add",
+        "--force",
+        "--",
         release_path,
         f"sources/{submission_id}.tar.gz",
         "release-manifest.json",
     )
-    _git(release_root, "diff", "--cached", "--check")
+    staged_output = _git(
+        release_root, "diff", "--cached", "--name-only", "-z", "--"
+    )
+    staged = {path for path in staged_output.split(b"\0") if path}
+    expected_staged_bytes = {path.encode("utf-8") for path in expected_staged}
+    if staged != expected_staged_bytes:
+        raise PublicationError("release staged file set is not canonical")
     _git(
         release_root,
         "commit",
@@ -186,6 +221,26 @@ def publish(
         "-m",
         f"Publish delayed source {relative.parts[3]}",
     )
+    expected_committed = expected_staged | {f"sources/{submission_id}.tar.gz"}
+    committed: dict[str, bytes] = {}
+    for path in sorted(expected_committed, key=lambda item: item.encode("utf-8")):
+        blob = _committed_blob(release_root, path)
+        try:
+            working = (release_root / path).read_bytes()
+        except OSError:
+            raise PublicationError("published Git projection is invalid") from None
+        if blob != working:
+            raise PublicationError("published Git projection differs from validated bytes")
+        committed[path] = blob
+    committed_tree_digest = projected_digest(
+        (
+            relative_file.as_posix(),
+            committed[f"{release_path}/{relative_file.as_posix()}"],
+        )
+        for relative_file in canonical_release_files(target_release)
+    )
+    if committed_tree_digest != tree_digest:
+        raise PublicationError("published Git tree digest differs from validated bytes")
     _git(release_root, "push", "--quiet", "origin", "HEAD:main", timeout=120)
     repository_commit = _git(release_root, "rev-parse", "HEAD").decode("ascii").strip()
     if COMMIT.fullmatch(repository_commit) is None:

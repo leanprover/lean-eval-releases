@@ -47,9 +47,9 @@ empty-environment `exec -c` handoff.
 The final step installs literal scratch-cleanup `EXIT`, `INT`, and `TERM` traps
 as its first command, before resolving Python or inspecting the authority
 result. A direct `exec -c` into the absolute system Bash then replaces the
-secret-bearing shell with an empty-environment process which installs the same
-literal cleanup trap before executing a second literal workflow program, not a
-checkout. Before provider validation or the AWS invocation, an
+secret-bearing shell with an empty-environment process. The literal sanitizer
+uses absolute `/usr/bin/env` and `/usr/bin/bash` paths before executing the
+blob-verified checked-out authority tail. Before provider validation or the AWS invocation, an
 empty-environment cleanup supervisor enters a session separate from the
 authority process and reports readiness. The authority step itself starts in a
 dedicated session, so its process group can be terminated without killing the
@@ -128,10 +128,10 @@ transaction likewise suppress their detailed stdout/stderr. The literal
 provider, identity validation, and decryption map failures to the same closed
 diagnostic vocabulary. `scripts/publish_release.py` captures every Git stream
 before the release push and returns only the public commit and tree digests in
-a mode-0600 handoff. Only a fixed fail-closed phase class can reach the log, so
-even a valid hostile tar member name or a source line rejected by
-`git diff --check` cannot become a pre-publication log disclosure. Base64 is not
-treated as confidentiality.
+a mode-0600 handoff. The exact staged-set and committed-object checks replace
+path-sensitive Git diagnostics, so only a fixed fail-closed phase class can
+reach the log; hostile tar member names and private source lines cannot become
+pre-publication log disclosures. Base64 is not treated as confidentiality.
 
 Before invocation, literal code also scans the current AWS/OIDC values and
 their canonical variable names under `$RUNNER_TEMP/_runner_file_commands` and
@@ -317,6 +317,15 @@ The resulting sequence is:
    even if the path was later re-added; neither is republished. Otherwise,
    after the recovery interval, it records one retryable interruption.
    Re-running recovery is deterministic.
+
+Retryable tasks have a four-attempt controller budget. The planner skips an
+exhausted due task when other due work is available, preventing one
+deterministic per-result failure from starving the queue. An execution plan
+records the number of other exhausted due tasks, and the workflow emits a
+non-fatal fixed warning whenever that count is nonzero. If every due task is
+exhausted, it returns a closed `stalled` plan and the workflow fails with a
+fixed operator-review diagnostic; it neither starts another attempt nor gains
+archive authority.
 
 The publication workflow must remain disabled until the rollout runbook's
 external staging and credential gates have passed and an operator deliberately

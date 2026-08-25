@@ -152,6 +152,14 @@ class ReconstructionTests(unittest.TestCase):
                 None,
                 "escapes its root",
             ),
+            (
+                {
+                    "source/Submission.lean": b"example : True := by trivial\n",
+                    "source/Submission/.GiT./Hidden.lean": b"def hidden := 1\n",
+                },
+                None,
+                "Git-reserved path",
+            ),
             ({"source/Submission.lean": b"\xff"}, None, "not UTF-8"),
         )
         for files, link, message in cases:
