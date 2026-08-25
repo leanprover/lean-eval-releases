@@ -9,6 +9,8 @@ import os
 import pathlib
 import re
 import shutil
+import signal
+import stat
 import subprocess
 import tempfile
 import textwrap
@@ -412,6 +414,7 @@ class ReleaseControllerTests(unittest.TestCase):
                 self.assertIn(command, authority_tail)
         self.assertIn(
             'if [ "$status" -ne 0 ] && [ "$publication_recorded" = false ]; then\n'
+            "    remove_sensitive_scratch\n"
             "    record_retryable_failure",
             authority_tail,
         )
@@ -419,6 +422,27 @@ class ReleaseControllerTests(unittest.TestCase):
         self.assertIn("scripts/classify_release_publication.py", authority_tail)
         self.assertEqual(authority_tail.count("expected_plaintext=$(jq"), 2)
         self.assertEqual(authority_tail.count("actual_plaintext=$(sha256sum"), 2)
+        for private_path in (
+            "unwrap-request.json",
+            "unwrap-response.json",
+            "unwrap-metadata.json",
+            "identity.age",
+            "source.tar.gz",
+        ):
+            self.assertEqual(
+                authority_tail.count(
+                    f'require_private_regular "$RUNNER_TEMP/{private_path}"'
+                ),
+                2,
+                private_path,
+            )
+        self.assertIn('"$PYTHON_BIN" -I -c', authority_tail)
+        self.assertNotIn('"$PYTHON_BIN" scripts/', authority_tail)
+        self.assertNotIn("PYTHONPATH=", authority_tail)
+        self.assertIn(
+            'test -z "$(git status --porcelain --untracked-files=all)"',
+            sanitizer,
+        )
         production_decrypt = authority_tail.rindex(
             '"$RUNNER_TEMP/age-bin" --decrypt'
         )
@@ -672,6 +696,26 @@ class ReleaseControllerTests(unittest.TestCase):
             self.assertFalse((runner / "tail-ran").exists())
             self.assertFalse((checkout / "should-not-run").exists())
 
+            subprocess.run(
+                ["git", "-C", str(checkout), "restore", "scripts/release_authority_tail.sh"],
+                check=True,
+            )
+            for name, content in inputs.items():
+                path = runner / name
+                path.write_bytes(content)
+                if name == "age-bin":
+                    path.chmod(0o555)
+            proof_path.write_text(json.dumps(proof) + "\n", encoding="utf-8")
+            hostile_import = scripts / "json.py"
+            hostile_import.write_text(
+                'raise SystemExit("untracked import shadow executed")\n',
+                encoding="utf-8",
+            )
+            rejected = run()
+            self.assertNotEqual(rejected.returncode, 0)
+            self.assertFalse((runner / "tail-ran").exists())
+            hostile_import.unlink()
+
     def test_final_authority_cleanup_covers_early_and_handoff_failure(self) -> None:
         bash = shutil.which("bash")
         rm = shutil.which("rm")
@@ -693,33 +737,32 @@ class ReleaseControllerTests(unittest.TestCase):
                     "          trap 'status=$?\n"
                 )
             )
-            set_line = "          set -euo pipefail\n"
-            prologue_end = body.index(set_line) + len(set_line)
+            umask_line = "          umask 077\n"
+            prologue_end = body.index(umask_line) + len(umask_line)
             prologue = textwrap.dedent(body[:prologue_end]).replace(
                 "/usr/bin/rm", str(rm)
             )
             authority_unset = body.index(
                 "unset AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN"
             )
-            watchdog = body.index(
-                "coproc RELEASE_CLEANUP_WATCHDOG {",
-                authority_unset,
-            )
             handoff = body.index(
                 "exec -c /usr/bin/bash --noprofile --norc -s --",
-                watchdog,
+                authority_unset,
             )
-            self.assertLess(authority_unset, watchdog)
-            self.assertLess(watchdog, handoff)
+            self.assertLess(authority_unset, handoff)
+            self.assertNotIn("exec 9", body)
+            self.assertIn("coproc RELEASE_CLEANUP_SUPERVISOR", body)
+            self.assertIn("' EXIT INT TERM", body[:prologue_end])
+            self.assertLess(body.index("umask 077"), body.index("python_bin="))
             self.assertNotIn(
                 "scripts/release_authority_tail.sh",
                 body[prologue_end:handoff],
             )
-            watchdog_boundary = textwrap.dedent(
+            supervisor_boundary = textwrap.dedent(
                 body[authority_unset:handoff]
             ).replace("/usr/bin/bash", str(bash)).replace(
                 "/usr/bin/rm", str(rm)
-            )
+            ).replace("/usr/bin/sleep", str(shutil.which("sleep")))
 
             with tempfile.TemporaryDirectory() as temporary:
                 runner = pathlib.Path(temporary) / "runner"
@@ -764,7 +807,7 @@ class ReleaseControllerTests(unittest.TestCase):
                     (
                         "handoff",
                         prologue
-                        + watchdog_boundary
+                        + supervisor_boundary
                         + "exec /definitely/missing/lean-eval-bash\n",
                     ),
                 ):
@@ -781,7 +824,40 @@ class ReleaseControllerTests(unittest.TestCase):
                             env={"RUNNER_TEMP": str(runner)},
                         )
                         self.assertNotEqual(failed.returncode, 0)
+                        deadline = time.monotonic() + 5
+                        while any(
+                            (runner / name).exists() for name in private_files
+                        ) and time.monotonic() < deadline:
+                            time.sleep(0.01)
                         assert_clean()
+
+                mode_probe = prologue + textwrap.dedent(
+                    f"""\
+                    : > "$RUNNER_TEMP/unwrap-response.json"
+                    exec -c {bash} --noprofile --norc -c '
+                      : > "$1/identity.age"
+                      : > "$1/source.tar.gz"
+                    ' private-mode-probe "$RUNNER_TEMP"
+                    """
+                )
+                private_modes = subprocess.run(
+                    [str(bash), "-c", mode_probe],
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                    env={"RUNNER_TEMP": str(runner)},
+                )
+                self.assertEqual(private_modes.returncode, 0, private_modes.stderr)
+                for name in (
+                    "unwrap-response.json",
+                    "identity.age",
+                    "source.tar.gz",
+                ):
+                    self.assertEqual(
+                        stat.S_IMODE((runner / name).stat().st_mode),
+                        0o600,
+                        name,
+                    )
 
                 authority = {
                     "AWS_ACCESS_KEY_ID": "hostile-access-key",
@@ -791,46 +867,44 @@ class ReleaseControllerTests(unittest.TestCase):
                     "ACTIONS_ID_TOKEN_REQUEST_URL": "https://hostile.invalid/oidc",
                     "UNRELATED_SECRET": "hostile-unrelated-secret",
                 }
-                checkout_probe = watchdog_boundary + textwrap.dedent(
+                supervisor_probe = supervisor_boundary + textwrap.dedent(
                     f"""\
                     exec -c {bash} --noprofile --norc -s -- {runner} <<'CHECKOUT'
                     expected_runner=$1
-                    watchdog=
+                    supervisor=
                     for attempt in {{1..10000}}; do
                       for cmdline in /proc/[0-9]*/cmdline; do
                         [ -r "$cmdline" ] || continue
                         marked=false
                         while IFS= read -r -d '' argument; do
                           if [ "$marked" = true ] && [ "$argument" = "$expected_runner" ]; then
-                            watchdog=${{cmdline%/cmdline}}
+                            supervisor=${{cmdline%/cmdline}}
                             break 3
                           fi
-                          [ "$argument" = lean-eval-release-cleanup-watchdog-v1 ] && \
+                          [ "$argument" = lean-eval-release-cleanup-supervisor-v1 ] && \
                             marked=true || marked=false
                         done < "$cmdline" 2>/dev/null || :
                       done
                     done
-                    [ -n "$watchdog" ]
+                    [ -n "$supervisor" ]
                     count=0
                     while IFS= read -r -d '' entry; do
                       count=$((count + 1))
                       case "$entry" in
                         AWS_ACCESS_KEY_ID=*|AWS_SECRET_ACCESS_KEY=*|AWS_SESSION_TOKEN=*|ACTIONS_ID_TOKEN_REQUEST_TOKEN=*|ACTIONS_ID_TOKEN_REQUEST_URL=*|UNRELATED_SECRET=*)
-                          printf 'watchdog retained secret environment: %s\\n' "$entry" >&2
                           exit 1
                           ;;
                         *=hostile-access-key|*=hostile-secret-key|*=hostile-session-token|*=hostile-oidc-token|*=https://hostile.invalid/oidc|*=hostile-unrelated-secret)
-                          printf 'watchdog retained hostile value: %s\\n' "$entry" >&2
                           exit 1
                           ;;
                       esac
-                    done < "$watchdog/environ"
+                    done < "$supervisor/environ"
                     [ "$count" -eq 0 ]
                     CHECKOUT
                     """
                 )
-                clean_watchdog = subprocess.run(
-                    [str(bash), "-c", checkout_probe],
+                clean_supervisor = subprocess.run(
+                    [str(bash), "-c", supervisor_probe],
                     check=False,
                     capture_output=True,
                     text=True,
@@ -838,15 +912,15 @@ class ReleaseControllerTests(unittest.TestCase):
                     env={"RUNNER_TEMP": str(runner), **authority},
                 )
                 self.assertEqual(
-                    clean_watchdog.returncode,
+                    clean_supervisor.returncode,
                     0,
-                    clean_watchdog.stderr,
+                    clean_supervisor.stderr,
                 )
 
-                pre_exec = runner / "watchdog-pre-exec"
-                allow_exec = runner / "allow-watchdog-exec"
+                pre_exec = runner / "supervisor-pre-exec"
+                allow_exec = runner / "allow-supervisor-exec"
                 checkout_started = runner / "checkout-started"
-                delayed_boundary = watchdog_boundary.replace(
+                delayed_boundary = supervisor_boundary.replace(
                     f"exec -c {bash}",
                     textwrap.dedent(
                         f"""\
@@ -859,14 +933,13 @@ class ReleaseControllerTests(unittest.TestCase):
                 )
                 delayed_probe = delayed_boundary + textwrap.dedent(
                     f"""\
-                    exec -c {bash} --noprofile --norc -s -- {runner} <<'CHECKOUT'
-                    : > "$1/checkout-started"
-                    CHECKOUT
+                    exec -c {bash} --noprofile --norc -c \
+                      ': > "$1/checkout-started"' checkout-probe {runner}
                     """
                 )
                 delayed = subprocess.Popen(
                     [str(bash), "-c", delayed_probe],
-                    stdout=subprocess.PIPE,
+                    stdout=subprocess.DEVNULL,
                     stderr=subprocess.PIPE,
                     text=True,
                     env={"RUNNER_TEMP": str(runner), **authority},
@@ -878,26 +951,157 @@ class ReleaseControllerTests(unittest.TestCase):
                     and time.monotonic() < deadline
                 ):
                     time.sleep(0.01)
-                reached_pre_exec = pre_exec.exists()
-                crossed_barrier_early = checkout_started.exists()
-                inherited_environment = b""
-                if reached_pre_exec:
-                    pre_exec_pid = int(
-                        pre_exec.read_text(encoding="ascii").strip()
-                    )
-                    inherited_environment = (
-                        pathlib.Path("/proc") / str(pre_exec_pid) / "environ"
-                    ).read_bytes()
-                allow_exec.write_text("continue\n", encoding="utf-8")
-                _, delayed_stderr = delayed.communicate(timeout=10)
-                self.assertTrue(reached_pre_exec, delayed_stderr)
+                self.assertTrue(pre_exec.exists())
+                pre_exec_pid = int(pre_exec.read_text(encoding="ascii").strip())
+                inherited_environment = (
+                    pathlib.Path("/proc") / str(pre_exec_pid) / "environ"
+                ).read_bytes()
                 self.assertIn(
                     b"UNRELATED_SECRET=hostile-unrelated-secret\0",
                     inherited_environment,
                 )
-                self.assertFalse(crossed_barrier_early, delayed_stderr)
+                self.assertFalse(checkout_started.exists())
+                allow_exec.write_text("continue\n", encoding="utf-8")
+                _, delayed_stderr = delayed.communicate(timeout=10)
                 self.assertEqual(delayed.returncode, 0, delayed_stderr)
                 self.assertTrue(checkout_started.exists())
+
+                sleep = shutil.which("sleep")
+                self.assertIsNotNone(sleep)
+                for signal_value in (
+                    signal.SIGINT,
+                    signal.SIGTERM,
+                    signal.SIGKILL,
+                ):
+                    with self.subTest(
+                        workflow=workflow_name,
+                        signal=signal_value,
+                    ):
+                        for name in (
+                            "unwrap-response.json",
+                            "identity.age",
+                            "source.tar.gz",
+                        ):
+                            (runner / name).unlink(missing_ok=True)
+                        populate()
+                        child_pid_path = runner / "surviving-child-pid"
+                        child_pid_path.unlink(missing_ok=True)
+                        signaled_script = prologue + supervisor_boundary + textwrap.dedent(
+                            f"""\
+                            {sleep} 30 &
+                            child=$!
+                            printf '%s\n' "$child" > {child_pid_path}
+                            while :; do :; done
+                            """
+                        )
+                        signaled = subprocess.Popen(
+                            [str(bash), "-c", signaled_script],
+                            stdout=subprocess.DEVNULL,
+                            stderr=subprocess.DEVNULL,
+                            text=True,
+                            env={"RUNNER_TEMP": str(runner)},
+                        )
+                        deadline = time.monotonic() + 5
+                        while (
+                            not child_pid_path.exists()
+                            and signaled.poll() is None
+                            and time.monotonic() < deadline
+                        ):
+                            time.sleep(0.01)
+                        self.assertTrue(child_pid_path.exists())
+                        child_pid = int(
+                            child_pid_path.read_text(encoding="ascii").strip()
+                        )
+                        os.kill(signaled.pid, signal_value)
+                        self.assertNotEqual(signaled.wait(timeout=5), 0)
+                        deadline = time.monotonic() + 5
+                        while any(
+                            (runner / name).exists() for name in private_files
+                        ) and time.monotonic() < deadline:
+                            time.sleep(0.01)
+                        assert_clean()
+                        os.kill(child_pid, 0)
+                        os.kill(child_pid, signal.SIGTERM)
+
+    def test_production_failure_scrubs_before_retryable_recovery(self) -> None:
+        authority_tail = (
+            ROOT / "scripts/release_authority_tail.sh"
+        ).read_text(encoding="utf-8")
+        definitions_start = authority_tail.index("remove_sensitive_scratch() {")
+        definitions_end = authority_tail.index(
+            "trap - EXIT INT TERM\nif [ \"$mode\" = production ]",
+            definitions_start,
+        )
+        definitions = authority_tail[definitions_start:definitions_end]
+        bash = shutil.which("bash")
+        self.assertIsNotNone(bash)
+        with tempfile.TemporaryDirectory() as temporary:
+            runner = pathlib.Path(temporary) / "runner"
+            runner.mkdir()
+            sensitive = (
+                "release-plan.json",
+                "unwrap-request.json",
+                "unwrap-response.json",
+                "unwrap-metadata.json",
+                "identity.age",
+                "source.tar.gz",
+                "archive.tar.age",
+                "archive-sidecar.json",
+                "age-bin",
+                "pre-authority-stage.json",
+            )
+            for name in (*sensitive, "release-started-event.json"):
+                (runner / name).write_text("private\n", encoding="utf-8")
+            (runner / "reconstructed").mkdir()
+            (runner / "state-views").mkdir()
+            recovery_entered = runner / "recovery-entered"
+            allow_recovery = runner / "allow-recovery"
+            sensitive_checks = "\n".join(
+                f'  [ ! -e "$RUNNER_TEMP/{name}" ]' for name in sensitive
+            )
+            script = (
+                "set +e\n"
+                "authority_proven=true\n"
+                "publication_recorded=false\n"
+                + definitions
+                + "record_retryable_failure() {\n"
+                + sensitive_checks
+                + "\n  [ ! -e \"$RUNNER_TEMP/reconstructed\" ]\n"
+                + "  [ ! -e \"$RUNNER_TEMP/state-views\" ]\n"
+                + "  [ -f \"$RUNNER_TEMP/release-started-event.json\" ]\n"
+                + f"  : > {recovery_entered}\n"
+                + f"  while [ ! -e {allow_recovery} ]; do :; done\n"
+                + "}\n"
+                + "false\nfinish_production\n"
+            )
+            recovery = subprocess.Popen(
+                [str(bash), "-c", script],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+                text=True,
+                env={
+                    "PATH": os.environ["PATH"],
+                    "RUNNER_TEMP": str(runner),
+                },
+            )
+            deadline = time.monotonic() + 5
+            while (
+                not recovery_entered.exists()
+                and recovery.poll() is None
+                and time.monotonic() < deadline
+            ):
+                time.sleep(0.01)
+            self.assertTrue(recovery_entered.exists())
+            self.assertIsNone(recovery.poll())
+            for name in sensitive:
+                self.assertFalse((runner / name).exists(), name)
+            self.assertFalse((runner / "reconstructed").exists())
+            self.assertFalse((runner / "state-views").exists())
+            self.assertTrue((runner / "release-started-event.json").exists())
+            allow_recovery.write_text("continue\n", encoding="utf-8")
+            _, recovery_stderr = recovery.communicate(timeout=10)
+            self.assertNotEqual(recovery.returncode, 0, recovery_stderr)
+            self.assertFalse((runner / "release-started-event.json").exists())
 
     def test_literal_provider_is_exact_and_prepare_unwrap_equivalent(self) -> None:
         source = (ROOT / "scripts/release_provider_literal.py").read_text(

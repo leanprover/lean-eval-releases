@@ -1,6 +1,22 @@
 #!/usr/bin/env bash
 
+# This first command covers cancellation before the reviewed functions below
+# have been defined. The later mode-specific traps replace it.
+# shellcheck disable=SC2154
+trap 'status=$?
+trap - EXIT INT TERM
+set +e
+if [ -n "${RUNNER_TEMP:-}" ] && [ -d "$RUNNER_TEMP" ]; then
+  /usr/bin/rm -rf "$RUNNER_TEMP/reconstructed" "$RUNNER_TEMP/state-views"
+  /usr/bin/rm -f "$RUNNER_TEMP"/release-*.json "$RUNNER_TEMP"/unwrap-*.json \
+    "$RUNNER_TEMP"/identity.age "$RUNNER_TEMP"/source.tar.gz \
+    "$RUNNER_TEMP"/archive.tar.age "$RUNNER_TEMP"/archive-sidecar.json \
+    "$RUNNER_TEMP"/age-bin "$RUNNER_TEMP"/pre-authority-stage.json
+fi
+if [ "$status" -eq 0 ]; then status=1; fi
+exit "$status"' EXIT INT TERM
 set -euo pipefail
+umask 077
 
 mode=${1:-}
 case "$mode" in
@@ -11,15 +27,49 @@ esac
 authority_proven=false
 publication_recorded=false
 
-remove_common_scratch() {
+remove_sensitive_scratch() {
   if [ -z "${RUNNER_TEMP:-}" ] || [ ! -d "$RUNNER_TEMP" ]; then
     return
   fi
   rm -rf "$RUNNER_TEMP/reconstructed" "$RUNNER_TEMP/state-views"
-  rm -f "$RUNNER_TEMP"/release-*.json "$RUNNER_TEMP"/unwrap-*.json \
+  for path in "$RUNNER_TEMP"/release-*.json; do
+    if [ "$path" != "$RUNNER_TEMP/release-started-event.json" ]; then
+      rm -f "$path"
+    fi
+  done
+  rm -f "$RUNNER_TEMP"/unwrap-*.json \
     "$RUNNER_TEMP"/identity.age "$RUNNER_TEMP"/source.tar.gz \
     "$RUNNER_TEMP"/archive.tar.age "$RUNNER_TEMP"/archive-sidecar.json \
     "$RUNNER_TEMP"/age-bin "$RUNNER_TEMP"/pre-authority-stage.json
+}
+
+remove_common_scratch() {
+  remove_sensitive_scratch
+  if [ -n "${RUNNER_TEMP:-}" ] && [ -d "$RUNNER_TEMP" ]; then
+    rm -f "$RUNNER_TEMP/release-started-event.json"
+  fi
+}
+
+run_exact_python() {
+  "$PYTHON_BIN" -I -c '
+import pathlib
+import runpy
+import sys
+
+path = pathlib.Path(sys.argv[1])
+if path.is_symlink() or not path.is_file():
+    raise SystemExit("exact Python entry point is not a regular file")
+path = path.resolve(strict=True)
+sys.path.insert(0, str(path.parent))
+sys.argv = sys.argv[1:]
+runpy.run_path(str(path), run_name="__main__")
+' "$@"
+}
+
+require_private_regular() {
+  local path=$1
+  [ -f "$path" ] && [ ! -L "$path" ]
+  test "$(stat --format=%a -- "$path")" = 600
 }
 
 record_retryable_failure() (
@@ -35,14 +85,14 @@ record_retryable_failure() (
     echo "the next controller run must recover release.started" >&2
     return 1
   fi
-  "$PYTHON_BIN" scripts/release_controller.py state-event failed \
+  run_exact_python scripts/release_controller.py state-event failed \
     --started-event "$RUNNER_TEMP/release-started-event.json" \
     --trusted-now "$(date --utc +%Y-%m-%dT%H:%M:%S.000Z)" \
     --reason-code controller_failed \
     --retryable true \
     --output "$RUNNER_TEMP/release-failed-event.json"
   state_head=$(git -C state rev-parse HEAD)
-  "$PYTHON_BIN" scripts/release_controller.py stage-state-transition \
+  run_exact_python scripts/release_controller.py stage-state-transition \
     --state-root state \
     --event "$RUNNER_TEMP/release-failed-event.json" \
     --protected-state-head "$state_head" \
@@ -52,9 +102,9 @@ record_retryable_failure() (
   status_path=$(jq -er .status_path "$RUNNER_TEMP/release-failed-transition.json")
   test -f "state/$event_path"
   test -f "state/$status_path"
-  "$PYTHON_BIN" state/scripts/state.py --root state \
+  run_exact_python state/scripts/state.py --root state \
     --protected-main-commit "$state_head" validate
-  "$PYTHON_BIN" scripts/release_controller.py verify-staged-state-transition \
+  run_exact_python scripts/release_controller.py verify-staged-state-transition \
     --state-root state \
     --event "$RUNNER_TEMP/release-failed-event.json" \
     --plan "$RUNNER_TEMP/release-failed-transition.json"
@@ -66,9 +116,10 @@ record_retryable_failure() (
 # shellcheck disable=SC2329  # Invoked indirectly by the EXIT trap below.
 finish_production() {
   local status=$?
-  trap - EXIT
+  trap - EXIT INT TERM
   set +e
   if [ "$status" -ne 0 ] && [ "$publication_recorded" = false ]; then
+    remove_sensitive_scratch
     record_retryable_failure
   fi
   remove_common_scratch
@@ -78,16 +129,30 @@ finish_production() {
 # shellcheck disable=SC2329  # Invoked indirectly by the EXIT trap below.
 cleanup_staging() {
   local status=$?
-  trap - EXIT
+  trap - EXIT INT TERM
   set +e
   remove_common_scratch
   exit "$status"
 }
 
+# shellcheck disable=SC2329  # Invoked indirectly by signal traps below.
+cleanup_signal() {
+  local status=$1
+  trap - EXIT INT TERM
+  set +e
+  remove_common_scratch
+  exit "$status"
+}
+
+trap - EXIT INT TERM
 if [ "$mode" = production ]; then
   trap finish_production EXIT
+  trap 'cleanup_signal 130' INT
+  trap 'cleanup_signal 143' TERM
 elif [ "$mode" = staging ]; then
   trap cleanup_staging EXIT
+  trap 'cleanup_signal 130' INT
+  trap 'cleanup_signal 143' TERM
 fi
 
 : "${HOME:?}"
@@ -108,20 +173,33 @@ esac
 if [ "$mode" = staging ]; then
   : "${GITHUB_STEP_SUMMARY:?}"
   : "${SUBMISSION_ID:?}"
-  "$PYTHON_BIN" scripts/release_controller.py unwrap-identity \
+  require_private_regular "$RUNNER_TEMP/unwrap-request.json"
+  require_private_regular "$RUNNER_TEMP/unwrap-response.json"
+  require_private_regular "$RUNNER_TEMP/unwrap-metadata.json"
+  run_exact_python scripts/release_controller.py unwrap-identity \
     --request "$RUNNER_TEMP/unwrap-request.json" \
     --response "$RUNNER_TEMP/unwrap-response.json" \
     --metadata "$RUNNER_TEMP/unwrap-metadata.json" \
     --output "$RUNNER_TEMP/identity.age"
+  require_private_regular "$RUNNER_TEMP/identity.age"
   test "$("$RUNNER_TEMP/age-bin" --version)" = v1.3.1
   "$RUNNER_TEMP/age-bin" --decrypt --identity "$RUNNER_TEMP/identity.age" \
     --output "$RUNNER_TEMP/source.tar.gz" "$RUNNER_TEMP/archive.tar.age"
+  require_private_regular "$RUNNER_TEMP/source.tar.gz"
   expected_plaintext=$(jq -r .sha256_plaintext_tar \
     "$RUNNER_TEMP/archive-sidecar.json")
   actual_plaintext=$(sha256sum "$RUNNER_TEMP/source.tar.gz" | awk '{print $1}')
   test "$actual_plaintext" = "$expected_plaintext"
-  PYTHONPATH=scripts "$PYTHON_BIN" -c \
-    'import pathlib; from reconstruct_release import _read_release_sources; _read_release_sources(pathlib.Path("'"$RUNNER_TEMP"'/source.tar.gz"))'
+  "$PYTHON_BIN" -I -c '
+import pathlib
+import sys
+
+scripts = pathlib.Path("scripts").resolve(strict=True)
+sys.path.insert(0, str(scripts))
+from reconstruct_release import _read_release_sources
+
+_read_release_sources(pathlib.Path(sys.argv[1]))
+' "$RUNNER_TEMP/source.tar.gz"
   ciphertext_digest=$(jq -r .sha256_ciphertext \
     "$RUNNER_TEMP/archive-sidecar.json")
   audit_commit=$(jq -er .request.archive.archive_commit \
@@ -146,34 +224,39 @@ git -C state show "HEAD:$started_event_path" \
   > "$RUNNER_TEMP/committed-release-started-event.json"
 cmp "$RUNNER_TEMP/release-started-event.json" \
   "$RUNNER_TEMP/committed-release-started-event.json"
-"$PYTHON_BIN" scripts/verify_release_state_contract.py \
+run_exact_python scripts/verify_release_state_contract.py \
   --environment production \
   --state-root state
-"$PYTHON_BIN" state/scripts/state.py --root state validate
-"$PYTHON_BIN" state/scripts/state.py --root state materialize \
+run_exact_python state/scripts/state.py --root state validate
+run_exact_python state/scripts/state.py --root state materialize \
   --output "$RUNNER_TEMP/state-views"
 
-"$PYTHON_BIN" scripts/release_controller.py unwrap-identity \
+require_private_regular "$RUNNER_TEMP/unwrap-request.json"
+require_private_regular "$RUNNER_TEMP/unwrap-response.json"
+require_private_regular "$RUNNER_TEMP/unwrap-metadata.json"
+run_exact_python scripts/release_controller.py unwrap-identity \
   --request "$RUNNER_TEMP/unwrap-request.json" \
   --response "$RUNNER_TEMP/unwrap-response.json" \
   --metadata "$RUNNER_TEMP/unwrap-metadata.json" \
   --output "$RUNNER_TEMP/identity.age"
+require_private_regular "$RUNNER_TEMP/identity.age"
 test "$("$RUNNER_TEMP/age-bin" --version)" = v1.3.1
 "$RUNNER_TEMP/age-bin" --decrypt --identity "$RUNNER_TEMP/identity.age" \
   --output "$RUNNER_TEMP/source.tar.gz" "$RUNNER_TEMP/archive.tar.age"
+require_private_regular "$RUNNER_TEMP/source.tar.gz"
 expected_plaintext=$(jq -er .sha256_plaintext_tar \
   "$RUNNER_TEMP/archive-sidecar.json")
 actual_plaintext=$(sha256sum "$RUNNER_TEMP/source.tar.gz" | awk '{print $1}')
 test "$actual_plaintext" = "$expected_plaintext"
 trusted_now=$(date --utc +%Y-%m-%dT%H:%M:%S.000Z)
-"$PYTHON_BIN" scripts/reconstruct_release.py \
+run_exact_python scripts/reconstruct_release.py \
   "$RUNNER_TEMP/release-plan.json" \
   --plaintext-tar "$RUNNER_TEMP/source.tar.gz" \
   --trusted-as-of "$trusted_now" \
   --state-acceptance-snapshot \
     "$RUNNER_TEMP/state-views/release-acceptance-snapshot.json" \
   --output-root "$RUNNER_TEMP/reconstructed"
-"$PYTHON_BIN" scripts/validate_manifest.py \
+run_exact_python scripts/validate_manifest.py \
   "$RUNNER_TEMP/reconstructed/release-manifest.json" \
   --trusted-as-of "$trusted_now" \
   --state-acceptance-snapshot \
@@ -186,7 +269,7 @@ result_id=$(jq -r .request.result.result_id "$RUNNER_TEMP/release-plan.json")
 release_path=$(jq -r .request.release.path "$RUNNER_TEMP/release-plan.json")
 submission_id=$(jq -r .request.submission.submission_id \
   "$RUNNER_TEMP/release-plan.json")
-"$PYTHON_BIN" scripts/classify_release_publication.py \
+run_exact_python scripts/classify_release_publication.py \
   --release-root . \
   --reconstructed-root "$RUNNER_TEMP/reconstructed" \
   --release-path "$release_path" \
@@ -200,7 +283,7 @@ if [ "$publication_kind" = existing ]; then
   git show "$repository_commit:release-manifest.json" \
     > "$RUNNER_TEMP/publishing-manifest.json"
   generated_at=$(jq -er .generated_at "$RUNNER_TEMP/publishing-manifest.json")
-  "$PYTHON_BIN" scripts/validate_manifest.py "$RUNNER_TEMP/publishing-manifest.json" \
+  run_exact_python scripts/validate_manifest.py "$RUNNER_TEMP/publishing-manifest.json" \
     --trusted-as-of "$generated_at" \
     --state-acceptance-snapshot \
       "$RUNNER_TEMP/state-views/release-acceptance-snapshot.json" \
@@ -217,7 +300,7 @@ elif [ "$publication_kind" = new ]; then
       "sources/$submission_id.tar.gz"
   fi
   cp "$RUNNER_TEMP/reconstructed/release-manifest.json" release-manifest.json
-  "$PYTHON_BIN" scripts/validate_manifest.py release-manifest.json \
+  run_exact_python scripts/validate_manifest.py release-manifest.json \
     --trusted-as-of "$trusted_now" \
     --state-acceptance-snapshot \
       "$RUNNER_TEMP/state-views/release-acceptance-snapshot.json" \
@@ -239,7 +322,7 @@ fi
 [[ "$tree_digest" =~ ^[0-9a-f]{64}$ ]]
 publication_recorded=true
 
-"$PYTHON_BIN" scripts/release_controller.py state-event published \
+run_exact_python scripts/release_controller.py state-event published \
   --started-event "$RUNNER_TEMP/release-started-event.json" \
   --trusted-now "$(date --utc +%Y-%m-%dT%H:%M:%S.000Z)" \
   --repository-commit "$repository_commit" \
@@ -247,7 +330,7 @@ publication_recorded=true
   --release-path "$release_path" \
   --output "$RUNNER_TEMP/release-terminal-event.json"
 state_head=$(git -C state rev-parse HEAD)
-"$PYTHON_BIN" scripts/release_controller.py stage-state-transition \
+run_exact_python scripts/release_controller.py stage-state-transition \
   --state-root state \
   --event "$RUNNER_TEMP/release-terminal-event.json" \
   --protected-state-head "$state_head" \
@@ -257,9 +340,9 @@ event_path=$(jq -er .event_path "$RUNNER_TEMP/release-terminal-transition.json")
 status_path=$(jq -er .status_path "$RUNNER_TEMP/release-terminal-transition.json")
 test -f "state/$event_path"
 test -f "state/$status_path"
-"$PYTHON_BIN" state/scripts/state.py --root state \
+run_exact_python state/scripts/state.py --root state \
   --protected-main-commit "$state_head" validate
-"$PYTHON_BIN" scripts/release_controller.py verify-staged-state-transition \
+run_exact_python scripts/release_controller.py verify-staged-state-transition \
   --state-root state \
   --event "$RUNNER_TEMP/release-terminal-event.json" \
   --plan "$RUNNER_TEMP/release-terminal-transition.json"

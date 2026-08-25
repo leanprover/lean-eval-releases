@@ -5,7 +5,7 @@
 
 # shellcheck disable=SC2154  # Assigned inside this first-command EXIT trap.
 trap 'status=$?
-trap - EXIT
+trap - EXIT INT TERM
 set +e
 if [ -n "${RUNNER_TEMP:-}" ] && [ -d "$RUNNER_TEMP" ]; then
   /usr/bin/rm -rf "$RUNNER_TEMP/reconstructed" "$RUNNER_TEMP/state-views"
@@ -14,8 +14,12 @@ if [ -n "${RUNNER_TEMP:-}" ] && [ -d "$RUNNER_TEMP" ]; then
     "$RUNNER_TEMP"/archive.tar.age "$RUNNER_TEMP"/archive-sidecar.json \
     "$RUNNER_TEMP"/age-bin "$RUNNER_TEMP"/pre-authority-stage.json
 fi
-exit "$status"' EXIT
+if [ "${LITERAL_CLEAN_EXIT:-false}" != true ] && [ "$status" -eq 0 ]; then
+  status=1
+fi
+exit "$status"' EXIT INT TERM
 set -euo pipefail
+umask 077
 
 mode=${1:-}
 case "$mode" in
@@ -116,7 +120,10 @@ for root in "$RUNNER_TEMP/_runner_file_commands" "$HOME/.aws"; do
   done < <(find -P "$root" -type f -print0)
 done
 
-[ "$mode" != probe ] || exit 0
+if [ "$mode" = probe ]; then
+  LITERAL_CLEAN_EXIT=true
+  exit 0
+fi
 
 : "${PYTHON_BIN:?}"
 : "${GITHUB_STEP_SUMMARY:?}"
@@ -178,6 +185,7 @@ tail_blob=$(jq -er .authority_tail_blob "$proof")
 test "$(git rev-parse HEAD)" = "$release_commit"
 test "$(git rev-parse HEAD:scripts/release_authority_tail.sh)" = "$tail_blob"
 test "$(git hash-object scripts/release_authority_tail.sh)" = "$tail_blob"
+test -z "$(git status --porcelain --untracked-files=all)"
 git diff --quiet HEAD --
 git diff --cached --quiet HEAD --
 if [ "$mode" = production ]; then
@@ -188,7 +196,7 @@ fi
 
 test "$($PYTHON_BIN -I -c 'import sys; print(".".join(map(str, sys.version_info[:2])))')" = 3.11
 
-trap - EXIT
+trap - EXIT INT TERM
 exec env -i \
   HOME="$HOME" \
   PATH="$PATH" \
