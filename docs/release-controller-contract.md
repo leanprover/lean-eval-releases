@@ -122,8 +122,11 @@ digest, and in production the `release.started` UUID and digest. The descriptor
 cannot reveal owner/model or `production_metadata.prompt`/`notes`; no workflow
 log, step summary, or artifact receives those private values. State validation
 and materialization output used for reconstruction is captured or suppressed;
-only a generic fail-closed diagnostic can reach the log. Base64 is not treated
-as confidentiality.
+the plan, decrypted-archive validation, source reconstruction, manifest
+validation, and publication classification likewise suppress their detailed
+stdout/stderr. Only a fixed fail-closed phase class can reach the log, so even
+a hostile tar member name cannot become a log disclosure. Base64 is not
+treated as confidentiality.
 
 Before invocation, literal code also scans the current AWS/OIDC values and
 their canonical variable names under `$RUNNER_TEMP/_runner_file_commands` and

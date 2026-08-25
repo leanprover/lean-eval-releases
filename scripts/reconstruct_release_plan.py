@@ -12,10 +12,19 @@ import subprocess
 import sys
 from typing import Any
 
-from release_controller import canonical_json, staging_smoke_plan, started_event
-from release_orchestrator import plan_next
-from release_provider_literal import ProviderError, validate_authority_descriptor
-from release_qualification import build_qualification
+if __package__:
+    from .release_controller import canonical_json, staging_smoke_plan, started_event
+    from .release_orchestrator import plan_next
+    from .release_provider_literal import (
+        ProviderError,
+        validate_authority_descriptor,
+    )
+    from .release_qualification import build_qualification
+else:
+    from release_controller import canonical_json, staging_smoke_plan, started_event
+    from release_orchestrator import plan_next
+    from release_provider_literal import ProviderError, validate_authority_descriptor
+    from release_qualification import build_qualification
 
 
 class ReconstructionError(ValueError):

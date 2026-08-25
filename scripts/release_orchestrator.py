@@ -11,7 +11,10 @@ import re
 import sys
 from typing import Any
 
-from embargo import eligible_at, parse_utc_milliseconds
+if __package__:
+    from .embargo import eligible_at, parse_utc_milliseconds
+else:
+    from embargo import eligible_at, parse_utc_milliseconds
 
 UUID7 = re.compile(
     r"[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}"
