@@ -110,6 +110,20 @@ AUTHORITY_NAMES = (
     "ACTIONS_ID_TOKEN_REQUEST_TOKEN",
     "ACTIONS_ID_TOKEN_REQUEST_URL",
 )
+AUTHORITY_DESCRIPTOR_FIELDS = {
+    "schema_version",
+    "environment",
+    "release_commit",
+    "state_commit",
+    "started_event_id",
+    "archive_repository",
+    "archive_commit",
+    "archive_path",
+    "archive_ciphertext_sha256",
+    "eligible_at",
+    "plan_sha256",
+    "started_event_sha256",
+}
 
 
 class ProviderError(ValueError):
@@ -610,6 +624,139 @@ def scan_authority_files(environ: Mapping[str, str]) -> None:
                 raise ProviderError(f"authority remains in runner file: {path}")
 
 
+def validate_authority_descriptor(value: Any) -> dict[str, Any]:
+    descriptor = _object(value, "release authority descriptor")
+    _fields(
+        descriptor,
+        AUTHORITY_DESCRIPTOR_FIELDS,
+        "release authority descriptor",
+    )
+    if descriptor["schema_version"] != 1 or isinstance(
+        descriptor["schema_version"], bool
+    ):
+        raise ProviderError("release authority descriptor schema is invalid")
+    environment = descriptor["environment"]
+    if environment not in {"production", "staging"}:
+        raise ProviderError("release authority descriptor environment is invalid")
+    _match(COMMIT, descriptor["release_commit"], "authority release commit")
+    _match(COMMIT, descriptor["state_commit"], "authority State commit")
+    _match(REPOSITORY, descriptor["archive_repository"], "archive repository")
+    _match(COMMIT, descriptor["archive_commit"], "archive commit")
+    archive_path = descriptor["archive_path"]
+    if not isinstance(archive_path, str):
+        raise ProviderError("archive path is invalid")
+    archive_name = pathlib.PurePosixPath(archive_path).name
+    suffix = ".tar.age"
+    if not archive_name.endswith(suffix):
+        raise ProviderError("archive path is invalid")
+    submission_id = archive_name[: -len(suffix)]
+    _match(UUID7, submission_id, "archive submission_id")
+    expected_path = f"archives/{submission_id.replace('-', '')[:2]}/{archive_name}"
+    if archive_path != expected_path:
+        raise ProviderError("archive path is not canonical")
+    _match(DIGEST, descriptor["archive_ciphertext_sha256"], "archive digest")
+    _parse_utc_milliseconds(descriptor["eligible_at"], "eligible_at")
+    _match(DIGEST, descriptor["plan_sha256"], "release plan digest")
+    if environment == "production":
+        _match(UUID7, descriptor["started_event_id"], "release.started event_id")
+        _match(
+            DIGEST,
+            descriptor["started_event_sha256"],
+            "release.started event digest",
+        )
+    elif (
+        descriptor["started_event_id"] != ""
+        or descriptor["started_event_sha256"] != ""
+    ):
+        raise ProviderError("staging authority must not name release.started")
+    return descriptor
+
+
+def build_request_from_authority(
+    descriptor_value: Any,
+    sidecar_value: Any,
+    ciphertext: bytes,
+    trusted_now: dt.datetime,
+    *,
+    random_bytes: bytes | None = None,
+    runner_nonce: str | None = None,
+) -> dict[str, Any]:
+    descriptor = validate_authority_descriptor(descriptor_value)
+    sidecar = validate_sidecar(sidecar_value, ciphertext)
+    envelope = validate_envelope(sidecar.get("key_envelope"))
+    archive_path = descriptor["archive_path"]
+    submission_id = pathlib.PurePosixPath(archive_path).name.removesuffix(".tar.age")
+    archive_digest = descriptor["archive_ciphertext_sha256"]
+    actual_digest = hashlib.sha256(ciphertext).hexdigest()
+    for candidate, label in (
+        (sidecar["submission_id"], "sidecar submission_id"),
+        (envelope["submission_id"], "envelope submission_id"),
+    ):
+        if candidate != submission_id:
+            raise ProviderError(f"{label} does not match release authority")
+    for candidate, label in (
+        (sidecar["sha256_ciphertext"], "sidecar ciphertext digest"),
+        (envelope["archive_ciphertext_sha256"], "envelope ciphertext digest"),
+        (actual_digest, "ciphertext bytes digest"),
+    ):
+        if candidate != archive_digest:
+            raise ProviderError(f"{label} does not match release authority")
+    if trusted_now.tzinfo is None or trusted_now.utcoffset() != dt.timedelta(0):
+        raise ProviderError("trusted time must be timezone-aware UTC")
+    if descriptor[
+        "environment"
+    ] == "production" and trusted_now < _parse_utc_milliseconds(
+        descriptor["eligible_at"], "eligible_at"
+    ):
+        raise ProviderError("production release is not yet eligible")
+    randomness = os.urandom(10) if random_bytes is None else random_bytes
+    if not isinstance(randomness, bytes) or len(randomness) != 10:
+        raise ProviderError("UUIDv7 randomness must contain exactly ten bytes")
+    milliseconds = int(trusted_now.timestamp() * 1000)
+    if not 0 <= milliseconds <= 0xFFFFFFFFFFFF:
+        raise ProviderError("UUIDv7 time is outside its 48-bit range")
+    raw = bytearray(milliseconds.to_bytes(6, "big") + randomness)
+    raw[6] = 0x70 | (raw[6] & 0x0F)
+    raw[8] = 0x80 | (raw[8] & 0x3F)
+    encoded = raw.hex()
+    request_id = (
+        f"{encoded[:8]}-{encoded[8:12]}-{encoded[12:16]}-"
+        f"{encoded[16:20]}-{encoded[20:]}"
+    )
+    nonce = os.urandom(32).hex() if runner_nonce is None else runner_nonce
+    _match(DIGEST, nonce, "runner nonce")
+    issued_at = trusted_now.isoformat(timespec="milliseconds").replace("+00:00", "Z")
+    expires_at = (
+        (trusted_now + dt.timedelta(minutes=5))
+        .isoformat(timespec="milliseconds")
+        .replace("+00:00", "Z")
+    )
+    capability = {
+        "schema_version": 1,
+        "purpose": "lean-eval-release",
+        "request_id": request_id,
+        "submission_id": submission_id,
+        "archive_repository": descriptor["archive_repository"],
+        "archive_commit": descriptor["archive_commit"],
+        "archive_path": archive_path,
+        "archive_ciphertext_sha256": archive_digest,
+        "data_key_id": envelope["data_key_id"],
+        "runner_nonce": nonce,
+        "issued_at": issued_at,
+        "expires_at": expires_at,
+        "max_uses": 1,
+    }
+    return {
+        "schema_version": 1,
+        "operation": "unwrap",
+        "adapter": envelope["adapter"],
+        "envelope": envelope,
+        "capability": capability,
+        "expected_purpose": "lean-eval-release",
+        "expected_runner_nonce": nonce,
+    }
+
+
 def build_request(
     plan_value: Any,
     sidecar_value: Any,
@@ -691,15 +838,15 @@ def main(argv: list[str] | None = None) -> int:
     arguments = sys.argv[1:] if argv is None else argv
     if len(arguments) != 4:
         raise ProviderError("literal provider requires four paths")
-    plan_path, sidecar_path, ciphertext_path, output_path = map(
+    authority_path, sidecar_path, ciphertext_path, output_path = map(
         pathlib.Path, arguments
     )
     scan_authority_files(os.environ)
-    plan = json.loads(plan_path.read_text(encoding="utf-8"))
+    authority = json.loads(authority_path.read_text(encoding="utf-8"))
     sidecar = json.loads(sidecar_path.read_text(encoding="utf-8"))
     ciphertext = ciphertext_path.read_bytes()
-    value = build_request(
-        plan,
+    value = build_request_from_authority(
+        authority,
         sidecar,
         ciphertext,
         dt.datetime.now(dt.timezone.utc),

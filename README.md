@@ -23,6 +23,7 @@ The machine-readable contracts are
 [`schema/release-manifest-v1.schema.json`](schema/release-manifest-v1.schema.json),
 [`schema/release-queue-v1.schema.json`](schema/release-queue-v1.schema.json),
 [`schema/release-plan-v1.schema.json`](schema/release-plan-v1.schema.json),
+[`schema/release-unwrap-authority-v1.schema.json`](schema/release-unwrap-authority-v1.schema.json),
 [`schema/release-metadata-v1.schema.json`](schema/release-metadata-v1.schema.json), and
 [`schema/release-acceptance-snapshot-v1.schema.json`](schema/release-acceptance-snapshot-v1.schema.json).
 The latter is the exact handoff the State materializer must produce for a
@@ -124,18 +125,22 @@ identity) and fails if AWS returns credentials for another account.
 Because GitHub injects OIDC handles into every step of an `id-token: write`
 job, unwrap runs in a separate job that executes only pinned actions and
 literal workflow code before role assumption. The credential action is
-followed by exactly one final authored step. Its literal provider phase builds
-and consumes the one-use capability only after exact sidecar/envelope
-validation and a bounded scan of runner credential-file locations. It then
+followed by exactly one final authored step. Its literal provider phase accepts
+only a fixed-field, disclosure-safe authority descriptor, binds it to the exact
+sidecar/envelope/ciphertext, and consumes the one-use capability after a
+bounded scan of runner credential-file locations. It then
 uses `exec env -i` to replace the secret-bearing shell with a process whose
 environment contains no AWS or OIDC handle before any checked-out program
 executes. The checked-out tail proves its own `/proc` environment is clean,
-repeats the credential-name file scan, then decrypts, reconstructs, publishes,
-records terminal or retryable State, and removes private scratch. The canonical
-execution plan and source-free `release.started` event cross the production
-job-output boundary as base64 control data; they contain no plaintext archive
-or identity and are neither logged nor uploaded as artifacts. No identity,
-plaintext, or private archive is transferred between jobs or uploaded.
+repeats the credential-name file scan, then deterministically reconstructs the
+private execution plan from the exact pinned State commit and exact committed
+`release.started` transition before decrypting, publishing, recording terminal
+or retryable State, and removing private scratch. Job outputs and ordinary step
+environments carry only exact commits, UUID/digests, the canonical encrypted
+archive locator, and eligibility time. The execution plan, `release.started`
+body, owner/model, and production prompt/notes never cross that boundary and
+are not logged, summarized, or uploaded as artifacts. No identity, plaintext,
+or private archive is transferred between jobs or uploaded.
 
 Before planning, the controller checks both full-history Git checkouts against
 the closed credential contract, requires exact tracked-clean `origin/main`
@@ -233,11 +238,13 @@ gate for this boundary. Given an accepted staging submission, it derives the
 exact queued release from validated staging State, checks out the pinned audit
 commit with separate read-only keys, and consumes one staging release-purpose
 capability. Planning runs in a job with no OIDC. The separate unwrap job uses
-the same literal-provider/`exec env -i` process boundary as production and
-verifies the decrypted tarball against the private sidecar only after its
-`/proc` authority proof. Its displayed submission ID is derived from that
-validated execution plan, never from the unbound dispatch input passed to the
-authority job. It neither reconstructs before the embargo nor writes State or
+the same literal-provider/`exec env -i` process boundary as production,
+reconstructs its private plan from the exact pinned staging State commit after
+authority erasure, and verifies the decrypted tarball against the private
+sidecar only after its `/proc` authority proof. Its displayed submission ID is
+derived from that reconstructed and digest-bound plan, never from the unbound
+dispatch input passed to the authority job. It neither reconstructs or
+publishes the plaintext source before the embargo nor writes State or
 this repository, and it uploads no artifact.
 Before executing any checked-out staging State code, the workflow requires the
 checkout to be clean, complete-history, and exact `origin/main`, to descend from

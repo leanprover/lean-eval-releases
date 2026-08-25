@@ -45,6 +45,21 @@ MAX_WRAPPED_BYTES = 16_384
 MAX_IDENTITY_BYTES = 4096
 MAX_SAFE_INTEGER = 9_007_199_254_740_991
 
+AUTHORITY_DESCRIPTOR_FIELDS = {
+    "schema_version",
+    "environment",
+    "release_commit",
+    "state_commit",
+    "started_event_id",
+    "archive_repository",
+    "archive_commit",
+    "archive_path",
+    "archive_ciphertext_sha256",
+    "eligible_at",
+    "plan_sha256",
+    "started_event_sha256",
+}
+
 RELEASE_STATUS_FIELDS = {
     "schema_version",
     "result_id",
@@ -173,6 +188,65 @@ def _write(path: pathlib.Path, value: Any) -> None:
 def canonical_json(value: Any) -> str:
     """Return State's byte-canonical operational-view representation."""
     return json.dumps(value, ensure_ascii=True, indent=2, sort_keys=True) + "\n"
+
+
+def authority_descriptor(
+    plan_value: Any,
+    state_commit: str,
+    release_commit: str,
+    environment: str,
+    started_event_value: Any | None = None,
+) -> dict[str, Any]:
+    """Reduce a private plan to the fixed, disclosure-safe cross-job handoff."""
+    try:
+        plan = _validate_execution_plan(plan_value)
+    except (ReleaseError, ValueError, TypeError) as error:
+        raise ControllerError(str(error)) from error
+    _match(COMMIT, state_commit, "authority State commit")
+    _match(COMMIT, release_commit, "authority release commit")
+    if environment not in {"production", "staging"}:
+        raise ControllerError("authority environment is invalid")
+    request = plan["request"]
+    controller = request.get("controller")
+    if controller is not None and (
+        controller["environment"] != environment
+        or controller["release_commit"] != release_commit
+    ):
+        raise ControllerError("authority commits/environment do not match the plan")
+    archive = request["archive"]
+    descriptor = {
+        "schema_version": 1,
+        "environment": environment,
+        "release_commit": release_commit,
+        "state_commit": state_commit,
+        "started_event_id": "",
+        "archive_repository": archive["archive_repository"],
+        "archive_commit": archive["archive_commit"],
+        "archive_path": archive["archive_path"],
+        "archive_ciphertext_sha256": archive["archive_ciphertext_sha256"],
+        "eligible_at": request["release"]["eligible_at"],
+        "plan_sha256": hashlib.sha256(canonical_json(plan).encode("utf-8")).hexdigest(),
+        "started_event_sha256": "",
+    }
+    if environment == "production":
+        if started_event_value is None:
+            raise ControllerError("production authority requires release.started")
+        started = _object(started_event_value, "release.started event")
+        if started.get("event_type") != "release.started":
+            raise ControllerError("authority event is not release.started")
+        if started.get("subject_id") != request["result"]["result_id"]:
+            raise ControllerError("release.started does not identify the plan result")
+        descriptor["started_event_id"] = _match(
+            UUID7, started.get("event_id"), "release.started event_id"
+        )
+        descriptor["started_event_sha256"] = hashlib.sha256(
+            canonical_json(started).encode("utf-8")
+        ).hexdigest()
+    elif started_event_value is not None:
+        raise ControllerError("staging authority must not include release.started")
+    if set(descriptor) != AUTHORITY_DESCRIPTOR_FIELDS:
+        raise AssertionError("authority descriptor fields drifted")
+    return descriptor
 
 
 def result_release_status_path(result_id: str) -> pathlib.PurePosixPath:
@@ -1024,6 +1098,16 @@ def main(argv: list[str] | None = None) -> int:
     staging.add_argument("--submission-id", required=True)
     staging.add_argument("--output", required=True, type=pathlib.Path)
 
+    authority = commands.add_parser("authority-descriptor")
+    authority.add_argument("--plan", required=True, type=pathlib.Path)
+    authority.add_argument("--state-commit", required=True)
+    authority.add_argument("--release-commit", required=True)
+    authority.add_argument(
+        "--environment", required=True, choices=["production", "staging"]
+    )
+    authority.add_argument("--started-event", type=pathlib.Path)
+    authority.add_argument("--output", required=True, type=pathlib.Path)
+
     transition = commands.add_parser("stage-state-transition")
     transition.add_argument("--state-root", required=True, type=pathlib.Path)
     transition.add_argument("--event", required=True, type=pathlib.Path)
@@ -1069,6 +1153,19 @@ def main(argv: list[str] | None = None) -> int:
                 staging_smoke_plan(
                     _read(args.queue, "staging release queue"),
                     args.submission_id,
+                ),
+            )
+        elif args.command == "authority-descriptor":
+            _write(
+                args.output,
+                authority_descriptor(
+                    _read(args.plan, "release plan"),
+                    args.state_commit,
+                    args.release_commit,
+                    args.environment,
+                    None
+                    if args.started_event is None
+                    else _read(args.started_event, "release.started event"),
                 ),
             )
         elif args.command == "stage-state-transition":

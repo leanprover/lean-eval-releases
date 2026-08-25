@@ -140,28 +140,22 @@ jq -e --arg mode "$mode" '
     "age_binary_sha256",
     "archive_ciphertext_sha256",
     "archive_sidecar_sha256",
+    "authority_descriptor_sha256",
     "authority_tail_blob",
     "mode",
-    "plan_sha256",
     "release_commit",
     "schema_version",
-    "started_event_sha256",
     "state_commit"
   ]) and
   .schema_version == 1 and (.schema_version | type) == "number" and
   .mode == $mode and
   (.release_commit | test("^[0-9a-f]{40}$")) and
+  (.state_commit | test("^[0-9a-f]{40}$")) and
   (.authority_tail_blob | test("^[0-9a-f]{40}$")) and
-  (.plan_sha256 | test("^[0-9a-f]{64}$")) and
+  (.authority_descriptor_sha256 | test("^[0-9a-f]{64}$")) and
   (.archive_sidecar_sha256 | test("^[0-9a-f]{64}$")) and
   (.archive_ciphertext_sha256 | test("^[0-9a-f]{64}$")) and
-  (.age_binary_sha256 | test("^[0-9a-f]{64}$")) and
-  (if $mode == "production" then
-    (.state_commit | test("^[0-9a-f]{40}$")) and
-    (.started_event_sha256 | test("^[0-9a-f]{64}$"))
-  else
-    .state_commit == "" and .started_event_sha256 == ""
-  end)
+  (.age_binary_sha256 | test("^[0-9a-f]{64}$"))
 ' "$proof" >/dev/null
 
 check_digest() {
@@ -171,32 +165,23 @@ check_digest() {
   test "$actual" = "$expected"
 }
 
-check_digest plan_sha256 "$RUNNER_TEMP/release-plan.json"
+check_digest authority_descriptor_sha256 "$RUNNER_TEMP/release-authority.json"
 check_digest archive_sidecar_sha256 "$RUNNER_TEMP/archive-sidecar.json"
 check_digest archive_ciphertext_sha256 "$RUNNER_TEMP/archive.tar.age"
 check_digest age_binary_sha256 "$RUNNER_TEMP/age-bin"
-if [ "$mode" = production ]; then
-  check_digest started_event_sha256 "$RUNNER_TEMP/release-started-event.json"
-fi
 
 release_commit=$(jq -er .release_commit "$proof")
 tail_blob=$(jq -er .authority_tail_blob "$proof")
 test "$(git rev-parse HEAD)" = "$release_commit"
 test "$(git rev-parse HEAD:scripts/release_authority_tail.sh)" = "$tail_blob"
 test "$(git hash-object scripts/release_authority_tail.sh)" = "$tail_blob"
-if [ "$mode" = production ]; then
-  test -z "$(git status --porcelain --untracked-files=all -- \
-    . ':(exclude)state')"
-else
-  test -z "$(git status --porcelain --untracked-files=all)"
-fi
+test -z "$(git status --porcelain --untracked-files=all -- \
+  . ':(exclude)state')"
 git diff --quiet HEAD --
 git diff --cached --quiet HEAD --
-if [ "$mode" = production ]; then
-  state_commit=$(jq -er .state_commit "$proof")
-  test "$(git -C state rev-parse HEAD)" = "$state_commit"
-  test -z "$(git -C state status --porcelain --untracked-files=all)"
-fi
+state_commit=$(jq -er .state_commit "$proof")
+test "$(git -C state rev-parse HEAD)" = "$state_commit"
+test -z "$(git -C state status --porcelain --untracked-files=all)"
 
 test "$($PYTHON_BIN -I -c 'import sys; print(".".join(map(str, sys.version_info[:2])))')" = 3.11
 

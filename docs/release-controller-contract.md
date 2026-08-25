@@ -39,9 +39,10 @@ permission. The separate authority job executes only pinned actions and
 literal workflow shell/Python before and during role assumption; it never
 executes a checked-out program while AWS or OIDC authority exists. The
 credential action is followed by exactly one final authored step. Its literal
-provider phase validates the complete execution plan, creates and invokes the
-exact one-use capability, and refuses every failure without executing checkout
-code. Only a successful provider and Lambda invocation reach the
+provider phase validates a fixed-field disclosure-safe authority descriptor,
+binds it to the exact sidecar, envelope, and ciphertext, creates and invokes
+the exact one-use capability, and refuses every failure without executing
+checkout code. Only a successful provider and Lambda invocation reach the
 empty-environment `exec -c` handoff.
 The final step installs literal scratch-cleanup `EXIT`, `INT`, and `TERM` traps
 as its first command, before resolving Python or inspecting the authority
@@ -66,18 +67,19 @@ failure, cancellation, and a failed closed-environment handoff remove the
 unwrap response, plaintext identity, and every staged private scratch file
 without executing checkout recovery code.
 
-The literal provider mirrors the whole execution-plan validator used by
-`prepare_unwrap`, including every closed nested field set, deterministic result
-identity, production metadata, controller qualification, archive and release
-path, and two-calendar-month embargo binding. It also includes the same closed
-sidecar and key-envelope checks: exact fields and integer schema versions,
+The literal provider validates only the closed authority descriptor defined by
+`schema/release-unwrap-authority-v1.schema.json`: exact release and State
+commits, production `release.started` identity/digest where applicable,
+canonical encrypted-archive locator/digest, eligibility, and private-plan
+digest. It also includes the closed sidecar and key-envelope checks: exact
+fields and integer schema versions,
 canonical UUIDs, repository and commit identifiers, canonical/nonempty bounded
 wrapped identity, recipient and adapter grammar, ciphertext size and all three
 digest bindings, and the exact archiver-run URL.
 `scripts/release_provider_literal.py` is a non-executed review mirror; tests
 require both workflow heredocs to equal it byte-for-byte, compare its accepted
-request with `prepare_unwrap` under fixed time and randomness, and adversarially
-mutate every plan field and nested object to prove rejection parity. The
+request with `prepare_unwrap` under fixed time and randomness, and
+adversarially mutate every descriptor field and binding. The
 capability is still created immediately before invocation, never passed between
 jobs, so approval or runner queue time cannot consume its five-minute lifetime.
 
@@ -86,18 +88,23 @@ credentials and GitHub OIDC request handles; inability to read that environment
 or any surviving authority name fails closed. It makes no claim about the
 runner-parent process because `/usr/bin/setsid --wait` may fork depending on
 process-group topology. The sanitizer then validates a closed pre-authority
-staging record, hashes every staged input
-and the age binary, proves the release and production State checkouts remain at
+staging record, hashes the authority descriptor, every encrypted input,
+and the age binary, proves the release and State checkouts remain at
 the exact planned commits with no tracked, cached, or untracked change, and
 proves the tail's working bytes are the exact Git blob at that release commit.
-In production the root status check excludes only the intentional nested
+In both modes the root status check excludes only the intentional nested
 `state/` checkout, whose exact head and complete cleanliness are checked
 separately; every other root untracked path remains forbidden.
 `scripts/release_sanitizer_literal.sh` is only its
 non-executed review mirror; tests require both workflow heredocs to equal it.
-Only after every literal proof succeeds does it execute the checked-out tail to
-validate the Lambda response, decrypt, reconstruct, publish, write terminal or
-retryable-failure State, and run trap-based source cleanup. Every checked-out
+Only after every literal proof succeeds does it execute the checked-out tail.
+That tail first verifies the reviewed State contract, then materializes the
+exact pinned State history and deterministically
+reconstructs the complete private execution plan (and, in production, the
+exact committed `release.started` body), rejects any descriptor digest or
+causality mismatch, then validates the Lambda response, decrypts, reconstructs
+source, publishes, writes terminal or retryable-failure State, and runs
+trap-based source cleanup. Every checked-out
 Python entry point runs under `-I` through a literal launcher which adds only
 that exact-clean checkout's script directory after isolated standard-library
 startup, blocking ambient or untracked import shadowing. The encrypted audit
@@ -107,10 +114,16 @@ encrypted audit object remains in its private checkout; neither the identity
 nor plaintext nor private archive crosses a job boundary or is uploaded. No
 later authored step can receive a new OIDC request handle; only the pinned
 actions' post-job cleanup remains.
-The canonical execution plan and source-free `release.started` event do cross
-the production job-output boundary as base64 control data. They contain no
-plaintext archive or identity, and workflow code neither logs them nor uploads
-them as artifacts.
+The canonical execution plan and `release.started` body never cross a job-output
+boundary. Job outputs and ordinary step environments contain only explicitly
+disclosure-safe identifiers: exact release/State/audit commits, the canonical
+encrypted archive path and ciphertext digest, eligibility, the private-plan
+digest, and in production the `release.started` UUID and digest. The descriptor
+cannot reveal owner/model or `production_metadata.prompt`/`notes`; no workflow
+log, step summary, or artifact receives those private values. State validation
+and materialization output used for reconstruction is captured or suppressed;
+only a generic fail-closed diagnostic can reach the log. Base64 is not treated
+as confidentiality.
 
 Before invocation, literal code also scans the current AWS/OIDC values and
 their canonical variable names under `$RUNNER_TEMP/_runner_file_commands` and
@@ -131,7 +144,8 @@ private-key inventory.
 The production failure trap is installed at the beginning of the checked-out
 tail, which can be reached only after the literal authority and checkout proof.
 Any later failure first removes the unwrap response, identity, plaintext tar,
-private archive, sidecar, release plan, completed or in-progress hidden
+private archive, sidecar, authority descriptor, reconstructed release plan,
+completed or in-progress hidden
 reconstruction directories, and State
 materialization, preserving only the committed non-source `release.started`
 event needed by retry recording. Only after that synchronous erasure may it

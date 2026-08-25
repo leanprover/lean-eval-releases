@@ -68,6 +68,13 @@ runpy.run_path(str(path), run_name="__main__")
 ' "$@"
 }
 
+run_exact_python_quiet() {
+  if ! run_exact_python "$@" >/dev/null 2>&1; then
+    echo "private release validation failed closed" >&2
+    return 1
+  fi
+}
+
 require_private_regular() {
   local path=$1
   [ -f "$path" ] && [ ! -L "$path" ]
@@ -172,6 +179,30 @@ esac
 [ -x "$PYTHON_BIN" ]
 "$PYTHON_BIN" -I -c 'import sys; assert sys.version_info[:2] == (3, 11)'
 
+run_exact_python_quiet scripts/verify_release_state_contract.py \
+  --environment "$mode" \
+  --state-root state
+
+reconstruct_arguments=(
+  scripts/reconstruct_release_plan.py
+  --authority "$RUNNER_TEMP/release-authority.json"
+  --state-root state
+  --release-root .
+  --scratch-root "$RUNNER_TEMP"
+  --output "$RUNNER_TEMP/release-plan.json"
+)
+if [ "$mode" = production ]; then
+  reconstruct_arguments+=(
+    --started-event-output "$RUNNER_TEMP/release-started-event.json"
+  )
+fi
+run_exact_python "${reconstruct_arguments[@]}"
+unset reconstruct_arguments
+require_private_regular "$RUNNER_TEMP/release-plan.json"
+if [ "$mode" = production ]; then
+  require_private_regular "$RUNNER_TEMP/release-started-event.json"
+fi
+
 if [ "$mode" = staging ]; then
   : "${GITHUB_STEP_SUMMARY:?}"
   submission_id=$(jq -er .request.submission.submission_id \
@@ -227,11 +258,8 @@ git -C state show "HEAD:$started_event_path" \
   > "$RUNNER_TEMP/committed-release-started-event.json"
 cmp "$RUNNER_TEMP/release-started-event.json" \
   "$RUNNER_TEMP/committed-release-started-event.json"
-run_exact_python scripts/verify_release_state_contract.py \
-  --environment production \
-  --state-root state
-run_exact_python state/scripts/state.py --root state validate
-run_exact_python state/scripts/state.py --root state materialize \
+run_exact_python_quiet state/scripts/state.py --root state validate
+run_exact_python_quiet state/scripts/state.py --root state materialize \
   --output "$RUNNER_TEMP/state-views"
 
 require_private_regular "$RUNNER_TEMP/unwrap-request.json"
