@@ -8,9 +8,11 @@ OIDC authority exists. Tests enforce that both embedded copies remain exact.
 from __future__ import annotations
 
 import base64
+import calendar
 import datetime as dt
 import hashlib
 import json
+import math
 import os
 import pathlib
 import re
@@ -22,6 +24,8 @@ from typing import Any
 UUID7 = re.compile(
     r"[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}"
 )
+RESULT_ID = re.compile(r"r2_[0-9a-f]{64}")
+LOGIN = re.compile(r"[a-z\d](?:[a-z\d-]{0,37}[a-z\d])?")
 PROBLEM = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}")
 REPOSITORY = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")
 COMMIT = re.compile(r"[0-9a-f]{40}")
@@ -34,6 +38,36 @@ MAX_WRAPPED_BYTES = 16_384
 MAX_SCAN_FILES = 1024
 MAX_SCAN_FILE_BYTES = 8 * 1024 * 1024
 MAX_SCAN_TOTAL_BYTES = 32 * 1024 * 1024
+STATE_RELEASE_CONTRACT_COMMIT = "a53c658a2de2188675134dc2890285fbaa17cf5a"
+
+CONTROLLER_QUALIFICATION_FIELDS = {
+    "schema_version",
+    "environment",
+    "mode",
+    "release_repository",
+    "release_commit",
+    "state_repository",
+    "state_commit",
+    "state_contract_commit",
+    "state_source_event_count",
+    "state_source_digest",
+    "release_queue_sha256",
+    "acceptance_snapshot_sha256",
+}
+METADATA_FIELDS = {
+    "credit_identity",
+    "component_models",
+    "harness",
+    "human_involvement",
+    "web_access",
+    "wall_time_seconds",
+    "input_tokens",
+    "output_tokens",
+    "cost_usd",
+    "billing_mode",
+    "prompt",
+    "notes",
+}
 
 SIDECAR_REQUIRED_FIELDS = {
     "schema_version",
@@ -90,6 +124,15 @@ def _object(value: Any, label: str) -> dict[str, Any]:
     return value
 
 
+def _fields(value: dict[str, Any], expected: set[str], label: str) -> None:
+    if set(value) != expected:
+        raise ProviderError(
+            f"{label} fields are not canonical; "
+            f"missing={sorted(expected - set(value))}, "
+            f"extra={sorted(set(value) - expected)}"
+        )
+
+
 def _match(pattern: re.Pattern[str], value: Any, label: str) -> str:
     if not isinstance(value, str) or pattern.fullmatch(value) is None:
         raise ProviderError(f"{label} is invalid")
@@ -100,6 +143,283 @@ def _bounded_integer(value: Any, label: str) -> int:
     if type(value) is not int or not 0 <= value <= MAX_SAFE_INTEGER:
         raise ProviderError(f"{label} must be a nonnegative safe integer")
     return value
+
+
+def _safe_integer(value: Any, label: str, minimum: int) -> int:
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, int)
+        or not minimum <= value <= MAX_SAFE_INTEGER
+    ):
+        raise ProviderError(f"{label} must be a safe integer >= {minimum}")
+    return value
+
+
+def _parse_utc_milliseconds(value: Any, label: str) -> dt.datetime:
+    if not isinstance(value, str):
+        raise ProviderError(f"{label} must be a timestamp string")
+    try:
+        parsed = dt.datetime.strptime(value, "%Y-%m-%dT%H:%M:%S.%fZ").replace(
+            tzinfo=dt.UTC
+        )
+    except ValueError as error:
+        raise ProviderError(f"{label} must be canonical UTC milliseconds") from error
+    if parsed.strftime("%Y-%m-%dT%H:%M:%S.%fZ")[:-4] + "Z" != value:
+        raise ProviderError(f"{label} must be canonical UTC milliseconds")
+    return parsed
+
+
+def _eligible_at(value: Any, label: str) -> str:
+    accepted = _parse_utc_milliseconds(value, label)
+    month_index = accepted.year * 12 + accepted.month + 1
+    year, zero_based_month = divmod(month_index, 12)
+    month = zero_based_month + 1
+    day = min(accepted.day, calendar.monthrange(year, month)[1])
+    eligible = accepted.replace(year=year, month=month, day=day)
+    return eligible.strftime("%Y-%m-%dT%H:%M:%S.%fZ")[:-4] + "Z"
+
+
+def _metadata_text(value: Any, label: str, maximum: int) -> None:
+    if (
+        not isinstance(value, str)
+        or not value
+        or len(value) > maximum
+        or any(ord(character) <= 0x1F or ord(character) == 0x7F for character in value)
+    ):
+        raise ProviderError(
+            f"{label} must be non-empty control-free text of at most "
+            f"{maximum} code points"
+        )
+
+
+def _production_metadata(value: Any, label: str) -> dict[str, Any]:
+    metadata = _object(value, label)
+    if not set(metadata) <= METADATA_FIELDS:
+        raise ProviderError(f"{label} has unknown fields")
+    text_limits = {
+        "credit_identity": 256,
+        "harness": 1024,
+        "human_involvement": 1024,
+        "prompt": 8192,
+        "notes": 4096,
+    }
+    for key, item in metadata.items():
+        item_label = f"{label}.{key}"
+        if key in text_limits:
+            _metadata_text(item, item_label, text_limits[key])
+        elif key == "component_models":
+            if not isinstance(item, list) or len(item) > 16:
+                raise ProviderError(f"{item_label} must have at most 16 entries")
+            for index, component in enumerate(item):
+                _metadata_text(component, f"{item_label}[{index}]", 256)
+        elif key == "web_access":
+            if not isinstance(item, bool):
+                raise ProviderError(f"{item_label} must be boolean")
+        elif key in {"wall_time_seconds", "cost_usd"}:
+            maximum = 31_536_000 if key == "wall_time_seconds" else 1_000_000
+            if (
+                isinstance(item, bool)
+                or not isinstance(item, (int, float))
+                or not math.isfinite(item)
+                or not 0 <= item <= maximum
+            ):
+                raise ProviderError(f"{item_label} must be finite and in range")
+        elif key in {"input_tokens", "output_tokens"}:
+            _safe_integer(item, item_label, 0)
+        elif key == "billing_mode" and item not in {
+            "api",
+            "subscription",
+            "unknown",
+        }:
+            raise ProviderError(f"{item_label} is invalid")
+    return metadata
+
+
+def _result_id(login: str, model: str, problem_id: str, revision: int) -> str:
+    canonical = json.dumps(
+        [login.lower(), model, problem_id, revision],
+        ensure_ascii=False,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return "r2_" + hashlib.sha256(b"lean-eval-result-v2\0" + canonical).hexdigest()
+
+
+def _validate_controller_binding(value: Any) -> dict[str, Any]:
+    qualification = _object(value, "controller qualification")
+    _fields(
+        qualification,
+        CONTROLLER_QUALIFICATION_FIELDS,
+        "controller qualification",
+    )
+    if (
+        qualification["schema_version"] != 1
+        or isinstance(qualification["schema_version"], bool)
+        or qualification["environment"] != "production"
+        or qualification["mode"] != "publication"
+        or qualification["release_repository"]
+        != "leanprover/lean-eval-releases"
+        or qualification["state_repository"] != "leanprover/lean-eval-state"
+        or qualification["state_contract_commit"]
+        != STATE_RELEASE_CONTRACT_COMMIT
+    ):
+        raise ProviderError("controller qualification identity is invalid")
+    for field in ("release_commit", "state_commit"):
+        _match(COMMIT, qualification[field], f"controller qualification.{field}")
+    for field in (
+        "state_source_digest",
+        "release_queue_sha256",
+        "acceptance_snapshot_sha256",
+    ):
+        _match(DIGEST, qualification[field], f"controller qualification.{field}")
+    _safe_integer(
+        qualification["state_source_event_count"],
+        "controller qualification.state_source_event_count",
+        1,
+    )
+    return qualification
+
+
+def validate_execution_plan(value: Any) -> dict[str, Any]:
+    """Mirror the complete plan validator used by ``prepare_unwrap``."""
+    plan = _object(value, "release plan")
+    _fields(
+        plan,
+        {"schema_version", "kind", "started_transition", "request"},
+        "release plan",
+    )
+    if plan["schema_version"] != 1 or isinstance(plan["schema_version"], bool):
+        raise ProviderError("release plan schema_version must be integer 1")
+    if plan["kind"] != "execution":
+        raise ProviderError("release plan must contain one execution")
+
+    started = _object(plan["started_transition"], "started_transition")
+    _fields(
+        started,
+        {"event_type", "subject_id", "causation_event_id", "payload"},
+        "started_transition",
+    )
+    if started["event_type"] != "release.started":
+        raise ProviderError("started transition must be release.started")
+    subject = _match(
+        RESULT_ID, started["subject_id"], "started_transition.subject_id"
+    )
+    _match(
+        UUID7,
+        started["causation_event_id"],
+        "started_transition.causation_event_id",
+    )
+    started_payload = _object(started["payload"], "started_transition.payload")
+    _fields(started_payload, {"attempt"}, "started_transition.payload")
+    _safe_integer(started_payload["attempt"], "started_transition.payload.attempt", 1)
+
+    request = _object(plan["request"], "request")
+    request_fields = {"schema_version", "result", "submission", "archive", "release"}
+    if "controller" in request:
+        request_fields.add("controller")
+    _fields(request, request_fields, "request")
+    if request["schema_version"] != 1 or isinstance(
+        request["schema_version"], bool
+    ):
+        raise ProviderError("request schema_version must be integer 1")
+    if "controller" in request:
+        _validate_controller_binding(request["controller"])
+
+    result = _object(request["result"], "request.result")
+    _fields(
+        result,
+        {"result_id", "problem_id", "statement_revision", "commit", "tree_digest"},
+        "request.result",
+    )
+    identity = _match(RESULT_ID, result["result_id"], "request.result.result_id")
+    problem = _match(PROBLEM, result["problem_id"], "request.result.problem_id")
+    revision = _safe_integer(
+        result["statement_revision"], "request.result.statement_revision", 1
+    )
+    _match(COMMIT, result["commit"], "request.result.commit")
+    _match(DIGEST, result["tree_digest"], "request.result.tree_digest")
+    if identity != subject:
+        raise ProviderError("started transition subject differs from result_id")
+
+    submission = _object(request["submission"], "request.submission")
+    _fields(
+        submission,
+        {"submission_id", "owner_login", "declared_model", "production_metadata"},
+        "request.submission",
+    )
+    submission_id = _match(
+        UUID7,
+        submission["submission_id"],
+        "request.submission.submission_id",
+    )
+    login = _match(LOGIN, submission["owner_login"], "request.submission.owner_login")
+    model = submission["declared_model"]
+    if (
+        not isinstance(model, str)
+        or not model
+        or len(model.encode("utf-8")) > 256
+        or any(ord(character) <= 0x1F or ord(character) == 0x7F for character in model)
+    ):
+        raise ProviderError("request.submission.declared_model is invalid")
+    if identity != _result_id(login, model, problem, revision):
+        raise ProviderError("request result_id does not match its deterministic identity")
+    _production_metadata(
+        submission["production_metadata"],
+        "request.submission.production_metadata",
+    )
+
+    archive = _object(request["archive"], "request.archive")
+    _fields(
+        archive,
+        {
+            "archive_repository",
+            "archive_commit",
+            "archive_path",
+            "archive_ciphertext_sha256",
+            "encrypted",
+        },
+        "request.archive",
+    )
+    _match(
+        REPOSITORY,
+        archive["archive_repository"],
+        "request.archive.archive_repository",
+    )
+    _match(COMMIT, archive["archive_commit"], "request.archive.archive_commit")
+    _match(
+        DIGEST,
+        archive["archive_ciphertext_sha256"],
+        "request.archive.archive_ciphertext_sha256",
+    )
+    canonical_archive = (
+        f"archives/{submission_id.replace('-', '')[:2]}/{submission_id}.tar.age"
+    )
+    if archive["archive_path"] != canonical_archive:
+        raise ProviderError("request archive_path does not match submission_id")
+    if archive["encrypted"] is not True:
+        raise ProviderError("request archive must be encrypted")
+
+    release = _object(request["release"], "request.release")
+    _fields(
+        release,
+        {"accepted_at", "eligible_at", "path", "license"},
+        "request.release",
+    )
+    accepted = release["accepted_at"]
+    eligible = release["eligible_at"]
+    _parse_utc_milliseconds(accepted, "request.release.accepted_at")
+    eligible_instant = _parse_utc_milliseconds(
+        eligible, "request.release.eligible_at"
+    )
+    if eligible != _eligible_at(accepted, "request.release.accepted_at"):
+        raise ProviderError("request release eligibility is not two UTC calendar months")
+    canonical_release = (
+        f"releases/{eligible_instant.year:04d}/{eligible_instant.month:02d}/{identity}"
+    )
+    if release["path"] != canonical_release:
+        raise ProviderError("request release path is not canonical")
+    if release["license"] != "Apache-2.0":
+        raise ProviderError("request release license must be Apache-2.0")
+    return plan
 
 
 def _canonical_base64(value: Any, label: str, maximum: int) -> bytes:
@@ -299,32 +619,13 @@ def build_request(
     random_bytes: bytes | None = None,
     runner_nonce: str | None = None,
 ) -> dict[str, Any]:
-    plan = _object(plan_value, "release plan")
-    if plan.get("kind") != "execution":
-        raise ProviderError("release plan must contain one execution")
-    request = _object(plan.get("request"), "release request")
-    archive = _object(request.get("archive"), "release archive")
-    submission = _object(request.get("submission"), "release submission")
-    submission_id = _match(
-        UUID7, submission.get("submission_id"), "release submission_id"
-    )
-    _match(
-        REPOSITORY,
-        archive.get("archive_repository"),
-        "release archive repository",
-    )
-    _match(COMMIT, archive.get("archive_commit"), "release archive commit")
-    archive_path = archive.get("archive_path")
-    prefix = submission_id.replace("-", "")[:2]
-    if archive_path != f"archives/{prefix}/{submission_id}.tar.age":
-        raise ProviderError("release archive path is not canonical")
-    archive_digest = _match(
-        DIGEST,
-        archive.get("archive_ciphertext_sha256"),
-        "release archive digest",
-    )
-    if archive.get("encrypted") is not True:
-        raise ProviderError("release archive must be encrypted")
+    plan = validate_execution_plan(plan_value)
+    request = plan["request"]
+    archive = request["archive"]
+    submission = request["submission"]
+    submission_id = submission["submission_id"]
+    archive_path = archive["archive_path"]
+    archive_digest = archive["archive_ciphertext_sha256"]
     sidecar = validate_sidecar(sidecar_value, ciphertext)
     envelope = validate_envelope(sidecar.get("key_envelope"))
     actual_digest = hashlib.sha256(ciphertext).hexdigest()

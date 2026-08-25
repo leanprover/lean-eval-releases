@@ -38,36 +38,49 @@ permission. The separate authority job executes only pinned actions and
 literal workflow shell/Python before and during role assumption; it never
 executes a checked-out program while AWS or OIDC authority exists. The
 credential action is followed by exactly one final authored step. Its literal
-provider phase creates and invokes the exact one-use capability, then
-`exec env -i` replaces the secret-bearing shell with a closed-environment
-process before the checked-out tail begins.
+provider phase validates the complete execution plan, creates and invokes the
+exact one-use capability, and refuses every failure without executing checkout
+code. Only a successful provider and Lambda invocation reach `exec env -i`.
+That replaces the secret-bearing shell with a closed-environment process which
+executes a second literal workflow program, not a checkout.
 
-The literal provider includes the same closed sidecar and key-envelope checks
-as `prepare_unwrap`: exact fields and integer schema versions, canonical UUIDs,
-repository and commit identifiers, canonical/nonempty bounded wrapped identity,
-recipient and adapter grammar, ciphertext size and all three digest bindings,
-and the exact archiver-run URL. `scripts/release_provider_literal.py` is a
-non-executed review mirror; tests require both workflow heredocs to equal it
-byte-for-byte and compare its accepted request with `prepare_unwrap` under
-fixed time and randomness. The capability is still created immediately before
-invocation, never passed between jobs, so approval or runner queue time cannot
-consume its five-minute lifetime.
+The literal provider mirrors the whole execution-plan validator used by
+`prepare_unwrap`, including every closed nested field set, deterministic result
+identity, production metadata, controller qualification, archive and release
+path, and two-calendar-month embargo binding. It also includes the same closed
+sidecar and key-envelope checks: exact fields and integer schema versions,
+canonical UUIDs, repository and commit identifiers, canonical/nonempty bounded
+wrapped identity, recipient and adapter grammar, ciphertext size and all three
+digest bindings, and the exact archiver-run URL.
+`scripts/release_provider_literal.py` is a non-executed review mirror; tests
+require both workflow heredocs to equal it byte-for-byte, compare its accepted
+request with `prepare_unwrap` under fixed time and randomness, and adversarially
+mutate every plan field and nested object to prove rejection parity. The
+capability is still created immediately before invocation, never passed between
+jobs, so approval or runner queue time cannot consume its five-minute lifetime.
 
-The tail's first operation scans both `/proc/self/environ` and its runner
-parent's `/proc` environment for AWS credentials and GitHub OIDC request
+The post-`env -i` literal sanitizer scans both `/proc/self/environ` and its
+runner parent's `/proc` environment for AWS credentials and GitHub OIDC request
 handles. GitHub's runner is expected to pass step-scoped values only to the
 spawned step process, not retain them in the runner process; inability to read
-either environment or any surviving authority name fails closed. Only after
-that proof does the tail validate the Lambda response, decrypt, reconstruct,
-publish, write terminal or retryable-failure State, and run trap-based source
-cleanup. The encrypted audit object remains in its private checkout; neither
-the identity nor plaintext nor private archive crosses a job boundary or is
-uploaded. No later authored step can receive a new OIDC request handle; only
-the pinned actions' post-job cleanup remains.
+either environment or any surviving authority name fails closed. The sanitizer
+then validates a closed pre-authority staging record, hashes every staged input
+and the age binary, proves the release and production State checkouts remain at
+the exact planned commits, and proves the tail's working bytes are the exact Git
+blob at that release commit. `scripts/release_sanitizer_literal.sh` is only its
+non-executed review mirror; tests require both workflow heredocs to equal it.
+Only after every literal proof succeeds does it execute the checked-out tail to
+validate the Lambda response, decrypt, reconstruct, publish, write terminal or
+retryable-failure State, and run trap-based source cleanup. The encrypted audit
+object remains in its private checkout; neither the identity nor plaintext nor
+private archive crosses a job boundary or is uploaded. No later authored step
+can receive a new OIDC request handle; only the pinned actions' post-job cleanup
+remains.
 
 Before invocation, literal code also scans the current AWS/OIDC values and
 their canonical variable names under `$RUNNER_TEMP/_runner_file_commands` and
-`$HOME/.aws`; the sanitized tail repeats the name scan before checkout code.
+`$HOME/.aws`; the post-`env -i` literal sanitizer repeats the name scan before
+checkout code.
 Symlinks, special files, unreadable paths, and bounded-scan overflow fail
 closed. This proves only those runner-owned credential locations and the two
 process environments; it does not claim a whole-disk or other-process memory
@@ -78,23 +91,31 @@ Git auth remains and that the only private-key files left in production are
 the two exact paths referenced by the release and State Git configurations
 (zero remain in staging).
 
-The production failure trap is installed before environment guards or proofs.
-After authority is proven, any failure attempts a compare-and-swap
-`release.failed`; after publication it preserves recovery semantics instead.
-If the tail is missing, State checkout is unavailable, or the authority proof
-itself fails, executing checked-out recovery code would violate the boundary,
-so the trap cleans what it safely can and leaves the committed
-`release.started` for the next controller's one-hour interrupted-run recovery.
+The production failure trap is installed at the beginning of the checked-out
+tail, which can be reached only after the literal authority and checkout proof.
+Any later failure attempts a compare-and-swap `release.failed`; after
+publication it preserves recovery semantics instead. If role assumption,
+provider validation, Lambda invocation, literal sanitation, pre-authority
+staging, or exact-checkout proof fails, executing checked-out recovery code
+would violate the boundary. Those failure paths perform only literal scratch
+cleanup and leave the committed `release.started` for the next controller's
+one-hour interrupted-run recovery.
 
 Both split production jobs require environment-scoped keys and therefore name
-`release-production`. A read-only GitHub API check on 2026-08-25 showed its
+`release-production`. The second environment deployment occurs after
+`release.started`, and its protection rules, variables, and secrets are mutable
+external state. This is an explicit publication-launch blocker, not a property
+proved by repository CI. A read-only GitHub API check on 2026-08-25 showed its
 only protection rule was the protected-branch policy: no reviewers and no wait
-timer, so the second deployment does not introduce another manual approval or
-timer after `release.started`. This must be read back again before enabling the
-publication latch. The workflow-level non-cancelling concurrency group prevents
-a later controller from recovering while the authority job is still queued or
-running; the one-hour stale threshold applies only after that workflow ends or
-is interrupted.
+timer, so that snapshot would not introduce another manual approval or timer.
+An authenticated operator must read back and record the environment protection
+rules again immediately before enabling the publication latch, after the last
+environment change and after both credential preflights pass; any reviewer,
+wait-timer, branch-policy, role-variable, or credential drift keeps publication
+disabled. The workflow-level non-cancelling concurrency group prevents a later
+controller from recovering while the authority job is still queued or running;
+the one-hour stale threshold applies only after that workflow ends or is
+interrupted.
 
 The manual production OIDC preflight tests only that separate trust boundary.
 An environment-free guard requires the exact upstream `main` ref and explicit
