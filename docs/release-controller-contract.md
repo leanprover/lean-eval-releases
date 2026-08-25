@@ -47,12 +47,18 @@ command, before resolving Python or inspecting the authority result. A direct
 `exec -c` into the absolute system Bash then replaces the secret-bearing shell
 with an empty-environment process which installs the same literal cleanup trap
 before executing a second literal workflow program, not a checkout. A literal
-cleanup watchdog holds the read end of an inherited pipe; the final authority
-process, sanitizer, and checked-out tail retain its write descriptor, so even
-an `exec` failure (for which Bash does not run `EXIT`) closes the pipe and
-triggers the same cleanup. Thus both early setup failure and a failed
-closed-environment handoff remove the unwrap response, plaintext identity, and
-every staged private scratch file without executing checkout code.
+cleanup watchdog is created only after the authority shell unsets every AWS and
+OIDC variable, and it immediately replaces its short-lived coprocess fork with
+an empty-environment `exec -c`; only the private scratch path crosses that exec
+as a positional argument. The sanitized watchdog emits a fixed readiness token
+over its dedicated output pipe. The trusted parent must read that exact token
+before it duplicates the watchdog input onto the descriptor inherited by the
+sanitizer and checked-out tail, so the handoff cannot race the watchdog's
+environment-clearing exec. Closing that descriptor, including after a failed
+handoff exec, wakes the watchdog and triggers the same cleanup. Thus both early
+setup failure and a failed closed-environment handoff remove the unwrap
+response, plaintext identity, and every staged private scratch file without
+executing checkout code.
 
 The literal provider mirrors the whole execution-plan validator used by
 `prepare_unwrap`, including every closed nested field set, deterministic result

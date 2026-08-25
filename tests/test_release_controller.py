@@ -12,6 +12,7 @@ import shutil
 import subprocess
 import tempfile
 import textwrap
+import time
 import unittest
 
 from scripts import release_provider_literal
@@ -685,16 +686,39 @@ class ReleaseControllerTests(unittest.TestCase):
             )
             final = str(workflow_job_steps(workflow, job_name)[-1]["text"])
             body = final.split("        run: |\n", 1)[1]
-            self.assertTrue(body.startswith("          trap 'status=$?\n"))
+            self.assertTrue(
+                body.startswith(
+                    "          # shellcheck disable=SC2154  # Assigned inside "
+                    "this first-command EXIT trap.\n"
+                    "          trap 'status=$?\n"
+                )
+            )
             set_line = "          set -euo pipefail\n"
             prologue_end = body.index(set_line) + len(set_line)
             prologue = textwrap.dedent(body[:prologue_end]).replace(
                 "/usr/bin/rm", str(rm)
             )
-            handoff = body.index("exec -c /usr/bin/bash")
+            authority_unset = body.index(
+                "unset AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN"
+            )
+            watchdog = body.index(
+                "coproc RELEASE_CLEANUP_WATCHDOG {",
+                authority_unset,
+            )
+            handoff = body.index(
+                "exec -c /usr/bin/bash --noprofile --norc -s --",
+                watchdog,
+            )
+            self.assertLess(authority_unset, watchdog)
+            self.assertLess(watchdog, handoff)
             self.assertNotIn(
                 "scripts/release_authority_tail.sh",
                 body[prologue_end:handoff],
+            )
+            watchdog_boundary = textwrap.dedent(
+                body[authority_unset:handoff]
+            ).replace("/usr/bin/bash", str(bash)).replace(
+                "/usr/bin/rm", str(rm)
             )
 
             with tempfile.TemporaryDirectory() as temporary:
@@ -736,8 +760,13 @@ class ReleaseControllerTests(unittest.TestCase):
                     self.assertFalse((cleanup_root / "state-views").exists())
 
                 for label, failure in (
-                    ("early", "false\n"),
-                    ("handoff", "exec /definitely/missing/lean-eval-bash\n"),
+                    ("early", prologue + "false\n"),
+                    (
+                        "handoff",
+                        prologue
+                        + watchdog_boundary
+                        + "exec /definitely/missing/lean-eval-bash\n",
+                    ),
                 ):
                     with self.subTest(
                         workflow=workflow_name,
@@ -745,7 +774,7 @@ class ReleaseControllerTests(unittest.TestCase):
                     ):
                         populate()
                         failed = subprocess.run(
-                            [str(bash), "-c", prologue + failure],
+                            [str(bash), "-c", failure],
                             check=False,
                             capture_output=True,
                             text=True,
@@ -753,6 +782,122 @@ class ReleaseControllerTests(unittest.TestCase):
                         )
                         self.assertNotEqual(failed.returncode, 0)
                         assert_clean()
+
+                authority = {
+                    "AWS_ACCESS_KEY_ID": "hostile-access-key",
+                    "AWS_SECRET_ACCESS_KEY": "hostile-secret-key",
+                    "AWS_SESSION_TOKEN": "hostile-session-token",
+                    "ACTIONS_ID_TOKEN_REQUEST_TOKEN": "hostile-oidc-token",
+                    "ACTIONS_ID_TOKEN_REQUEST_URL": "https://hostile.invalid/oidc",
+                    "UNRELATED_SECRET": "hostile-unrelated-secret",
+                }
+                checkout_probe = watchdog_boundary + textwrap.dedent(
+                    f"""\
+                    exec -c {bash} --noprofile --norc -s -- {runner} <<'CHECKOUT'
+                    expected_runner=$1
+                    watchdog=
+                    for attempt in {{1..10000}}; do
+                      for cmdline in /proc/[0-9]*/cmdline; do
+                        [ -r "$cmdline" ] || continue
+                        marked=false
+                        while IFS= read -r -d '' argument; do
+                          if [ "$marked" = true ] && [ "$argument" = "$expected_runner" ]; then
+                            watchdog=${{cmdline%/cmdline}}
+                            break 3
+                          fi
+                          [ "$argument" = lean-eval-release-cleanup-watchdog-v1 ] && \
+                            marked=true || marked=false
+                        done < "$cmdline" 2>/dev/null || :
+                      done
+                    done
+                    [ -n "$watchdog" ]
+                    count=0
+                    while IFS= read -r -d '' entry; do
+                      count=$((count + 1))
+                      case "$entry" in
+                        AWS_ACCESS_KEY_ID=*|AWS_SECRET_ACCESS_KEY=*|AWS_SESSION_TOKEN=*|ACTIONS_ID_TOKEN_REQUEST_TOKEN=*|ACTIONS_ID_TOKEN_REQUEST_URL=*|UNRELATED_SECRET=*)
+                          printf 'watchdog retained secret environment: %s\\n' "$entry" >&2
+                          exit 1
+                          ;;
+                        *=hostile-access-key|*=hostile-secret-key|*=hostile-session-token|*=hostile-oidc-token|*=https://hostile.invalid/oidc|*=hostile-unrelated-secret)
+                          printf 'watchdog retained hostile value: %s\\n' "$entry" >&2
+                          exit 1
+                          ;;
+                      esac
+                    done < "$watchdog/environ"
+                    [ "$count" -eq 0 ]
+                    CHECKOUT
+                    """
+                )
+                clean_watchdog = subprocess.run(
+                    [str(bash), "-c", checkout_probe],
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
+                    env={"RUNNER_TEMP": str(runner), **authority},
+                )
+                self.assertEqual(
+                    clean_watchdog.returncode,
+                    0,
+                    clean_watchdog.stderr,
+                )
+
+                pre_exec = runner / "watchdog-pre-exec"
+                allow_exec = runner / "allow-watchdog-exec"
+                checkout_started = runner / "checkout-started"
+                delayed_boundary = watchdog_boundary.replace(
+                    f"exec -c {bash}",
+                    textwrap.dedent(
+                        f"""\
+                        printf '%s\\n' "$BASHPID" > {pre_exec}
+                        while [ ! -e {allow_exec} ]; do :; done
+                        exec -c {bash}
+                        """
+                    ).rstrip(),
+                    1,
+                )
+                delayed_probe = delayed_boundary + textwrap.dedent(
+                    f"""\
+                    exec -c {bash} --noprofile --norc -s -- {runner} <<'CHECKOUT'
+                    : > "$1/checkout-started"
+                    CHECKOUT
+                    """
+                )
+                delayed = subprocess.Popen(
+                    [str(bash), "-c", delayed_probe],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    env={"RUNNER_TEMP": str(runner), **authority},
+                )
+                deadline = time.monotonic() + 5
+                while (
+                    not pre_exec.exists()
+                    and delayed.poll() is None
+                    and time.monotonic() < deadline
+                ):
+                    time.sleep(0.01)
+                reached_pre_exec = pre_exec.exists()
+                crossed_barrier_early = checkout_started.exists()
+                inherited_environment = b""
+                if reached_pre_exec:
+                    pre_exec_pid = int(
+                        pre_exec.read_text(encoding="ascii").strip()
+                    )
+                    inherited_environment = (
+                        pathlib.Path("/proc") / str(pre_exec_pid) / "environ"
+                    ).read_bytes()
+                allow_exec.write_text("continue\n", encoding="utf-8")
+                _, delayed_stderr = delayed.communicate(timeout=10)
+                self.assertTrue(reached_pre_exec, delayed_stderr)
+                self.assertIn(
+                    b"UNRELATED_SECRET=hostile-unrelated-secret\0",
+                    inherited_environment,
+                )
+                self.assertFalse(crossed_barrier_early, delayed_stderr)
+                self.assertEqual(delayed.returncode, 0, delayed_stderr)
+                self.assertTrue(checkout_started.exists())
 
     def test_literal_provider_is_exact_and_prepare_unwrap_equivalent(self) -> None:
         source = (ROOT / "scripts/release_provider_literal.py").read_text(
