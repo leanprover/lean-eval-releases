@@ -4,6 +4,7 @@ import base64
 import copy
 import datetime as dt
 import hashlib
+import io
 import json
 import os
 import pathlib
@@ -384,15 +385,59 @@ class ReleaseControllerTests(unittest.TestCase):
             [
                 sys.executable,
                 "-c",
-                "from scripts.reconstruct_release_plan import reconstruct; "
-                "assert callable(reconstruct)",
+                (
+                    "from scripts.reconstruct_release_plan import reconstruct; "
+                    "assert callable(reconstruct)"
+                ),
             ],
             cwd=ROOT,
             capture_output=True,
             text=True,
             env=environment,
+            check=False,
         )
         self.assertEqual(completed.returncode, 0, completed.stderr)
+
+        with tempfile.TemporaryDirectory() as temporary:
+            scratch = pathlib.Path(temporary)
+            authority = authority_descriptor(
+                self.plan,
+                "5" * 40,
+                "4" * 40,
+                "staging",
+            )
+            private_field = "PRIVATE_PLAN_FIELD_SENTINEL"
+            authority[private_field] = "private value"
+            authority_path = scratch / "authority.json"
+            authority_path.write_text(canonical_json(authority), encoding="utf-8")
+            plan_output = scratch / "plan.json"
+            failed = subprocess.run(
+                [
+                    sys.executable,
+                    "scripts/reconstruct_release_plan.py",
+                    "--authority",
+                    str(authority_path),
+                    "--state-root",
+                    str(ROOT),
+                    "--release-root",
+                    str(ROOT),
+                    "--scratch-root",
+                    str(scratch),
+                    "--output",
+                    str(plan_output),
+                ],
+                cwd=ROOT,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertNotEqual(failed.returncode, 0)
+            self.assertEqual(failed.stdout, "")
+            self.assertEqual(
+                failed.stderr, "release plan reconstruction failed closed\n"
+            )
+            self.assertNotIn(private_field, failed.stderr)
+            self.assertFalse(plan_output.exists())
 
     def test_private_archive_failures_never_log_hostile_member_names(self) -> None:
         sentinel = "PRIVATE_SOURCE_MEMBER_NAME_SENTINEL"
@@ -441,6 +486,7 @@ class ReleaseControllerTests(unittest.TestCase):
                         cwd=ROOT,
                         capture_output=True,
                         text=True,
+                        check=False,
                     )
                     self.assertNotEqual(completed.returncode, 0)
                     self.assertEqual(completed.stdout, "")
@@ -473,6 +519,7 @@ class ReleaseControllerTests(unittest.TestCase):
                 capture_output=True,
                 text=True,
                 env={"PYTHON_BIN": sys.executable},
+                check=False,
             )
             self.assertNotEqual(wrapped.returncode, 0)
             self.assertEqual(
@@ -480,6 +527,367 @@ class ReleaseControllerTests(unittest.TestCase):
                 "private release failed closed: source-validation\n",
             )
             self.assertNotIn(sentinel, wrapped.stderr)
+
+    def test_private_publication_never_logs_valid_member_paths_or_content(
+        self,
+    ) -> None:
+        filename_sentinel = "PRIVATE_VALID_MEMBER_FILENAME_SENTINEL"
+        content_sentinel = "PRIVATE_VALID_SOURCE_CONTENT_SENTINEL"
+        snapshot = ROOT / "tests/fixtures/release-acceptance-snapshot-v1.json"
+        queue = json.loads(
+            (ROOT / "tests/fixtures/release-queue-v1.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        private_plan = plan_next(queue, NOW)
+        release_path = private_plan["request"]["release"]["path"]
+        submission_id = private_plan["request"]["submission"]["submission_id"]
+
+        def command(*arguments: str, cwd: pathlib.Path = ROOT) -> subprocess.CompletedProcess[str]:
+            return subprocess.run(
+                list(arguments),
+                cwd=cwd,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+
+        def prepare(
+            root: pathlib.Path, source: bytes
+        ) -> tuple[pathlib.Path, pathlib.Path, pathlib.Path, pathlib.Path]:
+            plaintext = root / "source.tar.gz"
+            with tarfile.open(plaintext, mode="w:gz") as archive:
+                for name, content in (
+                    (
+                        "source/Submission.lean",
+                        b"import Mathlib\nexample : True := by trivial\n",
+                    ),
+                    (
+                        f"source/Submission/{filename_sentinel}.lean",
+                        source,
+                    ),
+                ):
+                    member = tarfile.TarInfo(name)
+                    member.size = len(content)
+                    archive.addfile(member, io.BytesIO(content))
+            plan = root / "release-plan.json"
+            plan.write_text(canonical_json(private_plan), encoding="utf-8")
+            reconstructed = root / "reconstructed"
+
+            validation = subprocess.run(
+                [
+                    sys.executable,
+                    "scripts/validate_release_source_archive.py",
+                    "--plaintext-tar",
+                    str(plaintext),
+                ],
+                cwd=ROOT,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(validation.returncode, 0, validation.stderr)
+            self.assertEqual(validation.stdout, "")
+            self.assertEqual(validation.stderr, "")
+            reconstruction = subprocess.run(
+                [
+                    sys.executable,
+                    "scripts/reconstruct_release.py",
+                    str(plan),
+                    "--plaintext-tar",
+                    str(plaintext),
+                    "--trusted-as-of",
+                    NOW,
+                    "--state-acceptance-snapshot",
+                    str(snapshot),
+                    "--output-root",
+                    str(reconstructed),
+                ],
+                cwd=ROOT,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(reconstruction.returncode, 0, reconstruction.stderr)
+            self.assertNotIn(filename_sentinel, reconstruction.stdout)
+            self.assertNotIn(content_sentinel, reconstruction.stdout)
+            self.assertEqual(reconstruction.stderr, "")
+
+            manifest_validation = subprocess.run(
+                [
+                    sys.executable,
+                    "scripts/validate_manifest.py",
+                    str(reconstructed / "release-manifest.json"),
+                    "--trusted-as-of",
+                    NOW,
+                    "--state-acceptance-snapshot",
+                    str(snapshot),
+                    "--bundle-root",
+                    str(reconstructed),
+                ],
+                cwd=ROOT,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(
+                manifest_validation.returncode, 0, manifest_validation.stderr
+            )
+            self.assertNotIn(filename_sentinel, manifest_validation.stdout)
+            self.assertNotIn(content_sentinel, manifest_validation.stdout)
+            self.assertEqual(manifest_validation.stderr, "")
+
+            release = root / "release"
+            remote = root / "remote.git"
+            command(
+                "git", "init", "--initial-branch=main", str(release)
+            )
+            command("git", "init", "--bare", "--initial-branch=main", str(remote))
+            (release / "README.md").write_text("release repository\n", encoding="utf-8")
+            command("git", "config", "user.name", "release test", cwd=release)
+            command(
+                "git", "config", "user.email", "release@example.invalid", cwd=release
+            )
+            command("git", "add", "README.md", cwd=release)
+            command("git", "commit", "--quiet", "-m", "Initial", cwd=release)
+            command("git", "remote", "add", "origin", str(remote), cwd=release)
+            command("git", "push", "--quiet", "-u", "origin", "main", cwd=release)
+
+            classification = root / "classification.json"
+            classified = subprocess.run(
+                [
+                    sys.executable,
+                    "scripts/classify_release_publication.py",
+                    "--release-root",
+                    str(release),
+                    "--reconstructed-root",
+                    str(reconstructed),
+                    "--release-path",
+                    release_path,
+                    "--submission-id",
+                    submission_id,
+                    "--output",
+                    str(classification),
+                ],
+                cwd=ROOT,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(classified.returncode, 0, classified.stderr)
+            self.assertEqual(classified.stdout, "")
+            self.assertEqual(classified.stderr, "")
+            return release, remote, reconstructed, classification
+
+        def publication_arguments(
+            release: pathlib.Path,
+            reconstructed: pathlib.Path,
+            classification: pathlib.Path,
+            output: pathlib.Path,
+        ) -> list[str]:
+            return [
+                "scripts/publish_release.py",
+                "--release-root",
+                str(release),
+                "--reconstructed-root",
+                str(reconstructed),
+                "--release-path",
+                release_path,
+                "--submission-id",
+                submission_id,
+                "--classification",
+                str(classification),
+                "--trusted-as-of",
+                NOW,
+                "--state-acceptance-snapshot",
+                str(snapshot),
+                "--output",
+                str(output),
+            ]
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = pathlib.Path(temporary)
+            diagnostic = root / "diagnostic"
+            diagnostic.mkdir()
+            diagnostic_release, _, diagnostic_reconstructed, _ = prepare(
+                diagnostic,
+                (
+                    f"theorem {content_sentinel} : True := by\n  trivial\n"
+                ).encode(),
+            )
+            private_source = (
+                diagnostic_reconstructed
+                / release_path
+                / "Submission"
+                / f"{filename_sentinel}.lean"
+            )
+            private_source.chmod(0o755)
+            manifest_failure = subprocess.run(
+                [
+                    sys.executable,
+                    "scripts/validate_manifest.py",
+                    str(diagnostic_reconstructed / "release-manifest.json"),
+                    "--trusted-as-of",
+                    NOW,
+                    "--state-acceptance-snapshot",
+                    str(snapshot),
+                    "--bundle-root",
+                    str(diagnostic_reconstructed),
+                ],
+                cwd=ROOT,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertNotEqual(manifest_failure.returncode, 0)
+            self.assertEqual(manifest_failure.stdout, "")
+            self.assertEqual(
+                manifest_failure.stderr,
+                "release manifest validation failed closed\n",
+            )
+            self.assertNotIn(filename_sentinel, manifest_failure.stderr)
+            private_source.unlink()
+            private_source.symlink_to("../Submission.lean")
+            classification_failure = subprocess.run(
+                [
+                    sys.executable,
+                    "scripts/classify_release_publication.py",
+                    "--release-root",
+                    str(diagnostic_release),
+                    "--reconstructed-root",
+                    str(diagnostic_reconstructed),
+                    "--release-path",
+                    release_path,
+                    "--submission-id",
+                    submission_id,
+                    "--output",
+                    str(diagnostic / "failed-classification.json"),
+                ],
+                cwd=ROOT,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertNotEqual(classification_failure.returncode, 0)
+            self.assertEqual(classification_failure.stdout, "")
+            self.assertEqual(
+                classification_failure.stderr,
+                "release publication classification failed closed\n",
+            )
+            self.assertNotIn(filename_sentinel, classification_failure.stderr)
+
+            failing = root / "failing"
+            failing.mkdir()
+            private_line = (
+                f"theorem {content_sentinel} : True := by   \n  trivial\n"
+            ).encode()
+            release, _, reconstructed, classification = prepare(
+                failing, private_line
+            )
+            output = failing / "publication-result.json"
+            direct = subprocess.run(
+                [
+                    sys.executable,
+                    *publication_arguments(
+                        release, reconstructed, classification, output
+                    ),
+                ],
+                cwd=ROOT,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertNotEqual(direct.returncode, 0)
+            self.assertEqual(direct.stdout, "")
+            self.assertEqual(direct.stderr, "release publication failed closed\n")
+            self.assertNotIn(filename_sentinel, direct.stderr)
+            self.assertNotIn(content_sentinel, direct.stderr)
+            self.assertFalse(output.exists())
+
+            wrapped_root = root / "wrapped"
+            wrapped_root.mkdir()
+            wrapped_release, _, wrapped_reconstructed, wrapped_classification = prepare(
+                wrapped_root, private_line
+            )
+            wrapped_output = wrapped_root / "publication-result.json"
+            tail = (ROOT / "scripts/release_authority_tail.sh").read_text(
+                encoding="utf-8"
+            )
+            functions = tail[
+                tail.index("run_exact_python() {") : tail.index(
+                    "require_private_regular() {"
+                )
+            ]
+            bash = shutil.which("bash")
+            self.assertIsNotNone(bash)
+            wrapped = subprocess.run(
+                [
+                    str(bash),
+                    "-c",
+                    functions
+                    + "\nrun_exact_python_quiet publication-write \"$@\"\n",
+                    "release-private-publication-test",
+                    *publication_arguments(
+                        wrapped_release,
+                        wrapped_reconstructed,
+                        wrapped_classification,
+                        wrapped_output,
+                    ),
+                ],
+                cwd=ROOT,
+                capture_output=True,
+                text=True,
+                env={"PATH": os.environ["PATH"], "PYTHON_BIN": sys.executable},
+                check=False,
+            )
+            self.assertNotEqual(wrapped.returncode, 0)
+            self.assertEqual(wrapped.stdout, "")
+            self.assertEqual(
+                wrapped.stderr,
+                "private release failed closed: publication-write\n",
+            )
+            self.assertNotIn(filename_sentinel, wrapped.stderr)
+            self.assertNotIn(content_sentinel, wrapped.stderr)
+            self.assertFalse(wrapped_output.exists())
+
+            successful = root / "successful"
+            successful.mkdir()
+            clean_line = (
+                f"theorem {content_sentinel} : True := by\n  trivial\n"
+            ).encode()
+            clean_release, clean_remote, clean_reconstructed, clean_classification = (
+                prepare(successful, clean_line)
+            )
+            clean_output = successful / "publication-result.json"
+            published = subprocess.run(
+                [
+                    sys.executable,
+                    *publication_arguments(
+                        clean_release,
+                        clean_reconstructed,
+                        clean_classification,
+                        clean_output,
+                    ),
+                ],
+                cwd=ROOT,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(published.returncode, 0, published.stderr)
+            self.assertEqual(published.stdout, "")
+            self.assertEqual(published.stderr, "")
+            result_bytes = clean_output.read_bytes()
+            self.assertNotIn(filename_sentinel.encode("utf-8"), result_bytes)
+            self.assertNotIn(content_sentinel.encode("utf-8"), result_bytes)
+            self.assertEqual(stat.S_IMODE(clean_output.stat().st_mode), 0o600)
+            result = json.loads(result_bytes)
+            self.assertRegex(result["repository_commit"], r"^[0-9a-f]{40}$")
+            self.assertRegex(result["release_tree_sha256"], r"^[0-9a-f]{64}$")
+            remote_head = command(
+                "git", "--git-dir", str(clean_remote), "rev-parse", "main"
+            ).stdout.strip()
+            self.assertEqual(remote_head, result["repository_commit"])
 
     def test_staging_plan_reconstructs_only_from_exact_state_and_descriptor(
         self,
@@ -940,6 +1348,7 @@ class ReleaseControllerTests(unittest.TestCase):
         for command in (
             "scripts/reconstruct_release.py",
             "scripts/classify_release_publication.py",
+            "scripts/publish_release.py",
             "state-event published",
         ):
             with self.subTest(command=command):
@@ -952,6 +1361,10 @@ class ReleaseControllerTests(unittest.TestCase):
         )
         self.assertIn("cmp \"$RUNNER_TEMP/release-started-event.json\"", authority_tail)
         self.assertIn("scripts/classify_release_publication.py", authority_tail)
+        self.assertIn("run_exact_python_quiet publication-write", authority_tail)
+        self.assertNotIn("git diff --cached --check", authority_tail)
+        self.assertNotIn('git commit -m "Publish delayed source', authority_tail)
+        self.assertNotIn('cp -a "$RUNNER_TEMP/reconstructed', authority_tail)
         self.assertEqual(authority_tail.count("expected_plaintext=$(jq"), 2)
         self.assertEqual(authority_tail.count("actual_plaintext=$(sha256sum"), 2)
         for private_path in (
@@ -2017,6 +2430,15 @@ class ReleaseControllerTests(unittest.TestCase):
                 "scripts/release_authority_tail.sh",
                 run[provider_end:sanitized_exec],
             )
+            self.assertIn(
+                '"$RUNNER_TEMP/unwrap-request.json" >/dev/null 2>&1 <<\'PY\'',
+                run,
+            )
+            self.assertIn('> "$RUNNER_TEMP/unwrap-metadata.json" 2>/dev/null', run)
+            self.assertIn(
+                'echo "private release failed closed: $provider_phase" >&2',
+                run,
+            )
             proof = sanitizer_literal.index('proc="/proc/self/environ"')
             checkout = sanitizer_literal.index(
                 "scripts/release_authority_tail.sh", proof
@@ -2050,6 +2472,47 @@ class ReleaseControllerTests(unittest.TestCase):
             runner_nonce=nonce,
         )
         self.assertEqual(actual, expected)
+
+        with tempfile.TemporaryDirectory() as temporary:
+            scratch = pathlib.Path(temporary)
+            home = scratch / "home"
+            runner = scratch / "runner"
+            home.mkdir()
+            runner.mkdir()
+            authority_path = scratch / "authority.json"
+            sidecar_path = scratch / "sidecar.json"
+            ciphertext_path = scratch / "archive.tar.age"
+            output_path = scratch / "unwrap-request.json"
+            authority_path.write_text(canonical_json(descriptor), encoding="utf-8")
+            hostile_sidecar = copy.deepcopy(self.sidecar)
+            hostile_field = "PRIVATE_SIDECAR_FIELD_SENTINEL"
+            hostile_sidecar[hostile_field] = "private value"
+            sidecar_path.write_text(
+                canonical_json(hostile_sidecar), encoding="utf-8"
+            )
+            ciphertext_path.write_bytes(self.ciphertext)
+            environment = os.environ.copy()
+            environment.update(HOME=str(home), RUNNER_TEMP=str(runner))
+            completed = subprocess.run(
+                [
+                    sys.executable,
+                    "scripts/release_provider_literal.py",
+                    str(authority_path),
+                    str(sidecar_path),
+                    str(ciphertext_path),
+                    str(output_path),
+                ],
+                cwd=ROOT,
+                capture_output=True,
+                text=True,
+                env=environment,
+                check=False,
+            )
+            self.assertNotEqual(completed.returncode, 0)
+            self.assertEqual(completed.stdout, "")
+            self.assertEqual(completed.stderr, "literal provider failed closed\n")
+            self.assertNotIn(hostile_field, completed.stderr)
+            self.assertFalse(output_path.exists())
 
         hostile_values: list[tuple[dict[str, object], bytes]] = []
         for change in (

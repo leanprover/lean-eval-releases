@@ -335,7 +335,7 @@ class ManifestTests(unittest.TestCase):
                 )
             bundle.chmod(0o644)
             submission.chmod(0o755)
-            with self.assertRaisesRegex(ManifestError, "file mode is not 0644"):
+            with self.assertRaisesRegex(ManifestError, "release tree is not canonical"):
                 validate_manifest(
                     manifest,
                     trusted_as_of=self.TRUSTED_AS_OF,
@@ -360,7 +360,7 @@ class ManifestTests(unittest.TestCase):
             entry["bundle_sha256"] = hashlib.sha256(b"bundle bytes").hexdigest()
             entry["release_tree_sha256"] = tree_digest(release)
             (release / "secret.txt").write_text("must not publish", encoding="utf-8")
-            with self.assertRaisesRegex(ManifestError, "file set is not canonical"):
+            with self.assertRaisesRegex(ManifestError, "release tree is not canonical"):
                 validate_manifest(
                     manifest,
                     trusted_as_of=self.TRUSTED_AS_OF,

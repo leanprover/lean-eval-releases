@@ -301,8 +301,8 @@ def main(argv: list[str] | None = None) -> int:
         UnicodeError,
         TypeError,
         ValueError,
-    ) as error:
-        print(f"release plan reconstruction failed closed: {error}", file=sys.stderr)
+    ):
+        print("release plan reconstruction failed closed", file=sys.stderr)
         return 1
     return 0
 
