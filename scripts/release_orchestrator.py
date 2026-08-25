@@ -27,6 +27,7 @@ COMMIT = re.compile(r"[0-9a-f]{40}")
 DIGEST = re.compile(r"[0-9a-f]{64}")
 REASON = re.compile(r"[a-z][a-z0-9_]{1,63}")
 SAFE_INTEGER = 9_007_199_254_740_991
+MAX_RELEASE_ATTEMPTS = 4
 STATE_RELEASE_CONTRACT_COMMIT = "6799522f7fe57263de4a66499e52ce4bfda69baa"
 STATE_RELEASE_CONTRACT_TREES = {
     "schema": "3043a7b6afa042577645e0520ee9bd105a15424a",
@@ -368,10 +369,18 @@ def plan_next(
         else (validate_controller_qualification(controller_qualification, queue))
     )
     as_of = _timestamp(trusted_as_of, "trusted_as_of")
-    eligible = [task for task in queue["tasks"] if task["release_at"] <= as_of]
     if not queue["tasks"]:
         return {"schema_version": 1, "kind": "empty"}
+    due = [task for task in queue["tasks"] if task["release_at"] <= as_of]
+    eligible = [task for task in due if task["attempt"] < MAX_RELEASE_ATTEMPTS]
     if not eligible:
+        exhausted = [task for task in due if task["attempt"] >= MAX_RELEASE_ATTEMPTS]
+        if exhausted:
+            return {
+                "schema_version": 1,
+                "kind": "stalled",
+                "exhausted_task_count": len(exhausted),
+            }
         return {
             "schema_version": 1,
             "kind": "not_due",
@@ -414,6 +423,9 @@ def plan_next(
     return {
         "schema_version": 1,
         "kind": "execution",
+        "exhausted_task_count": len(
+            [task for task in due if task["attempt"] >= MAX_RELEASE_ATTEMPTS]
+        ),
         "started_transition": {
             "event_type": "release.started",
             "subject_id": task["result_id"],

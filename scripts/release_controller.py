@@ -860,7 +860,14 @@ def staging_smoke_plan(queue_value: Any, submission_id: str) -> dict[str, Any]:
         raise ControllerError(
             "staging submission must have exactly one queueable release"
         )
-    return plan_next(queue, matches[0]["release_at"])
+    plan = plan_next(queue, matches[0]["release_at"])
+    if (
+        plan.get("kind") != "execution"
+        or plan.get("request", {}).get("submission", {}).get("submission_id")
+        != submission_id
+    ):
+        raise ControllerError("staging plan did not select requested submission")
+    return plan
 
 
 def unwrap_identity(

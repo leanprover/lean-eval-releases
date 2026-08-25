@@ -9,9 +9,11 @@ import unittest
 sys.path.insert(0, str(pathlib.Path(__file__).parents[1] / "scripts"))
 
 from release_orchestrator import (
+    MAX_RELEASE_ATTEMPTS,
     ReleaseError,
     canonical_release_path,
     plan_next,
+    result_id,
     validate_release_queue,
 )
 
@@ -37,6 +39,7 @@ class ReleaseOrchestratorTests(unittest.TestCase):
         task = self.task(queue)
         plan = plan_next(queue, "2026-10-20T06:07:05.000Z")
         self.assertEqual(plan["kind"], "execution")
+        self.assertEqual(plan["exhausted_task_count"], 0)
         self.assertEqual(plan["started_transition"], {
             "event_type": "release.started",
             "subject_id": task["result_id"],
@@ -68,6 +71,46 @@ class ReleaseOrchestratorTests(unittest.TestCase):
             plan_next(queue, "2026-10-20T06:07:05.000Z"),
             {"schema_version": 1, "kind": "empty"},
         )
+
+    def test_exhausted_retry_is_reported_without_starving_other_work(self) -> None:
+        queue = self.queue()
+        exhausted = self.task(queue)
+        exhausted["attempt"] = MAX_RELEASE_ATTEMPTS
+        self.assertEqual(
+            plan_next(queue, "2026-10-20T06:07:05.000Z"),
+            {
+                "schema_version": 1,
+                "kind": "stalled",
+                "exhausted_task_count": 1,
+            },
+        )
+
+        eligible = copy.deepcopy(exhausted)
+        eligible.update(
+            attempt=0,
+            event_id="0198abcd-0000-7000-8000-00000000000d",
+            occurred_at="2026-10-20T06:07:05.002Z",
+            owner_login="alice",
+            status="scheduled",
+            submission_id="0198abcd-0000-7000-8000-000000000003",
+        )
+        eligible.pop("reason_code")
+        eligible.pop("retryable")
+        eligible["archive_path"] = (
+            "archives/01/0198abcd-0000-7000-8000-000000000003.tar.age"
+        )
+        eligible["result_id"] = result_id(
+            eligible["owner_login"],
+            eligible["declared_model"],
+            eligible["problem_id"],
+            eligible["statement_revision"],
+        )
+        queue["tasks"].append(eligible)
+        queue["tasks"].sort(key=lambda task: task["result_id"])
+        plan = plan_next(queue, "2026-10-20T06:07:05.000Z")
+        self.assertEqual(plan["kind"], "execution")
+        self.assertEqual(plan["exhausted_task_count"], 1)
+        self.assertEqual(plan["request"]["result"]["result_id"], eligible["result_id"])
 
     def test_identity_archive_embargo_and_consent_are_recomputed(self) -> None:
         mutations = (

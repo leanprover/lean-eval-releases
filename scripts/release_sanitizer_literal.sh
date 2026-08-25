@@ -186,11 +186,11 @@ test -z "$(git -C state status --porcelain --untracked-files=all)"
 test "$($PYTHON_BIN -I -c 'import sys; print(".".join(map(str, sys.version_info[:2])))')" = 3.11
 
 trap - EXIT INT TERM
-exec env -i \
+exec /usr/bin/env -i \
   HOME="$HOME" \
   PATH="$PATH" \
   LITERAL_AUTHORITY_PROOF=release-authority-sanitized-v1 \
   PYTHON_BIN="$PYTHON_BIN" \
   RUNNER_TEMP="$RUNNER_TEMP" \
   GITHUB_STEP_SUMMARY="$GITHUB_STEP_SUMMARY" \
-  bash --noprofile --norc scripts/release_authority_tail.sh "$mode"
+  /usr/bin/bash --noprofile --norc scripts/release_authority_tail.sh "$mode"

@@ -11,8 +11,8 @@ import unittest
 ROOT = pathlib.Path(__file__).parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 
-import plan_release_removal as removal_module
-from release_orchestrator import (
+import plan_release_removal as removal_module  # noqa: E402
+from release_orchestrator import (  # noqa: E402
     STAGING_STATE_RELEASE_CONTRACT_COMMIT,
     STAGING_STATE_RELEASE_CONTRACT_TREES,
     STATE_RELEASE_CONTRACT_COMMIT,
@@ -21,13 +21,13 @@ from release_orchestrator import (
     canonical_json_digest,
     plan_next,
 )
-from release_qualification import (
+from release_qualification import (  # noqa: E402
     QualificationError,
     build_qualification,
     qualify_repository,
     validate_contract,
 )
-from verify_release_state_contract import STATE_CONTRACTS
+from verify_release_state_contract import STATE_CONTRACTS  # noqa: E402
 
 
 class ReleaseQualificationTests(unittest.TestCase):
@@ -386,6 +386,41 @@ class ReleaseQualificationTests(unittest.TestCase):
                     root,
                     "leanprover/lean-eval-state",
                     "0" * 40,
+                    contract_trees,
+                )
+
+            pinned_head = subprocess.check_output(
+                ["git", "-C", root, "rev-parse", "HEAD"], text=True
+            ).strip()
+            (root / "advanced").write_text("concurrent main append\n", encoding="utf-8")
+            subprocess.run(["git", "-C", root, "add", "advanced"], check=True)
+            subprocess.run(
+                ["git", "-C", root, "commit", "-qm", "advance remote main"],
+                check=True,
+            )
+            subprocess.run(
+                ["git", "-C", root, "update-ref", "refs/remotes/origin/main", "HEAD"],
+                check=True,
+            )
+            subprocess.run(
+                ["git", "-C", root, "checkout", "--detach", "--quiet", pinned_head],
+                check=True,
+            )
+            self.assertEqual(
+                qualify_repository(
+                    root,
+                    "leanprover/lean-eval-state",
+                    minimum,
+                    contract_trees,
+                    expected_head=pinned_head,
+                ),
+                pinned_head,
+            )
+            with self.assertRaisesRegex(QualificationError, "not exact origin/main"):
+                qualify_repository(
+                    root,
+                    "leanprover/lean-eval-state",
+                    minimum,
                     contract_trees,
                 )
 

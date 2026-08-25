@@ -31,6 +31,21 @@ class ReconstructionError(ValueError):
     """The exact State commit cannot reproduce the disclosure-safe handoff."""
 
 
+EXACT_PYTHON_LAUNCHER = """\
+import pathlib
+import runpy
+import sys
+
+path = pathlib.Path(sys.argv[1])
+if path.is_symlink() or not path.is_file():
+    raise SystemExit("exact Python entry point is not a regular file")
+path = path.resolve(strict=True)
+sys.path.insert(0, str(path.parent))
+sys.argv = sys.argv[1:]
+runpy.run_path(str(path), run_name="__main__")
+"""
+
+
 def _git(root: pathlib.Path, *arguments: str) -> str:
     return subprocess.run(
         ["git", "-C", str(root), *arguments],
@@ -47,6 +62,15 @@ def _read_json(path: pathlib.Path) -> Any:
 
 def _digest(value: Any) -> str:
     return hashlib.sha256(canonical_json(value).encode("utf-8")).hexdigest()
+
+
+def _run_exact_python(path: pathlib.Path, *arguments: str) -> None:
+    subprocess.run(
+        [sys.executable, "-I", "-c", EXACT_PYTHON_LAUNCHER, str(path), *arguments],
+        check=True,
+        capture_output=True,
+        timeout=30,
+    )
 
 
 def _materialize_at(
@@ -80,51 +104,42 @@ def _materialize_at(
             text=True,
             timeout=30,
         )
-        subprocess.run(
-            [
-                sys.executable,
-                str(worktree / "scripts/state.py"),
-                "--root",
-                str(worktree),
-                "validate",
-            ],
-            check=True,
-            capture_output=True,
-            timeout=30,
+        _run_exact_python(
+            worktree / "scripts/state.py",
+            "--root",
+            str(worktree),
+            "validate",
         )
-        subprocess.run(
-            [
-                sys.executable,
-                str(worktree / "scripts/state.py"),
-                "--root",
-                str(worktree),
-                "materialize",
-                "--output",
-                str(views),
-            ],
-            check=True,
-            capture_output=True,
-            timeout=30,
+        _run_exact_python(
+            worktree / "scripts/state.py",
+            "--root",
+            str(worktree),
+            "materialize",
+            "--output",
+            str(views),
         )
         return (
             _read_json(views / "release-queue.json"),
             _read_json(views / "release-acceptance-snapshot.json"),
         )
     finally:
-        subprocess.run(
-            [
-                "git",
-                "-C",
-                str(state_root),
-                "worktree",
-                "remove",
-                "--force",
-                str(worktree),
-            ],
-            check=False,
-            capture_output=True,
-            timeout=30,
-        )
+        try:
+            subprocess.run(
+                [
+                    "git",
+                    "-C",
+                    str(state_root),
+                    "worktree",
+                    "remove",
+                    "--force",
+                    str(worktree),
+                ],
+                check=False,
+                capture_output=True,
+                timeout=30,
+            )
+        except subprocess.SubprocessError:
+            pass
         shutil.rmtree(scratch_root / "state-views", ignore_errors=True)
 
 
@@ -297,7 +312,7 @@ def main(argv: list[str] | None = None) -> int:
         KeyError,
         OSError,
         ReconstructionError,
-        subprocess.CalledProcessError,
+        subprocess.SubprocessError,
         UnicodeError,
         TypeError,
         ValueError,

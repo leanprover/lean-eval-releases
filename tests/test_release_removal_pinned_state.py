@@ -15,11 +15,14 @@ ROOT = pathlib.Path(__file__).parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 sys.path.insert(0, str(ROOT / "tests"))
 
-import plan_release_removal as planner_module
-import test_plan_release_removal as planner_tests
-from plan_release_removal import plan_removal
-from release_removal import finalize_release_containment, finalize_state_corrections
-from release_tree import tree_digest
+import plan_release_removal as planner_module  # noqa: E402
+import test_plan_release_removal as planner_tests  # noqa: E402
+from plan_release_removal import plan_removal  # noqa: E402
+from release_removal import (  # noqa: E402
+    finalize_release_containment,
+    finalize_state_corrections,
+)
+from release_tree import tree_digest  # noqa: E402
 
 STATE_CONTRACT_COMMIT = "6799522f7fe57263de4a66499e52ce4bfda69baa"
 STATE_CONTRACT_TREE = "b63b8290d1bc779d9a981ea3f9e4dbc2b848c635"

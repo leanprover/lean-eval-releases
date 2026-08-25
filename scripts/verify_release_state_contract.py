@@ -37,6 +37,7 @@ def main(argv: list[str] | None = None) -> int:
         choices=sorted(STATE_CONTRACTS),
         required=True,
     )
+    parser.add_argument("--expected-head")
     args = parser.parse_args(argv)
     repository, contract_commit, contract_trees = STATE_CONTRACTS[args.environment]
     try:
@@ -46,6 +47,7 @@ def main(argv: list[str] | None = None) -> int:
             contract_commit,
             contract_trees,
             reject_untracked=True,
+            expected_head=args.expected_head,
         )
     except (QualificationError, OSError, ValueError) as error:
         print(f"error: {error}", file=sys.stderr)

@@ -134,6 +134,7 @@ jobs:
             echo '### Production release OIDC trust preflight passed'
             echo
             echo "- release controller source: \`$GITHUB_SHA\`"
+            # shellcheck disable=SC2016
             echo '- exact production release role trust proved in account `161072922960`'
             echo '- the session was restricted to caller identity only'
             echo '- AWS credentials and the GitHub OIDC request handle were discarded from the final repository-authored process'

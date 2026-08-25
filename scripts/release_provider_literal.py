@@ -298,13 +298,22 @@ def validate_execution_plan(value: Any) -> dict[str, Any]:
     plan = _object(value, "release plan")
     _fields(
         plan,
-        {"schema_version", "kind", "started_transition", "request"},
+        {
+            "schema_version",
+            "kind",
+            "exhausted_task_count",
+            "started_transition",
+            "request",
+        },
         "release plan",
     )
     if plan["schema_version"] != 1 or isinstance(plan["schema_version"], bool):
         raise ProviderError("release plan schema_version must be integer 1")
     if plan["kind"] != "execution":
         raise ProviderError("release plan must contain one execution")
+    exhausted = plan["exhausted_task_count"]
+    if type(exhausted) is not int or not 0 <= exhausted <= MAX_SAFE_INTEGER:
+        raise ProviderError("release plan exhausted_task_count is invalid")
 
     started = _object(plan["started_transition"], "started_transition")
     _fields(

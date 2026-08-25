@@ -232,6 +232,15 @@ class ReleaseControllerTests(unittest.TestCase):
         self.assertNotIn("git log --diff-filter=A --format=%H -1", workflow)
         tail = (ROOT / "scripts/release_authority_tail.sh").read_text(encoding="utf-8")
         controller = workflow + tail
+        self.assertIn("git -C state config user.name lean-eval-release-controller", tail)
+        self.assertIn(
+            "lean-eval-release-controller@users.noreply.github.com", tail
+        )
+        self.assertLess(
+            tail.index("git -C state config user.name"),
+            tail.index("run_exact_python_quiet authority-contract"),
+        )
+        self.assertIn('--expected-head "$expected_state_head"', tail)
         self.assertIn("state-event published", controller)
         self.assertIn("state-event failed", controller)
         self.assertIn("scripts/classify_release_publication.py", controller)
@@ -553,7 +562,9 @@ class ReleaseControllerTests(unittest.TestCase):
             )
 
         def prepare(
-            root: pathlib.Path, source: bytes
+            root: pathlib.Path,
+            source: bytes,
+            source_name: str = filename_sentinel + ".lean",
         ) -> tuple[pathlib.Path, pathlib.Path, pathlib.Path, pathlib.Path]:
             plaintext = root / "source.tar.gz"
             with tarfile.open(plaintext, mode="w:gz") as archive:
@@ -563,7 +574,7 @@ class ReleaseControllerTests(unittest.TestCase):
                         b"import Mathlib\nexample : True := by trivial\n",
                     ),
                     (
-                        f"source/Submission/{filename_sentinel}.lean",
+                        f"source/Submission/{source_name}",
                         source,
                     ),
                 ):
@@ -644,11 +655,14 @@ class ReleaseControllerTests(unittest.TestCase):
             )
             command("git", "init", "--bare", "--initial-branch=main", str(remote))
             (release / "README.md").write_text("release repository\n", encoding="utf-8")
+            (release / ".gitignore").write_text(
+                "dist/\n__pycache__/\n*.pyc\n", encoding="utf-8"
+            )
             command("git", "config", "user.name", "release test", cwd=release)
             command(
                 "git", "config", "user.email", "release@example.invalid", cwd=release
             )
-            command("git", "add", "README.md", cwd=release)
+            command("git", "add", "README.md", ".gitignore", cwd=release)
             command("git", "commit", "--quiet", "-m", "Initial", cwd=release)
             command("git", "remote", "add", "origin", str(remote), cwd=release)
             command("git", "push", "--quiet", "-u", "origin", "main", cwd=release)
@@ -776,15 +790,15 @@ class ReleaseControllerTests(unittest.TestCase):
             )
             self.assertNotIn(filename_sentinel, classification_failure.stderr)
 
-            failing = root / "failing"
-            failing.mkdir()
+            whitespace = root / "whitespace"
+            whitespace.mkdir()
             private_line = (
                 f"theorem {content_sentinel} : True := by   \n  trivial\n"
             ).encode()
             release, _, reconstructed, classification = prepare(
-                failing, private_line
+                whitespace, private_line
             )
-            output = failing / "publication-result.json"
+            output = whitespace / "publication-result.json"
             direct = subprocess.run(
                 [
                     sys.executable,
@@ -797,12 +811,10 @@ class ReleaseControllerTests(unittest.TestCase):
                 text=True,
                 check=False,
             )
-            self.assertNotEqual(direct.returncode, 0)
+            self.assertEqual(direct.returncode, 0, direct.stderr)
             self.assertEqual(direct.stdout, "")
-            self.assertEqual(direct.stderr, "release publication failed closed\n")
-            self.assertNotIn(filename_sentinel, direct.stderr)
-            self.assertNotIn(content_sentinel, direct.stderr)
-            self.assertFalse(output.exists())
+            self.assertEqual(direct.stderr, "")
+            self.assertTrue(output.is_file())
 
             wrapped_root = root / "wrapped"
             wrapped_root.mkdir()
@@ -840,15 +852,63 @@ class ReleaseControllerTests(unittest.TestCase):
                 env={"PATH": os.environ["PATH"], "PYTHON_BIN": sys.executable},
                 check=False,
             )
-            self.assertNotEqual(wrapped.returncode, 0)
+            self.assertEqual(wrapped.returncode, 0, wrapped.stderr)
             self.assertEqual(wrapped.stdout, "")
-            self.assertEqual(
-                wrapped.stderr,
-                "private release failed closed: publication-write\n",
+            self.assertEqual(wrapped.stderr, "")
+            self.assertTrue(wrapped_output.is_file())
+
+            filtered_root = root / "filtered"
+            filtered_root.mkdir()
+            filtered_release, filtered_remote, filtered_reconstructed, filtered_classification = prepare(
+                filtered_root,
+                private_line,
             )
-            self.assertNotIn(filename_sentinel, wrapped.stderr)
-            self.assertNotIn(content_sentinel, wrapped.stderr)
-            self.assertFalse(wrapped_output.exists())
+            (filtered_release / ".gitattributes").write_text(
+                "*.lean filter=release-test-filter\n", encoding="utf-8"
+            )
+            command(
+                "git",
+                "config",
+                "filter.release-test-filter.clean",
+                "sed s/trivial/filtered/g",
+                cwd=filtered_release,
+            )
+            command("git", "add", ".gitattributes", cwd=filtered_release)
+            command(
+                "git", "commit", "--quiet", "-m", "Add test clean filter", cwd=filtered_release
+            )
+            command("git", "push", "--quiet", "origin", "main", cwd=filtered_release)
+            filtered_remote_before = command(
+                "git", "--git-dir", str(filtered_remote), "rev-parse", "main"
+            ).stdout.strip()
+            filtered_output = filtered_root / "publication-result.json"
+            filtered = subprocess.run(
+                [
+                    sys.executable,
+                    *publication_arguments(
+                        filtered_release,
+                        filtered_reconstructed,
+                        filtered_classification,
+                        filtered_output,
+                    ),
+                ],
+                cwd=ROOT,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertNotEqual(filtered.returncode, 0)
+            self.assertEqual(filtered.stdout, "")
+            self.assertEqual(
+                filtered.stderr, "release publication failed closed\n"
+            )
+            self.assertFalse(filtered_output.exists())
+            self.assertEqual(
+                command(
+                    "git", "--git-dir", str(filtered_remote), "rev-parse", "main"
+                ).stdout.strip(),
+                filtered_remote_before,
+            )
 
             successful = root / "successful"
             successful.mkdir()
@@ -856,7 +916,11 @@ class ReleaseControllerTests(unittest.TestCase):
                 f"theorem {content_sentinel} : True := by\n  trivial\n"
             ).encode()
             clean_release, clean_remote, clean_reconstructed, clean_classification = (
-                prepare(successful, clean_line)
+                prepare(
+                    successful,
+                    clean_line,
+                    source_name=f"dist/{filename_sentinel}.lean",
+                )
             )
             clean_output = successful / "publication-result.json"
             published = subprocess.run(
@@ -888,6 +952,19 @@ class ReleaseControllerTests(unittest.TestCase):
                 "git", "--git-dir", str(clean_remote), "rev-parse", "main"
             ).stdout.strip()
             self.assertEqual(remote_head, result["repository_commit"])
+            published_paths = command(
+                "git",
+                "--git-dir",
+                str(clean_remote),
+                "ls-tree",
+                "-r",
+                "--name-only",
+                "main",
+            ).stdout.splitlines()
+            self.assertIn(
+                f"{release_path}/Submission/dist/{filename_sentinel}.lean",
+                published_paths,
+            )
 
     def test_staging_plan_reconstructs_only_from_exact_state_and_descriptor(
         self,
@@ -1499,7 +1576,9 @@ class ReleaseControllerTests(unittest.TestCase):
                 sanitizer_source.replace(
                     "PATH=/usr/local/bin:/usr/bin:/bin",
                     f"PATH={os.environ['PATH']}",
-                ).replace("/usr/bin/rm", str(rm)),
+                )
+                .replace("/usr/bin/rm", str(rm))
+                .replace("/usr/bin/bash", str(bash)),
                 encoding="utf-8",
             )
             python_bin = root / "python-bin"
@@ -3396,6 +3475,26 @@ class ReleaseControllerTests(unittest.TestCase):
             plan["request"]["release"]["eligible_at"],
             queue["tasks"][0]["release_at"],
         )
+        competing = copy.deepcopy(queue["tasks"][0])
+        competing.update(
+            event_id="0198abcd-0000-7000-8000-00000000000d",
+            owner_login="aaron",
+            submission_id="0198abcd-0000-7000-8000-000000000003",
+        )
+        competing["archive_path"] = (
+            "archives/01/0198abcd-0000-7000-8000-000000000003.tar.age"
+        )
+        competing["result_id"] = result_id(
+            competing["owner_login"],
+            competing["declared_model"],
+            competing["problem_id"],
+            competing["statement_revision"],
+        )
+        queue["tasks"].append(competing)
+        queue["tasks"].sort(key=lambda task: task["result_id"])
+        later_submission_id = queue["tasks"][-1]["submission_id"]
+        with self.assertRaisesRegex(ControllerError, "requested submission"):
+            staging_smoke_plan(queue, later_submission_id)
         with self.assertRaisesRegex(ControllerError, "exactly one"):
             staging_smoke_plan(queue, "0198abcd-0000-7000-8000-000000000099")
 

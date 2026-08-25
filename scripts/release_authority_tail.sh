@@ -126,7 +126,7 @@ record_retryable_failure() (
     --state-root state \
     --event "$RUNNER_TEMP/release-failed-event.json" \
     --plan "$RUNNER_TEMP/release-failed-transition.json"
-  git -C state commit -m "Record failed release $event_id"
+  git -C state commit --quiet -m "Record failed release $event_id"
   test "$(git -C state rev-parse HEAD^)" = "$state_head"
   git -C state push origin HEAD:main
 )
@@ -188,10 +188,20 @@ esac
 [ -x "$PYTHON_BIN" ]
 "$PYTHON_BIN" -I -c 'import sys; assert sys.version_info[:2] == (3, 11)'
 
+if [ "$mode" = production ]; then
+  git -C state config user.name lean-eval-release-controller
+  git -C state config user.email \
+    lean-eval-release-controller@users.noreply.github.com
+fi
+expected_state_head=$(jq -er .state_commit \
+  "$RUNNER_TEMP/release-authority.json")
+[[ "$expected_state_head" =~ ^[0-9a-f]{40}$ ]]
 run_exact_python_quiet authority-contract \
   scripts/verify_release_state_contract.py \
   --environment "$mode" \
-  --state-root state
+  --state-root state \
+  --expected-head "$expected_state_head"
+unset expected_state_head
 
 reconstruct_arguments=(
   scripts/reconstruct_release_plan.py
@@ -236,14 +246,14 @@ if [ "$mode" = staging ]; then
     exit 1
   fi
   require_private_regular "$RUNNER_TEMP/source.tar.gz"
-  expected_plaintext=$(jq -r .sha256_plaintext_tar \
+  expected_plaintext=$(jq -er .sha256_plaintext_tar \
     "$RUNNER_TEMP/archive-sidecar.json")
   actual_plaintext=$(sha256sum "$RUNNER_TEMP/source.tar.gz" | awk '{print $1}')
   test "$actual_plaintext" = "$expected_plaintext"
   run_exact_python_quiet source-validation \
     scripts/validate_release_source_archive.py \
     --plaintext-tar "$RUNNER_TEMP/source.tar.gz"
-  ciphertext_digest=$(jq -r .sha256_ciphertext \
+  ciphertext_digest=$(jq -er .sha256_ciphertext \
     "$RUNNER_TEMP/archive-sidecar.json")
   audit_commit=$(jq -er .request.archive.archive_commit \
     "$RUNNER_TEMP/release-plan.json")
@@ -313,9 +323,9 @@ run_exact_python_quiet manifest-validation scripts/validate_manifest.py \
 rm -f "$RUNNER_TEMP/source.tar.gz" "$RUNNER_TEMP/archive.tar.age" \
   "$RUNNER_TEMP/archive-sidecar.json" "$RUNNER_TEMP/identity.age"
 
-result_id=$(jq -r .request.result.result_id "$RUNNER_TEMP/release-plan.json")
-release_path=$(jq -r .request.release.path "$RUNNER_TEMP/release-plan.json")
-submission_id=$(jq -r .request.submission.submission_id \
+result_id=$(jq -er .request.result.result_id "$RUNNER_TEMP/release-plan.json")
+release_path=$(jq -er .request.release.path "$RUNNER_TEMP/release-plan.json")
+submission_id=$(jq -er .request.submission.submission_id \
   "$RUNNER_TEMP/release-plan.json")
 run_exact_python_quiet publication-classification \
   scripts/classify_release_publication.py \
@@ -389,6 +399,6 @@ run_exact_python scripts/release_controller.py verify-staged-state-transition \
   --state-root state \
   --event "$RUNNER_TEMP/release-terminal-event.json" \
   --plan "$RUNNER_TEMP/release-terminal-transition.json"
-git -C state commit -m "Record published release $event_id"
+git -C state commit --quiet -m "Record published release $event_id"
 test "$(git -C state rev-parse HEAD^)" = "$state_head"
 git -C state push origin HEAD:main

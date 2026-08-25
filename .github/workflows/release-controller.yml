@@ -170,7 +170,7 @@ jobs:
             --state-root state \
             --event "$RUNNER_TEMP/release-recovered-event.json" \
             --plan "$RUNNER_TEMP/release-recovered-transition.json"
-          git -C state commit -m "Recover interrupted release $event_id"
+          git -C state commit --quiet -m "Recover interrupted release $event_id"
           test "$(git -C state rev-parse HEAD^)" = "$state_head"
           git -C state push origin HEAD:main
 
@@ -190,10 +190,19 @@ jobs:
           kind=$(jq -r .kind "$RUNNER_TEMP/release-plan.json")
           case "$kind" in
             execution|empty|not_due) ;;
+            stalled)
+              echo "release retry budget exhausted; operator review required" >&2
+              exit 1
+              ;;
             *) echo "release planner returned an unknown kind" >&2; exit 1 ;;
           esac
           archive_commit=
           if [ "$kind" = execution ]; then
+            exhausted_task_count=$(jq -er .exhausted_task_count \
+              "$RUNNER_TEMP/release-plan.json")
+            if [ "$exhausted_task_count" -gt 0 ]; then
+              echo "::warning::release retry budget exhausted for $exhausted_task_count other due task(s); operator review required"
+            fi
             test "$(jq -r .request.controller.mode \
               "$RUNNER_TEMP/release-plan.json")" = publication
             test "$(jq -r .request.controller.environment \
@@ -240,7 +249,7 @@ jobs:
             --state-root state \
             --event "$RUNNER_TEMP/release-started-event.json" \
             --plan "$RUNNER_TEMP/release-started-transition.json"
-          git -C state commit -m "Start release $event_id"
+          git -C state commit --quiet -m "Start release $event_id"
           test "$(git -C state rev-parse HEAD^)" = "$state_head"
           git -C state push origin HEAD:main
           state_commit=$(git -C state rev-parse HEAD)
@@ -902,13 +911,22 @@ jobs:
               plan = _object(value, "release plan")
               _fields(
                   plan,
-                  {"schema_version", "kind", "started_transition", "request"},
+                  {
+                      "schema_version",
+                      "kind",
+                      "exhausted_task_count",
+                      "started_transition",
+                      "request",
+                  },
                   "release plan",
               )
               if plan["schema_version"] != 1 or isinstance(plan["schema_version"], bool):
                   raise ProviderError("release plan schema_version must be integer 1")
               if plan["kind"] != "execution":
                   raise ProviderError("release plan must contain one execution")
+              exhausted = plan["exhausted_task_count"]
+              if type(exhausted) is not int or not 0 <= exhausted <= MAX_SAFE_INTEGER:
+                  raise ProviderError("release plan exhausted_task_count is invalid")
 
               started = _object(plan["started_transition"], "started_transition")
               _fields(
@@ -1689,12 +1707,12 @@ jobs:
           test "$($PYTHON_BIN -I -c 'import sys; print(".".join(map(str, sys.version_info[:2])))')" = 3.11
 
           trap - EXIT INT TERM
-          exec env -i \
+          exec /usr/bin/env -i \
             HOME="$HOME" \
             PATH="$PATH" \
             LITERAL_AUTHORITY_PROOF=release-authority-sanitized-v1 \
             PYTHON_BIN="$PYTHON_BIN" \
             RUNNER_TEMP="$RUNNER_TEMP" \
             GITHUB_STEP_SUMMARY="$GITHUB_STEP_SUMMARY" \
-            bash --noprofile --norc scripts/release_authority_tail.sh "$mode"
+            /usr/bin/bash --noprofile --norc scripts/release_authority_tail.sh "$mode"
           SANITIZED
