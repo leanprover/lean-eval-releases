@@ -197,11 +197,17 @@ have complete history, resolve at their Git toplevel, and have the expected
 GitHub origin. Production State must also descend from
 the reviewed `release.started`, `release.published`, `release.failed`, owner
 opt-out, monotone release-revision, and immediate-predecessor contract commit
-recorded in the credential contract. Its live `schema` and `scripts` trees must
-still equal the trees at that reviewed commit, so later data-only State commits
-remain usable while any contract-code drift fails closed. Full Git
-history is checked out because interrupted-release recovery must inspect the
-commit that first published a release path.
+recorded in the credential contract. The current reviewed commit is
+`6799522f7fe57263de4a66499e52ce4bfda69baa`, with root tree
+`b63b8290d1bc779d9a981ea3f9e4dbc2b848c635`, README blob
+`d2487d0330b708e856bdcd79ba114631355225a7`, docs tree
+`3e9957ffc1a7b653d940d3b8020b583ea2fae0f3`, schema tree
+`3043a7b6afa042577645e0520ee9bd105a15424a`, and scripts tree
+`4e2c39cac2510716577a7fd6d13abf0f9cf26976`. Its live `schema` and `scripts`
+trees must still equal the trees at that reviewed commit, so later data-only
+State commits remain usable while any contract-code drift fails closed. Full
+Git history is checked out because interrupted-release recovery must inspect
+the commit that first published a release path.
 
 The source-free qualification records its `preflight` or `publication` mode,
 the exact controller and State commits,

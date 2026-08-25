@@ -67,6 +67,10 @@ class ReleaseQualificationTests(unittest.TestCase):
         schema_commit = release_plan_schema["$defs"]["controllerQualification"][
             "properties"
         ]["state_contract_commit"]["const"]
+        self.assertEqual(
+            STATE_RELEASE_CONTRACT_COMMIT,
+            "6799522f7fe57263de4a66499e52ce4bfda69baa",
+        )
         self.assertEqual(contract_commit, STATE_RELEASE_CONTRACT_COMMIT)
         self.assertEqual(schema_commit, STATE_RELEASE_CONTRACT_COMMIT)
         self.assertEqual(
@@ -80,9 +84,17 @@ class ReleaseQualificationTests(unittest.TestCase):
         self.assertEqual(
             STATE_RELEASE_CONTRACT_TREES,
             {
-                "schema": "3111bf02bd9983a8712425923de8fca6ba696469",
-                "scripts": "f9fe278ef1ea062bc21a3fafc7ddea7ab758a099",
+                "schema": "3043a7b6afa042577645e0520ee9bd105a15424a",
+                "scripts": "4e2c39cac2510716577a7fd6d13abf0f9cf26976",
             },
+        )
+        self.assertEqual(
+            STATE_CONTRACTS["production"],
+            (
+                "leanprover/lean-eval-state",
+                STATE_RELEASE_CONTRACT_COMMIT,
+                STATE_RELEASE_CONTRACT_TREES,
+            ),
         )
         self.assertEqual(
             STATE_CONTRACTS["staging"],
