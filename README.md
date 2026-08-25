@@ -107,6 +107,16 @@ publishes with a second deploy key scoped only to this repository. The terminal
 State commit likewise atomically records the event and status replacement; its
 event pins the exact release commit, path, and tree digest.
 
+Before assumption, the workflow compares the environment role variable with
+the reviewed production ARN. The resulting 15-minute session is restricted
+again to the exact qualified production unwrap Lambda alias (plus caller
+identity) and fails if AWS returns credentials for another account.
+Because GitHub reinjects OIDC handles per step, the credential action is
+followed by one final repository-authored step. It drops OIDC before invoking
+checked-out code and drops AWS before decrypting; reconstruction, publication,
+State completion or failure, and cleanup then finish without a later step that
+could reacquire OIDC.
+
 Before planning, the controller checks both full-history Git checkouts against
 the closed credential contract, requires exact tracked-clean `origin/main`
 commits, and requires production State to descend from the reviewed release
@@ -195,6 +205,12 @@ Before executing any checked-out staging State code, the workflow requires the
 checkout to be clean, complete-history, and exact `origin/main`, to descend from
 the reviewed staging release contract, and to retain its exact reviewed
 `schema` and `scripts` trees.
+The workflow also refuses a role variable other than the reviewed staging ARN
+and restricts its 15-minute session to the exact qualified staging unwrap
+Lambda alias (plus caller identity) in account `161072922960`.
+Its consume-and-verify step is likewise the final repository-authored step and
+uses an exit trap to clear authority and all private scratch on both success and
+failure.
 
 `scripts/plan_release_removal.py` is the Git-read-only first response tool for
 an erroneous publication or confidentiality incident. From exact local

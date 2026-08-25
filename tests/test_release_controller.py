@@ -140,6 +140,184 @@ class ReleaseControllerTests(unittest.TestCase):
         self.assertNotIn("state.py --root state append", workflow)
         self.assertNotIn("git -C state rebase", workflow)
 
+    def assert_release_invoke_session_boundary(
+        self,
+        workflow: str,
+        *,
+        environment: str,
+        function_name: str,
+        session_name: str,
+    ) -> None:
+        role_arn = (
+            "arn:aws:iam::161072922960:role/"
+            f"lean-eval-release-unwrap-invoker-{environment}"
+        )
+        function_arn = (
+            "arn:aws:lambda:us-east-1:161072922960:function:"
+            f"{function_name}:live"
+        )
+        role_guard = (
+            'test "$CONFIGURED_ROLE_ARN" = \\\n'
+            f"            {role_arn}"
+        )
+        self.assertIn(
+            "CONFIGURED_ROLE_ARN: ${{ vars.AWS_RELEASE_UNWRAP_ROLE_ARN }}",
+            workflow,
+        )
+        self.assertIn(role_guard, workflow)
+        self.assertIn(
+            "role-to-assume: ${{ vars.AWS_RELEASE_UNWRAP_ROLE_ARN }}", workflow
+        )
+        self.assertIn("role-duration-seconds: 900", workflow)
+        self.assertIn(f"role-session-name: {session_name}", workflow)
+        self.assertIn("retry-max-attempts: 4", workflow)
+        self.assertIn("allowed-account-ids: 161072922960", workflow)
+        self.assertIn("output-credentials: false", workflow)
+        self.assertIn("output-env-credentials: true", workflow)
+        self.assertIn("unset-current-credentials: true", workflow)
+        self.assertEqual(workflow.count("inline-session-policy: >-"), 1)
+        self.assertEqual(workflow.count('"Action":"lambda:InvokeFunction"'), 1)
+        self.assertEqual(
+            workflow.count('"Resource":"arn:aws:lambda:'),
+            1,
+        )
+        self.assertNotIn('"Action":"lambda:*"', workflow)
+        self.assertIn(
+            '"Effect":"Allow","Action":"lambda:InvokeFunction",'
+            f'"Resource":"{function_arn}"',
+            workflow,
+        )
+        self.assertIn(
+            '"Effect":"Allow","Action":"sts:GetCallerIdentity",'
+            '"Resource":"*"',
+            workflow,
+        )
+        self.assertLess(
+            workflow.index(role_guard),
+            workflow.index("uses: aws-actions/configure-aws-credentials@"),
+        )
+        self.assertLess(
+            workflow.index("uses: aws-actions/configure-aws-credentials@"),
+            workflow.index(f"--function-name {function_name}"),
+        )
+
+    def assert_final_authority_step(
+        self,
+        workflow: str,
+        *,
+        final_step_name: str,
+        final_condition: str,
+        function_name: str,
+    ) -> None:
+        action = "uses: aws-actions/configure-aws-credentials@"
+        action_index = workflow.index(action)
+        authority_tail = workflow[action_index:]
+        authored_steps = re.findall(
+            r"^      - (?:name|uses|run): (.+)$", authority_tail, re.MULTILINE
+        )
+        self.assertEqual(authored_steps, [final_step_name])
+        self.assertIn(f"      - name: {final_step_name}\n", authority_tail)
+        self.assertIn(f"        if: {final_condition}\n", authority_tail)
+        self.assertIn(
+            "id: aws\n"
+            "        uses: aws-actions/configure-aws-credentials@",
+            workflow,
+        )
+        self.assertIn("AWS_STEP_OUTCOME: ${{ steps.aws.outcome }}", authority_tail)
+        self.assertRegex(authority_tail, r"trap (?:cleanup|finish) EXIT")
+        self.assertIn(
+            "GitHub injects a fresh OIDC request handle into every step",
+            authority_tail,
+        )
+        oidc_drop = authority_tail.index(
+            'clear_oidc\n          if [ "$AWS_STEP_OUTCOME" != success ]'
+        )
+        invoke = authority_tail.index(f"--function-name {function_name}")
+        authority_drop = authority_tail.index("          clear_authority\n", invoke)
+        decrypt = authority_tail.index('"$RUNNER_TEMP/age-bin" --decrypt', invoke)
+        self.assertLess(oidc_drop, invoke)
+        self.assertLess(invoke, authority_drop)
+        self.assertLess(authority_drop, decrypt)
+        for variable in (
+            "AWS_ACCESS_KEY_ID",
+            "AWS_SECRET_ACCESS_KEY",
+            "AWS_SESSION_TOKEN",
+            "ACTIONS_ID_TOKEN_REQUEST_TOKEN",
+            "ACTIONS_ID_TOKEN_REQUEST_URL",
+        ):
+            with self.subTest(variable=variable):
+                self.assertRegex(
+                    authority_tail,
+                    rf"unset [^\n]*\b{re.escape(variable)}\b",
+                )
+                self.assertIn(f"echo '{variable}='", authority_tail)
+                self.assertIn(f'test -z "${{{variable}:-}}"', authority_tail)
+
+    def assert_later_authority_step_is_rejected(
+        self,
+        workflow: str,
+        *,
+        final_step_name: str,
+        final_condition: str,
+        function_name: str,
+    ) -> None:
+        hostile = workflow.rstrip() + "\n\n      - run: env\n"
+        with self.assertRaises(AssertionError):
+            self.assert_final_authority_step(
+                hostile,
+                final_step_name=final_step_name,
+                final_condition=final_condition,
+                function_name=function_name,
+            )
+
+    def test_automatic_workflow_closes_the_aws_session_boundary(self) -> None:
+        workflow = (ROOT / ".github/workflows/release-controller.yml").read_text(
+            encoding="utf-8"
+        )
+        self.assert_release_invoke_session_boundary(
+            workflow,
+            environment="production",
+            function_name="lean-eval-archive-unwrap-production",
+            session_name="lean-eval-release-controller",
+        )
+        final_step_name = (
+            "Consume capability and finish one release under one authority boundary"
+        )
+        final_condition = "always() && steps.started.outputs.recorded == 'true'"
+        self.assert_final_authority_step(
+            workflow,
+            final_step_name=final_step_name,
+            final_condition=final_condition,
+            function_name="lean-eval-archive-unwrap-production",
+        )
+        authority_tail = workflow[
+            workflow.index("uses: aws-actions/configure-aws-credentials@") :
+        ]
+        invoke = authority_tail.index(
+            "--function-name lean-eval-archive-unwrap-production"
+        )
+        authority_drop = authority_tail.index("          clear_authority\n", invoke)
+        for command in (
+            "scripts/reconstruct_release.py",
+            "scripts/classify_release_publication.py",
+            "state-event published",
+        ):
+            with self.subTest(command=command):
+                self.assertGreater(authority_tail.index(command), authority_drop)
+        self.assertIn(
+            "clear_authority\n"
+            '            if [ "$status" -ne 0 ] && '
+            '[ "$publication_recorded" = false ]; then\n'
+            "              record_retryable_failure",
+            authority_tail,
+        )
+        self.assert_later_authority_step_is_rejected(
+            workflow,
+            final_step_name=final_step_name,
+            final_condition=final_condition,
+            function_name="lean-eval-archive-unwrap-production",
+        )
+
     def test_production_credential_preflight_is_manual_and_nonmutating(self) -> None:
         workflow = (
             ROOT / ".github/workflows/verify-production-controller-credentials.yml"
@@ -682,6 +860,25 @@ class ReleaseControllerTests(unittest.TestCase):
         self.assertNotIn("git push", workflow)
         self.assertNotIn("upload-artifact", workflow)
         self.assertNotIn("reconstruct_release.py", workflow)
+        self.assert_release_invoke_session_boundary(
+            workflow,
+            environment="staging",
+            function_name="lean-eval-archive-unwrap-staging",
+            session_name="lean-eval-release-staging-smoke",
+        )
+        final_step_name = "Consume one capability, drop authority, and verify plaintext"
+        self.assert_final_authority_step(
+            workflow,
+            final_step_name=final_step_name,
+            final_condition="always()",
+            function_name="lean-eval-archive-unwrap-staging",
+        )
+        self.assert_later_authority_step_is_rejected(
+            workflow,
+            final_step_name=final_step_name,
+            final_condition="always()",
+            function_name="lean-eval-archive-unwrap-staging",
+        )
 
     def test_every_external_action_is_pinned_to_a_full_commit(self) -> None:
         action = re.compile(r"^\s*(?:- )?uses:\s*([^\s#]+)", re.MULTILINE)
