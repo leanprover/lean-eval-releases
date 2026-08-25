@@ -768,6 +768,23 @@ class ReleaseControllerTests(unittest.TestCase):
             self.assertEqual(accepted.returncode, 0, accepted.stderr)
             (runner / "tail-ran").unlink()
 
+            (state / "state.json").write_text("dirty\n", encoding="utf-8")
+            proof_path.write_text(
+                json.dumps(production_proof) + "\n", encoding="utf-8"
+            )
+            rejected = run("production")
+            self.assertNotEqual(rejected.returncode, 0)
+            self.assertFalse((runner / "tail-ran").exists())
+            subprocess.run(
+                ["git", "-C", state, "restore", "state.json"], check=True
+            )
+
+            for name, content in inputs.items():
+                path = runner / name
+                path.write_bytes(content)
+                if name == "age-bin":
+                    path.chmod(0o555)
+            started.write_text("{}\n", encoding="utf-8")
             proof_path.write_text(
                 json.dumps(production_proof) + "\n", encoding="utf-8"
             )
@@ -886,6 +903,18 @@ class ReleaseControllerTests(unittest.TestCase):
                     cleanup_root: pathlib.Path = runner,
                     cleanup_files: tuple[str, ...] = private_files,
                 ) -> None:
+                    cleanup_paths = [
+                        *(cleanup_root / name for name in cleanup_files),
+                        cleanup_root / "reconstructed",
+                        cleanup_root / ".reconstructed-private",
+                        cleanup_root / "state-views",
+                    ]
+                    deadline = time.monotonic() + 10
+                    while (
+                        any(path.exists() for path in cleanup_paths)
+                        and time.monotonic() < deadline
+                    ):
+                        time.sleep(0.01)
                     for name in cleanup_files:
                         self.assertFalse((cleanup_root / name).exists(), name)
                     self.assertFalse((cleanup_root / "reconstructed").exists())
@@ -893,6 +922,58 @@ class ReleaseControllerTests(unittest.TestCase):
                         list(cleanup_root.glob(".reconstructed-*")), []
                     )
                     self.assertFalse((cleanup_root / "state-views").exists())
+
+                def process_start(pid: int) -> str:
+                    process_stat = pathlib.Path(f"/proc/{pid}/stat").read_text(
+                        encoding="ascii"
+                    )
+                    return process_stat.rsplit(") ", 1)[1].split()[19]
+
+                def assert_process_terminated(pid: int, expected_start: str) -> None:
+                    stat_path = pathlib.Path(f"/proc/{pid}/stat")
+                    deadline = time.monotonic() + 2
+                    state = ""
+                    while time.monotonic() < deadline:
+                        try:
+                            process_stat = stat_path.read_text(encoding="ascii")
+                        except FileNotFoundError:
+                            return
+                        fields = process_stat.rsplit(") ", 1)[1].split()
+                        state = fields[0]
+                        if fields[19] != expected_start:
+                            return
+                        if state == "Z":
+                            return
+                        time.sleep(0.01)
+                    self.fail(f"process {pid} remained live in state {state!r}")
+
+                def assert_supervisor_terminated() -> None:
+                    marker = b"lean-eval-release-cleanup-supervisor-v1"
+                    expected_runner = os.fsencode(runner)
+                    deadline = time.monotonic() + 30
+                    live: list[int] = []
+                    while time.monotonic() < deadline:
+                        live = []
+                        for cmdline in pathlib.Path("/proc").glob("[0-9]*/cmdline"):
+                            try:
+                                arguments = cmdline.read_bytes().split(b"\0")
+                            except (
+                                FileNotFoundError,
+                                PermissionError,
+                                ProcessLookupError,
+                            ):
+                                continue
+                            if any(
+                                argument == marker
+                                and index + 1 < len(arguments)
+                                and arguments[index + 1] == expected_runner
+                                for index, argument in enumerate(arguments)
+                            ):
+                                live.append(int(cmdline.parent.name))
+                        if not live:
+                            return
+                        time.sleep(0.01)
+                    self.fail(f"cleanup supervisors remained live: {live}")
 
                 for label, failure in (
                     ("early", prologue + "false\n"),
@@ -1009,6 +1090,53 @@ class ReleaseControllerTests(unittest.TestCase):
                     clean_supervisor.stderr,
                 )
 
+                supervisor_arguments = (
+                    '"$RUNNER_TEMP" "$$" "$parent_start" "$parent_group"'
+                )
+                for identity, replacement in (
+                    (
+                        "pid",
+                        '"$RUNNER_TEMP" 99999999 "$parent_start" '
+                        '"$parent_group"',
+                    ),
+                    (
+                        "start-time",
+                        '"$RUNNER_TEMP" "$$" "$((parent_start + 1))" '
+                        '"$parent_group"',
+                    ),
+                ):
+                    with self.subTest(
+                        workflow=workflow_name,
+                        supervisor_identity=identity,
+                    ):
+                        populate()
+                        corrupted_boundary = supervisor_boundary.replace(
+                            supervisor_arguments,
+                            replacement,
+                            1,
+                        )
+                        self.assertNotEqual(
+                            corrupted_boundary,
+                            supervisor_boundary,
+                        )
+                        after_supervisor = runner / "after-supervisor"
+                        rejected_identity = subprocess.run(
+                            isolated_command(
+                                prologue
+                                + corrupted_boundary
+                                + f": > {after_supervisor}\n"
+                            ),
+                            check=False,
+                            capture_output=True,
+                            text=True,
+                            timeout=10,
+                            env={"RUNNER_TEMP": str(runner)},
+                        )
+                        self.assertNotEqual(rejected_identity.returncode, 0)
+                        self.assertFalse(after_supervisor.exists())
+                        assert_clean()
+                        assert_supervisor_terminated()
+
                 pre_exec = runner / "supervisor-pre-exec"
                 allow_exec = runner / "allow-supervisor-exec"
                 checkout_started = runner / "checkout-started"
@@ -1095,6 +1223,7 @@ class ReleaseControllerTests(unittest.TestCase):
                 ) and time.monotonic() < deadline:
                     time.sleep(0.01)
                 assert_clean()
+                assert_supervisor_terminated()
 
                 for signal_value in (
                     signal.SIGINT,
@@ -1140,6 +1269,7 @@ class ReleaseControllerTests(unittest.TestCase):
                         child_pid = int(
                             child_pid_path.read_text(encoding="ascii").strip()
                         )
+                        child_start = process_start(child_pid)
                         os.kill(signaled.pid, signal_value)
                         self.assertNotEqual(signaled.wait(timeout=5), 0)
                         deadline = time.monotonic() + 5
@@ -1148,12 +1278,8 @@ class ReleaseControllerTests(unittest.TestCase):
                         ) and time.monotonic() < deadline:
                             time.sleep(0.01)
                         assert_clean()
-                        deadline = time.monotonic() + 5
-                        while (
-                            pathlib.Path(f"/proc/{child_pid}").exists()
-                            and time.monotonic() < deadline
-                        ):
-                            time.sleep(0.01)
+                        assert_supervisor_terminated()
+                        assert_process_terminated(child_pid, child_start)
 
                 # A surviving foreground writer must be terminated, and a
                 # write racing the first scrub must be removed by the repeated
@@ -1162,13 +1288,16 @@ class ReleaseControllerTests(unittest.TestCase):
                 writer_ready = runner / "writer-ready"
                 allow_writer = runner / "allow-writer"
                 writer_ran = runner / "writer-ran"
+                writer_pid_path = runner / "writer-pid"
                 writer_code = textwrap.dedent(
                     f"""\
+                    import os
                     import pathlib
                     import signal
                     import time
 
                     signal.signal(signal.SIGTERM, signal.SIG_IGN)
+                    pathlib.Path({str(writer_pid_path)!r}).write_text(str(os.getpid()))
                     pathlib.Path({str(writer_ready)!r}).write_text("ready")
                     allow = pathlib.Path({str(allow_writer)!r})
                     while not allow.exists():
@@ -1197,6 +1326,8 @@ class ReleaseControllerTests(unittest.TestCase):
                 while not writer_ready.exists() and time.monotonic() < deadline:
                     time.sleep(0.01)
                 self.assertTrue(writer_ready.exists())
+                writer_pid = int(writer_pid_path.read_text(encoding="ascii"))
+                writer_start = process_start(writer_pid)
                 os.kill(writer_parent.pid, signal.SIGKILL)
                 self.assertNotEqual(writer_parent.wait(timeout=5), 0)
                 deadline = time.monotonic() + 5
@@ -1211,6 +1342,8 @@ class ReleaseControllerTests(unittest.TestCase):
                     time.sleep(0.01)
                 self.assertTrue(writer_ran.exists())
                 assert_clean()
+                assert_supervisor_terminated()
+                assert_process_terminated(writer_pid, writer_start)
 
                 # The supervisor has its own session, so killing the entire
                 # authority process group cannot suppress cleanup.
@@ -1239,6 +1372,7 @@ class ReleaseControllerTests(unittest.TestCase):
                 ) and time.monotonic() < deadline:
                     time.sleep(0.01)
                 assert_clean()
+                assert_supervisor_terminated()
 
     def test_production_failure_scrubs_before_retryable_recovery(self) -> None:
         authority_tail = (
