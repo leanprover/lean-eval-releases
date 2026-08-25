@@ -8,6 +8,7 @@ import json
 import os
 import pathlib
 import re
+import shutil
 import subprocess
 import tempfile
 import unittest
@@ -168,6 +169,12 @@ class ReleaseControllerTests(unittest.TestCase):
         self.assertIn("lean-eval-archive-unwrap-production", workflow)
         self.assertIn("--max-filesize 16777216", workflow)
         self.assertIn("state-event started", workflow)
+        started_step = workflow[
+            workflow.index("      - name: Append release.started") :
+            workflow.index("  unwrap-publish:")
+        ]
+        self.assertIn("state_commit=$(git -C state rev-parse HEAD)", started_step)
+        self.assertIn('"state_commit=$state_commit"', started_step)
         self.assertNotIn("upload-artifact", workflow)
         self.assertNotIn("actions/download-artifact", workflow)
         self.assertIn("--history-only", workflow)
@@ -380,20 +387,27 @@ class ReleaseControllerTests(unittest.TestCase):
             privileged,
         )
 
+        sanitizer = (ROOT / "scripts/release_sanitizer_literal.sh").read_text(
+            encoding="utf-8"
+        )
+        proof = sanitizer.index('for proc in "/proc/$$/environ"')
+        self.assertIn('"/proc/$$/environ" "/proc/$PPID/environ"', sanitizer)
+        self.assertLess(sanitizer.index("trap literal_cleanup EXIT"), proof)
+        proof_complete = sanitizer.index("trap - EXIT", proof)
+        checkout_tail = sanitizer.index(
+            "scripts/release_authority_tail.sh", proof_complete
+        )
+        self.assertLess(proof_complete, checkout_tail)
         authority_tail = (ROOT / "scripts/release_authority_tail.sh").read_text(
             encoding="utf-8"
         )
-        proof = authority_tail.index("assert_no_authority_environment\n")
-        self.assertIn('"/proc/$$/environ" "/proc/$PPID/environ"', authority_tail)
-        self.assertLess(authority_tail.index("trap finish_production EXIT"), proof)
-        proof_complete = authority_tail.index("authority_proven=true", proof)
         for command in (
             "scripts/reconstruct_release.py",
             "scripts/classify_release_publication.py",
             "state-event published",
         ):
             with self.subTest(command=command):
-                self.assertIn(command, authority_tail[proof_complete:])
+                self.assertIn(command, authority_tail)
         self.assertIn(
             'if [ "$status" -ne 0 ] && [ "$publication_recorded" = false ]; then\n'
             "    record_retryable_failure",
@@ -408,9 +422,19 @@ class ReleaseControllerTests(unittest.TestCase):
         )
         self.assertIn("bash -n scripts/release_authority_tail.sh", validate)
         self.assertIn("shellcheck scripts/release_authority_tail.sh", validate)
+        self.assertIn("bash -n scripts/release_sanitizer_literal.sh", validate)
+        self.assertIn("shellcheck scripts/release_sanitizer_literal.sh", validate)
+        contract = (ROOT / "docs/release-controller-contract.md").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("explicit publication-launch blocker", contract)
+        self.assertRegex(
+            contract,
+            r"read back and record the environment protection\s+rules again",
+        )
 
     def test_sanitized_exec_erases_process_start_authority(self) -> None:
-        tail = ROOT / "scripts/release_authority_tail.sh"
+        tail = ROOT / "scripts/release_sanitizer_literal.sh"
         authority = {
             "AWS_ACCESS_KEY_ID": "hostile-access-key",
             "AWS_SECRET_ACCESS_KEY": "hostile-secret-key",
@@ -488,10 +512,141 @@ class ReleaseControllerTests(unittest.TestCase):
             self.assertNotEqual(contaminated_parent.returncode, 0)
             self.assertIn("process-readable", contaminated_parent.stderr)
 
+    def test_literal_sanitizer_is_the_only_gate_into_checkout_code(self) -> None:
+        sanitizer = ROOT / "scripts/release_sanitizer_literal.sh"
+        bash = shutil.which("bash")
+        self.assertIsNotNone(bash)
+        with tempfile.TemporaryDirectory() as temporary:
+            root = pathlib.Path(temporary)
+            python_bin = root / "python-bin"
+            python_bin.write_text("#!/bin/sh\necho 3.11\n", encoding="utf-8")
+            python_bin.chmod(0o555)
+            checkout = root / "checkout"
+            scripts = checkout / "scripts"
+            runner = root / "runner"
+            home = root / "home"
+            scripts.mkdir(parents=True)
+            runner.mkdir()
+            home.mkdir()
+            fake_tail = scripts / "release_authority_tail.sh"
+            fake_tail.write_text(
+                "#!/usr/bin/env bash\n"
+                "set -euo pipefail\n"
+                'test "$LITERAL_AUTHORITY_PROOF" = '
+                "release-authority-sanitized-v1\n"
+                'touch "$RUNNER_TEMP/tail-ran"\n',
+                encoding="utf-8",
+            )
+            subprocess.run(["git", "init", "-q", checkout], check=True)
+            subprocess.run(
+                ["git", "-C", checkout, "config", "user.name", "Test"],
+                check=True,
+            )
+            subprocess.run(
+                ["git", "-C", checkout, "config", "user.email", "test@example.com"],
+                check=True,
+            )
+            subprocess.run(["git", "-C", checkout, "add", "."], check=True)
+            subprocess.run(
+                ["git", "-C", checkout, "commit", "-qm", "fixture"],
+                check=True,
+            )
+
+            inputs = {
+                "release-plan.json": b"{}\n",
+                "archive-sidecar.json": b"{}\n",
+                "archive.tar.age": b"ciphertext",
+                "age-bin": b"#!/bin/sh\nexit 0\n",
+            }
+            for name, content in inputs.items():
+                path = runner / name
+                path.write_bytes(content)
+                if name == "age-bin":
+                    path.chmod(0o555)
+            release_commit = subprocess.run(
+                ["git", "-C", checkout, "rev-parse", "HEAD"],
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout.strip()
+            tail_blob = subprocess.run(
+                [
+                    "git",
+                    "-C",
+                    checkout,
+                    "rev-parse",
+                    "HEAD:scripts/release_authority_tail.sh",
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout.strip()
+
+            def digest(name: str) -> str:
+                return hashlib.sha256((runner / name).read_bytes()).hexdigest()
+
+            proof = {
+                "schema_version": 1,
+                "mode": "staging",
+                "release_commit": release_commit,
+                "state_commit": "",
+                "authority_tail_blob": tail_blob,
+                "plan_sha256": digest("release-plan.json"),
+                "started_event_sha256": "",
+                "archive_sidecar_sha256": digest("archive-sidecar.json"),
+                "archive_ciphertext_sha256": digest("archive.tar.age"),
+                "age_binary_sha256": digest("age-bin"),
+            }
+            proof_path = runner / "pre-authority-stage.json"
+            environment = {
+                "HOME": str(home),
+                "PATH": os.environ["PATH"],
+                "PYTHON_BIN": str(python_bin),
+                "RUNNER_TEMP": str(runner),
+                "GITHUB_STEP_SUMMARY": str(root / "summary.md"),
+                "SUBMISSION_ID": "0198abcd-0000-7000-8000-000000000002",
+            }
+
+            def run() -> subprocess.CompletedProcess[str]:
+                return subprocess.run(
+                    [str(bash), str(sanitizer), "staging"],
+                    cwd=checkout,
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                    env=environment,
+                )
+
+            proof_path.write_text(json.dumps(proof) + "\n", encoding="utf-8")
+            accepted = run()
+            self.assertEqual(accepted.returncode, 0, accepted.stderr)
+            (runner / "tail-ran").unlink()
+
+            proof_path.write_text(json.dumps(proof) + "\n", encoding="utf-8")
+            (runner / "release-plan.json").write_text("tampered\n", encoding="utf-8")
+            rejected = run()
+            self.assertNotEqual(rejected.returncode, 0)
+            self.assertFalse((runner / "tail-ran").exists())
+
+            for name, content in inputs.items():
+                path = runner / name
+                path.write_bytes(content)
+                if name == "age-bin":
+                    path.chmod(0o555)
+            proof_path.write_text(json.dumps(proof) + "\n", encoding="utf-8")
+            fake_tail.write_text("touch should-not-run\n", encoding="utf-8")
+            rejected = run()
+            self.assertNotEqual(rejected.returncode, 0)
+            self.assertFalse((runner / "tail-ran").exists())
+            self.assertFalse((checkout / "should-not-run").exists())
+
     def test_literal_provider_is_exact_and_prepare_unwrap_equivalent(self) -> None:
         source = (ROOT / "scripts/release_provider_literal.py").read_text(
             encoding="utf-8"
         )
+        sanitizer_source = (
+            ROOT / "scripts/release_sanitizer_literal.sh"
+        ).read_text(encoding="utf-8")
         workflows = (
             ("release-controller.yml", "unwrap-publish"),
             ("credentialed-release-staging-smoke.yml", "unwrap-one"),
@@ -513,8 +668,39 @@ class ReleaseControllerTests(unittest.TestCase):
                 line[10:] if line else "" for line in literal_lines
             ) + "\n"
             self.assertEqual(literal, source)
+            sanitizer_start = run.index("<<'SANITIZED'\n") + len(
+                "<<'SANITIZED'\n"
+            )
+            sanitizer_end = run.index("          SANITIZED\n", sanitizer_start)
+            sanitizer_lines = run[sanitizer_start:sanitizer_end].splitlines()
+            self.assertTrue(sanitizer_lines)
+            self.assertTrue(
+                all(
+                    not line or line.startswith("          ")
+                    for line in sanitizer_lines
+                )
+            )
+            sanitizer_literal = "\n".join(
+                line[10:] if line else "" for line in sanitizer_lines
+            ) + "\n"
+            self.assertEqual(sanitizer_literal, sanitizer_source)
             run_body = run.split("        run: |\n", 1)[1]
             self.assertNotIn("${{", run_body)
+            provider_end = run.index("          PY\n", start)
+            failure_gate = run.index(
+                'if [ "$provider_status" -ne 0 ]; then', provider_end
+            )
+            sanitized_exec = run.index("exec env -i", failure_gate)
+            self.assertLess(failure_gate, sanitized_exec)
+            self.assertNotIn(
+                "scripts/release_authority_tail.sh",
+                run[provider_end:sanitized_exec],
+            )
+            proof = sanitizer_literal.index('for proc in "/proc/$$/environ"')
+            checkout = sanitizer_literal.index(
+                "scripts/release_authority_tail.sh", proof
+            )
+            self.assertLess(proof, checkout)
 
         trusted = dt.datetime.fromisoformat(NOW.replace("Z", "+00:00"))
         random_bytes = bytes(range(10))
@@ -572,6 +758,130 @@ class ReleaseControllerTests(unittest.TestCase):
                         random_bytes=random_bytes,
                         runner_nonce=nonce,
                     )
+
+    def test_literal_provider_has_field_by_field_plan_rejection_parity(self) -> None:
+        plan = copy.deepcopy(self.plan)
+        plan["request"]["controller"] = {
+            "schema_version": 1,
+            "environment": "production",
+            "mode": "publication",
+            "release_repository": "leanprover/lean-eval-releases",
+            "release_commit": "4" * 40,
+            "state_repository": "leanprover/lean-eval-state",
+            "state_commit": "5" * 40,
+            "state_contract_commit": "a53c658a2de2188675134dc2890285fbaa17cf5a",
+            "state_source_event_count": 1,
+            "state_source_digest": "6" * 64,
+            "release_queue_sha256": "7" * 64,
+            "acceptance_snapshot_sha256": "8" * 64,
+        }
+        plan["request"]["submission"]["production_metadata"] = {
+            "credit_identity": "Example credit",
+            "component_models": ["Example component"],
+            "harness": "Example harness",
+            "human_involvement": "None",
+            "web_access": False,
+            "wall_time_seconds": 12.5,
+            "input_tokens": 10,
+            "output_tokens": 20,
+            "cost_usd": 0.5,
+            "billing_mode": "api",
+            "prompt": "Example prompt",
+            "notes": "Example notes",
+        }
+        trusted = dt.datetime.fromisoformat(NOW.replace("Z", "+00:00"))
+
+        def accepted(candidate: object, *, literal: bool) -> bool:
+            try:
+                if literal:
+                    release_provider_literal.build_request(
+                        candidate,
+                        self.sidecar,
+                        self.ciphertext,
+                        trusted,
+                        random_bytes=bytes(range(10)),
+                        runner_nonce="a" * 64,
+                    )
+                else:
+                    prepare_unwrap(
+                        candidate,
+                        self.sidecar,
+                        self.ciphertext,
+                        NOW,
+                        random_bytes=bytes(range(10)),
+                        runner_nonce="a" * 64,
+                    )
+            except (ControllerError, release_provider_literal.ProviderError):
+                return False
+            return True
+
+        self.assertTrue(accepted(plan, literal=False))
+        self.assertTrue(accepted(plan, literal=True))
+        mutations: list[tuple[str, object]] = []
+
+        def replace_at(value: object, path: tuple[object, ...], replacement: object) -> object:
+            changed = copy.deepcopy(value)
+            if not path:
+                return replacement
+            parent = changed
+            for component in path[:-1]:
+                parent = parent[component]  # type: ignore[index]
+            parent[path[-1]] = replacement  # type: ignore[index]
+            return changed
+
+        def walk(value: object, path: tuple[object, ...] = ()) -> None:
+            if path:
+                mutations.append((f"replace {path}", replace_at(plan, path, None)))
+            if isinstance(value, dict):
+                extra = copy.deepcopy(value)
+                extra["__unexpected"] = True
+                mutations.append(
+                    (f"extra field {path}", replace_at(plan, path, extra))
+                )
+                for key, item in value.items():
+                    missing = copy.deepcopy(value)
+                    del missing[key]
+                    mutations.append(
+                        (f"missing {path + (key,)}", replace_at(plan, path, missing))
+                    )
+                    walk(item, path + (key,))
+            elif isinstance(value, list):
+                extended = copy.deepcopy(value)
+                extended.append(None)
+                mutations.append(
+                    (f"extended {path}", replace_at(plan, path, extended))
+                )
+                for index, item in enumerate(value):
+                    walk(item, path + (index,))
+
+        walk(plan)
+        mutations.extend(
+            (
+                ("NaN schema", {**copy.deepcopy(plan), "schema_version": float("nan")}),
+                (
+                    "infinite wall time",
+                    replace_at(
+                        plan,
+                        (
+                            "request",
+                            "submission",
+                            "production_metadata",
+                            "wall_time_seconds",
+                        ),
+                        float("inf"),
+                    ),
+                ),
+            )
+        )
+        rejected = 0
+        for label, candidate in mutations:
+            with self.subTest(mutation=label):
+                prepared = accepted(candidate, literal=False)
+                literal = accepted(candidate, literal=True)
+                self.assertEqual(literal, prepared)
+                rejected += int(not prepared)
+        self.assertGreaterEqual(len(mutations), 100)
+        self.assertGreaterEqual(rejected, 100)
 
     def test_literal_provider_scans_runner_authority_files(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -1168,9 +1478,19 @@ class ReleaseControllerTests(unittest.TestCase):
         tail = (ROOT / "scripts/release_authority_tail.sh").read_text(
             encoding="utf-8"
         )
-        proof = tail.index("assert_no_authority_environment\n")
-        self.assertGreater(tail.rindex('if [ "$mode" = staging ]'), proof)
-        self.assertGreater(tail.index('"$RUNNER_TEMP/age-bin" --decrypt'), proof)
+        sanitizer = (ROOT / "scripts/release_sanitizer_literal.sh").read_text(
+            encoding="utf-8"
+        )
+        proof = sanitizer.index('for proc in "/proc/$$/environ"')
+        checkout_tail = sanitizer.index(
+            "scripts/release_authority_tail.sh", proof
+        )
+        tail = (ROOT / "scripts/release_authority_tail.sh").read_text(
+            encoding="utf-8"
+        )
+        self.assertGreater(checkout_tail, proof)
+        self.assertIn('if [ "$mode" = staging ]', tail)
+        self.assertIn('"$RUNNER_TEMP/age-bin" --decrypt', tail)
         self.assertIn("audit SSH key was not synchronously removed", workflow)
 
     def test_every_external_action_is_pinned_to_a_full_commit(self) -> None:

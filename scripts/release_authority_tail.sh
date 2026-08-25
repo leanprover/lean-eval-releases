@@ -4,17 +4,10 @@ set -euo pipefail
 
 mode=${1:-}
 case "$mode" in
-  probe|production|staging) ;;
+  production|staging) ;;
   *) echo "release authority tail mode is invalid" >&2; exit 2 ;;
 esac
 
-authority_names=(
-  AWS_ACCESS_KEY_ID
-  AWS_SECRET_ACCESS_KEY
-  AWS_SESSION_TOKEN
-  ACTIONS_ID_TOKEN_REQUEST_TOKEN
-  ACTIONS_ID_TOKEN_REQUEST_URL
-)
 authority_proven=false
 publication_recorded=false
 
@@ -26,7 +19,7 @@ remove_common_scratch() {
   rm -f "$RUNNER_TEMP"/release-*.json "$RUNNER_TEMP"/unwrap-*.json \
     "$RUNNER_TEMP"/identity.age "$RUNNER_TEMP"/source.tar.gz \
     "$RUNNER_TEMP"/archive.tar.age "$RUNNER_TEMP"/archive-sidecar.json \
-    "$RUNNER_TEMP"/age-bin
+    "$RUNNER_TEMP"/age-bin "$RUNNER_TEMP"/pre-authority-stage.json
 }
 
 record_retryable_failure() (
@@ -97,78 +90,13 @@ elif [ "$mode" = staging ]; then
   trap cleanup_staging EXIT
 fi
 
-assert_no_authority_environment() {
-  local name proc entry
-  for name in "${authority_names[@]}"; do
-    if [[ -v "$name" ]]; then
-      echo "authority variable survived the sanitized exec: $name" >&2
-      return 1
-    fi
-  done
-  for proc in "/proc/$$/environ" "/proc/$PPID/environ"; do
-    if [ ! -r "$proc" ]; then
-      echo "cannot prove sanitized process environment: $proc" >&2
-      return 1
-    fi
-    while IFS= read -r -d '' entry; do
-      for name in "${authority_names[@]}"; do
-        case "$entry" in
-          "$name="*)
-            echo "authority remains process-readable in $proc: $name" >&2
-            return 1
-            ;;
-        esac
-      done
-    done < "$proc"
-  done
-}
-
-assert_no_authority_files() {
-  local root path size count=0 total=0 unsafe
-  for root in "$RUNNER_TEMP/_runner_file_commands" "$HOME/.aws"; do
-    [ ! -e "$root" ] || [ -d "$root" ] || {
-      echo "authority scan root is unsafe: $root" >&2
-      return 1
-    }
-    [ ! -L "$root" ] || {
-      echo "authority scan root is a symlink: $root" >&2
-      return 1
-    }
-    [ -d "$root" ] || continue
-    unsafe=$(find -P "$root" -mindepth 1 \
-      \( -type l -o \( ! -type d ! -type f \) \) -print -quit)
-    if [ -n "$unsafe" ]; then
-      echo "authority scan encountered an unsafe path: $unsafe" >&2
-      return 1
-    fi
-    while IFS= read -r -d '' path; do
-      size=$(stat --format=%s -- "$path")
-      count=$((count + 1))
-      total=$((total + size))
-      if [ "$count" -gt 1024 ] || [ "$size" -gt 8388608 ] || \
-        [ "$total" -gt 33554432 ]; then
-        echo "authority scan exceeded its size limit" >&2
-        return 1
-      fi
-      if LC_ALL=C grep --text --quiet --extended-regexp \
-        'AWS_(ACCESS_KEY_ID|SECRET_ACCESS_KEY|SESSION_TOKEN)|ACTIONS_ID_TOKEN_REQUEST_(TOKEN|URL)|aws_(access_key_id|secret_access_key|session_token)' \
-        "$path"; then
-        echo "authority name remains in runner file: $path" >&2
-        return 1
-      fi
-    done < <(find -P "$root" -type f -print0)
-  done
-}
-
 : "${HOME:?}"
 : "${RUNNER_TEMP:?}"
-assert_no_authority_environment
-assert_no_authority_files
+: "${LITERAL_AUTHORITY_PROOF:?}"
+test "$LITERAL_AUTHORITY_PROOF" = release-authority-sanitized-v1
 authority_proven=true
-[ "$mode" != probe ] || exit 0
 
 : "${PATH:?}"
-: "${PROVIDER_STATUS:?}"
 : "${PYTHON_BIN:?}"
 case "$PYTHON_BIN" in
   /*) ;;
@@ -180,10 +108,6 @@ esac
 if [ "$mode" = staging ]; then
   : "${GITHUB_STEP_SUMMARY:?}"
   : "${SUBMISSION_ID:?}"
-  if [ "$PROVIDER_STATUS" -ne 0 ]; then
-    echo "staging release provider phase failed" >&2
-    exit 1
-  fi
   "$PYTHON_BIN" scripts/release_controller.py unwrap-identity \
     --request "$RUNNER_TEMP/unwrap-request.json" \
     --response "$RUNNER_TEMP/unwrap-response.json" \
@@ -229,10 +153,6 @@ cmp "$RUNNER_TEMP/release-started-event.json" \
 "$PYTHON_BIN" state/scripts/state.py --root state materialize \
   --output "$RUNNER_TEMP/state-views"
 
-if [ "$PROVIDER_STATUS" -ne 0 ]; then
-  echo "production release provider phase failed" >&2
-  exit 1
-fi
 "$PYTHON_BIN" scripts/release_controller.py unwrap-identity \
   --request "$RUNNER_TEMP/unwrap-request.json" \
   --response "$RUNNER_TEMP/unwrap-response.json" \
