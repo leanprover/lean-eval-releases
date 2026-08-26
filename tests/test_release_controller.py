@@ -39,6 +39,7 @@ from scripts.release_controller import (
     terminal_event,
     unwrap_identity,
     uuid7,
+    verify_unwrap_reuse_refusal,
     verify_staged_release_state_transition,
 )
 from scripts.release_orchestrator import plan_next, result_id
@@ -251,7 +252,7 @@ class ReleaseControllerTests(unittest.TestCase):
             controller.count("release_controller.py verify-staged-state-transition"),
             4,
         )
-        self.assertEqual(controller.count("--protected-main-commit"), 4)
+        self.assertEqual(controller.count("--protected-main-commit"), 10)
         self.assertNotIn("state.py --root state append", workflow)
         self.assertNotIn("git -C state rebase", workflow)
 
@@ -997,9 +998,21 @@ class ReleaseControllerTests(unittest.TestCase):
                     """\
                     import pathlib
                     import shutil
+                    import subprocess
                     import sys
 
                     root = pathlib.Path(sys.argv[sys.argv.index("--root") + 1])
+                    protected = sys.argv[
+                        sys.argv.index("--protected-main-commit") + 1
+                    ]
+                    actual = subprocess.run(
+                        ["git", "-C", root, "rev-parse", "HEAD"],
+                        check=True,
+                        capture_output=True,
+                        text=True,
+                    ).stdout.strip()
+                    if protected != actual:
+                        raise SystemExit("protected State head is not exact")
                     if "materialize" in sys.argv:
                         output = pathlib.Path(sys.argv[sys.argv.index("--output") + 1])
                         output.mkdir(parents=True)
@@ -1095,9 +1108,21 @@ class ReleaseControllerTests(unittest.TestCase):
                     """\
                     import pathlib
                     import shutil
+                    import subprocess
                     import sys
 
                     root = pathlib.Path(sys.argv[sys.argv.index("--root") + 1])
+                    protected = sys.argv[
+                        sys.argv.index("--protected-main-commit") + 1
+                    ]
+                    actual = subprocess.run(
+                        ["git", "-C", root, "rev-parse", "HEAD"],
+                        check=True,
+                        capture_output=True,
+                        text=True,
+                    ).stdout.strip()
+                    if protected != actual:
+                        raise SystemExit("protected State head is not exact")
                     if "materialize" in sys.argv:
                         output = pathlib.Path(sys.argv[sys.argv.index("--output") + 1])
                         output.mkdir(parents=True)
@@ -1240,7 +1265,10 @@ class ReleaseControllerTests(unittest.TestCase):
                 "name": (
                     "Invoke once and exec the sanitized release tail"
                     if environment == "production"
-                    else "Invoke once and exec the sanitized staging tail"
+                    else (
+                        "Invoke once, require reuse refusal, and exec the "
+                        "sanitized staging tail"
+                    )
                 ),
                 "if": "always()",
                 "shell": (
@@ -1869,6 +1897,8 @@ class ReleaseControllerTests(unittest.TestCase):
                     "unwrap-request.json",
                     "unwrap-response.json",
                     "unwrap-metadata.json",
+                    "unwrap-reuse-response.json",
+                    "unwrap-reuse-metadata.json",
                     "identity.age",
                     "source.tar.gz",
                     "archive.tar.age",
@@ -2846,7 +2876,11 @@ class ReleaseControllerTests(unittest.TestCase):
         self.assertIn("secrets.PRODUCTION_STATE_CONTROLLER_KEY", workflow)
         self.assertNotIn("secrets.AUDIT_READ_KEY", workflow)
         self.assertIn("PUBLICATION_ENABLED must remain absent or false", workflow)
-        self.assertIn("python state/scripts/state.py --root state validate", workflow)
+        self.assertIn(
+            "python state/scripts/state.py --root state \\\n"
+            '            --protected-main-commit "$state_head" validate',
+            workflow,
+        )
         self.assertIn('--output "$RUNNER_TEMP/state-views"', workflow)
         self.assertGreaterEqual(workflow.count("fetch-depth: 0"), 2)
         self.assertIn("scripts/release_qualification.py", workflow)
@@ -3321,7 +3355,7 @@ class ReleaseControllerTests(unittest.TestCase):
                 with self.assertRaises(AssertionError):
                     validate_closed_boundary(workflow.replace(old, new, 1))
 
-    def test_staging_release_smoke_is_exact_decrypt_only_and_source_artifact_free(
+    def test_staging_release_smoke_reuses_once_reconstructs_and_leaves_no_artifact(
         self,
     ) -> None:
         workflow = (
@@ -3362,7 +3396,27 @@ class ReleaseControllerTests(unittest.TestCase):
         self.assertNotIn("state-event", workflow)
         self.assertNotIn("git push", workflow)
         self.assertNotIn("upload-artifact", workflow)
-        self.assertNotIn("scripts/reconstruct_release.py", workflow)
+        self.assertEqual(workflow.count("aws lambda invoke"), 2)
+        self.assertEqual(
+            workflow.count(
+                '--payload "fileb://$RUNNER_TEMP/unwrap-request.json"'
+            ),
+            2,
+        )
+        self.assertIn("unwrap_request_sha256=$(sha256sum", workflow)
+        self.assertGreaterEqual(
+            workflow.count('!= "$unwrap_request_sha256"'),
+            2,
+        )
+        provider = workflow[workflow.index("provider_phase=provider-invocation") :]
+        self.assertLess(
+            provider.index('"$RUNNER_TEMP/unwrap-response.json"'),
+            provider.index('"$RUNNER_TEMP/unwrap-reuse-response.json"'),
+        )
+        self.assertLess(
+            provider.index("unwrap-reuse-response.json"),
+            provider.index("unset AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY"),
+        )
         self.assert_release_invoke_session_boundary(
             workflow,
             job_name="unwrap-one",
@@ -3396,7 +3450,44 @@ class ReleaseControllerTests(unittest.TestCase):
         self.assertGreater(checkout_tail, proof)
         self.assertIn('if [ "$mode" = staging ]', tail)
         self.assertIn('"$RUNNER_TEMP/age-bin" --decrypt', tail)
+        self.assertIn("verify-unwrap-reuse-refusal", tail)
+        self.assertIn("scripts/reconstruct_release.py", tail)
+        self.assertIn("scripts/validate_manifest.py", tail)
+        self.assertIn("release-acceptance-snapshot.json", tail)
+        self.assertIn('test ! -e "$RUNNER_TEMP/reconstructed"', tail)
         self.assertIn("audit SSH key was not synchronously removed", workflow)
+
+    def test_every_state_consumer_binds_the_exact_protected_head(self) -> None:
+        shell_consumers = {
+            ".github/workflows/credentialed-release-staging-smoke.yml": 2,
+            ".github/workflows/release-controller.yml": 4,
+            ".github/workflows/verify-production-controller-credentials.yml": 2,
+            "scripts/release_authority_tail.sh": 6,
+        }
+        invocation = re.compile(
+            r"state/scripts/state\.py --root state \\\n"
+            r"\s+--protected-main-commit \"\$[A-Za-z_][A-Za-z0-9_]*\" "
+            r"(?:validate|materialize)"
+        )
+        for relative, expected in shell_consumers.items():
+            with self.subTest(consumer=relative):
+                source = (ROOT / relative).read_text(encoding="utf-8")
+                self.assertEqual(source.count("state/scripts/state.py"), expected)
+                self.assertEqual(len(invocation.findall(source)), expected)
+
+        reconstruction = (
+            ROOT / "scripts/reconstruct_release_plan.py"
+        ).read_text(encoding="utf-8")
+        self.assertEqual(
+            reconstruction.count('worktree / "scripts/state.py"'),
+            2,
+        )
+        self.assertEqual(
+            reconstruction.count(
+                '"--protected-main-commit",\n            state_commit,'
+            ),
+            2,
+        )
 
     def test_staging_summary_uses_plan_bound_submission_id(self) -> None:
         workflow = (
@@ -3552,6 +3643,69 @@ class ReleaseControllerTests(unittest.TestCase):
                 response,
                 {"StatusCode": 200, "FunctionError": "Unhandled"},
             )
+
+    def test_identical_unwrap_reuse_requires_exact_consumed_refusal(self) -> None:
+        verify_unwrap_reuse_refusal(
+            {
+                "errorMessage": "capability has already been consumed",
+                "errorType": "AwsAdapterError",
+                "requestId": "12345678-1234-1234-1234-123456789abc",
+                "stackTrace": ["  File /var/task/aws_key_adapter.py, line 1"],
+            },
+            {"StatusCode": 200, "FunctionError": "Unhandled"},
+        )
+        canonical_response = {
+            "errorMessage": "capability has already been consumed",
+            "errorType": "AwsAdapterError",
+            "requestId": "12345678-1234-1234-1234-123456789abc",
+            "stackTrace": ["  File /var/task/aws_key_adapter.py, line 1"],
+        }
+        for response, metadata, message in (
+            (
+                {**canonical_response, "errorMessage": "provider unavailable"},
+                {"StatusCode": 200, "FunctionError": "Unhandled"},
+                "unexpected reason",
+            ),
+            (
+                canonical_response,
+                {"StatusCode": 200},
+                "Lambda function error",
+            ),
+            (
+                {
+                    **canonical_response,
+                    "plaintext_identity_base64": "QUdFLVNFQ1JFVC1LRVkt",
+                },
+                {"StatusCode": 200, "FunctionError": "Unhandled"},
+                "fields are not canonical",
+            ),
+            (
+                {**canonical_response, "errorType": "RuntimeError"},
+                {"StatusCode": 200, "FunctionError": "Unhandled"},
+                "error type",
+            ),
+            (
+                {**canonical_response, "requestId": "not-a-request-id"},
+                {"StatusCode": 200, "FunctionError": "Unhandled"},
+                "requestId",
+            ),
+            (
+                {**canonical_response, "stackTrace": "not-a-list"},
+                {"StatusCode": 200, "FunctionError": "Unhandled"},
+                "stack trace",
+            ),
+            (
+                {
+                    **canonical_response,
+                    "stackTrace": ["AGE-SECRET-KEY-1PRIVATE"],
+                },
+                {"StatusCode": 200, "FunctionError": "Unhandled"},
+                "private identity",
+            ),
+        ):
+            with self.subTest(message=message):
+                with self.assertRaisesRegex(ControllerError, message):
+                    verify_unwrap_reuse_refusal(response, metadata)
 
     def test_state_events_preserve_causation_attempt_and_publication_evidence(
         self,
