@@ -146,12 +146,12 @@ Before planning, the controller checks both full-history Git checkouts against
 the closed credential contract, requires exact tracked-clean `origin/main`
 commits, and requires production State to descend from the reviewed release
 event contract. That reviewed production State contract is commit
-`6799522f7fe57263de4a66499e52ce4bfda69baa`, root tree
-`b63b8290d1bc779d9a981ea3f9e4dbc2b848c635`, with README blob
-`d2487d0330b708e856bdcd79ba114631355225a7`, docs tree
-`3e9957ffc1a7b653d940d3b8020b583ea2fae0f3`, schema tree
-`3043a7b6afa042577645e0520ee9bd105a15424a`, and scripts tree
-`4e2c39cac2510716577a7fd6d13abf0f9cf26976`. A source-free qualification
+`3b7f713c5f39de27e84db5916980d4e96c353112`, root tree
+`a4f2cf17dab8b3be80427e2560ad2a4cbf2b93b7`, with README blob
+`9def120f4d0aae84fc3b713a029832e86b9a961e`, docs tree
+`df80aab31568ba6d715895b4d058e2cf53178e33`, schema tree
+`d5ab8e25ce33cfc54e19cd8fae4c4bdcc0455045`, and scripts tree
+`9e019a7b631b93df2b5d91bd2ba3d164838c290d`. A source-free qualification
 binds the exact controller commit, State commit and event provenance,
 release-queue bytes, and acceptance-snapshot bytes into the execution plan.
 Reconstruction rechecks the acceptance snapshot binding. The detailed
@@ -249,7 +249,10 @@ this repository, and it uploads no artifact.
 Before executing any checked-out staging State code, the workflow requires the
 checkout to be clean, complete-history, and exact `origin/main`, to descend from
 the reviewed staging release contract, and to retain its exact reviewed
-`schema` and `scripts` trees.
+`schema` and `scripts` trees. That staging contract is commit
+`f00055ed2ba9b4252f04e096d27aadd5beef0ed4`, schema tree
+`13d5853b5c1bf7227e90d697c86d42c7ce232102`, and scripts tree
+`de1017d55eaf9740358ae38908c77c168a25e8de`.
 The workflow also refuses a role variable other than the reviewed staging ARN
 and restricts its 15-minute session to the exact qualified staging unwrap
 Lambda alias (plus caller identity) in account `161072922960`.
