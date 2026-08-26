@@ -54,6 +54,9 @@ ARCHIVE_KEY_ID = re.compile(r"ak1_[0-9a-f]{64}")
 ADAPTER = re.compile(r"[a-z][a-z0-9-]{0,63}-v[1-9][0-9]*")
 AGE_RECIPIENT = re.compile(r"age1[0-9a-z]{40,4090}")
 CAPABILITY_DIGEST = re.compile(r"uc1_[0-9a-f]{64}")
+AWS_REQUEST_ID = re.compile(
+    r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
+)
 REASON = re.compile(r"[a-z][a-z0-9_]{1,63}")
 BASE64 = re.compile(r"[A-Za-z0-9+/]+={0,2}")
 MAX_WRAPPED_BYTES = 16_384
@@ -917,6 +920,53 @@ def unwrap_identity(
     return identity
 
 
+def verify_unwrap_reuse_refusal(
+    response_value: Any, metadata_value: Any
+) -> None:
+    """Require an exact consumed-capability refusal without private output."""
+    metadata = _object(metadata_value, "repeat Lambda metadata")
+    if (
+        metadata.get("StatusCode") != 200
+        or metadata.get("FunctionError") != "Unhandled"
+    ):
+        raise ControllerError(
+            "repeat unwrap did not report a Lambda function error"
+        )
+    response = _object(response_value, "repeat unwrap response")
+    _fields(
+        response,
+        {"errorMessage", "errorType", "requestId", "stackTrace"},
+        "repeat unwrap response",
+    )
+    message = response.get("errorMessage")
+    if message != "capability has already been consumed":
+        raise ControllerError("repeat unwrap failed for an unexpected reason")
+    if response["errorType"] != "AwsAdapterError":
+        raise ControllerError("repeat unwrap error type is unexpected")
+    _match(AWS_REQUEST_ID, response["requestId"], "repeat unwrap requestId")
+    stack = response["stackTrace"]
+    if (
+        not isinstance(stack, list)
+        or not stack
+        or len(stack) > 64
+        or any(not isinstance(line, str) or len(line) > 8192 for line in stack)
+    ):
+        raise ControllerError("repeat unwrap stack trace is invalid")
+    serialized = canonical_json(response).encode("utf-8")
+    if len(serialized) > 65_536 or any(
+        marker in serialized
+        for marker in (
+            b"plaintext_identity_base64",
+            b"wrapped_identity",
+            b"AGE-SECRET-KEY-",
+            b"AWS_ACCESS_KEY_ID",
+            b"AWS_SECRET_ACCESS_KEY",
+            b"AWS_SESSION_TOKEN",
+        )
+    ):
+        raise ControllerError("repeat unwrap exposed private identity material")
+
+
 def _event_id(occurred_at: str, random_bytes: bytes | None = None) -> str:
     return uuid7(parse_timestamp(occurred_at, "event occurred_at"), random_bytes)
 
@@ -1097,6 +1147,10 @@ def main(argv: list[str] | None = None) -> int:
     identity.add_argument("--metadata", required=True, type=pathlib.Path)
     identity.add_argument("--output", required=True, type=pathlib.Path)
 
+    reuse = commands.add_parser("verify-unwrap-reuse-refusal")
+    reuse.add_argument("--response", required=True, type=pathlib.Path)
+    reuse.add_argument("--metadata", required=True, type=pathlib.Path)
+
     event = commands.add_parser("state-event")
     event.add_argument("kind", choices=["started", "failed", "published"])
     event.add_argument("--plan", type=pathlib.Path)
@@ -1160,6 +1214,11 @@ def main(argv: list[str] | None = None) -> int:
                 raise ControllerError(f"refusing to overwrite {args.output}")
             args.output.write_bytes(result)
             args.output.chmod(0o600)
+        elif args.command == "verify-unwrap-reuse-refusal":
+            verify_unwrap_reuse_refusal(
+                _read(args.response, "repeat unwrap response"),
+                _read(args.metadata, "repeat Lambda metadata"),
+            )
         elif args.command == "recover":
             _write(
                 args.output,

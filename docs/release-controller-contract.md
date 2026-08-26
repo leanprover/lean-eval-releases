@@ -102,15 +102,22 @@ That tail first verifies the reviewed State contract, then materializes the
 exact pinned State history and deterministically
 reconstructs the complete private execution plan (and, in production, the
 exact committed `release.started` body), rejects any descriptor digest or
-causality mismatch, then validates the Lambda response, decrypts, reconstructs
-source, publishes, writes terminal or retryable-failure State, and runs
-trap-based source cleanup. Every checked-out
+causality mismatch, then validates the Lambda response and decrypts. Staging
+also requires the identical request to receive the exact consumed-capability
+refusal, reconstructs and validates the public-only tree against the exact
+acceptance snapshot, verifies both Git checkouts are unchanged, and deletes the
+temporary tree without publication. Production reconstructs source, publishes,
+writes terminal or retryable-failure State, and runs trap-based source cleanup.
+Every checked-out
 Python entry point runs under `-I` through a literal launcher which adds only
 that exact-clean checkout's script directory after isolated standard-library
 startup, blocking ambient or untracked import shadowing. The encrypted audit
 sidecar's plaintext-tar SHA-256 is compared with the decrypted bytes in both
 staging and production before any source parser or reconstruction can run. The
-encrypted audit object remains in its private checkout; neither the identity
+State CLI always receives the exact checked-out or reconstructed source commit
+as `--protected-main-commit`; repair events therefore remain valid without
+turning protected-head selection into ambient repository state.
+The encrypted audit object remains in its private checkout; neither the identity
 nor plaintext nor private archive crosses a job boundary or is uploaded. No
 later authored step can receive a new OIDC request handle; only the pinned
 actions' post-job cleanup remains.

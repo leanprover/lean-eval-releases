@@ -233,19 +233,23 @@ operation, or artifact. The workflow must remain undispatched until an
 authenticated operator has reconciled and read back the live production trust
 policy.
 
-`Prove one credentialed staging release unwrap` is the non-publishing launch
+`Prove one credentialed staging release reconstruction` is the non-publishing launch
 gate for this boundary. Given an accepted staging submission, it derives the
 exact queued release from validated staging State, checks out the pinned audit
-commit with separate read-only keys, and consumes one staging release-purpose
-capability. Planning runs in a job with no OIDC. The separate unwrap job uses
+commit with separate read-only keys, consumes one staging release-purpose
+capability, and requires an identical second request to fail with the exact
+already-consumed response. Planning runs in a job with no OIDC. The separate unwrap job uses
 the same literal-provider/`exec env -i` process boundary as production,
 reconstructs its private plan from the exact pinned staging State commit after
-authority erasure, and verifies the decrypted tarball against the private
-sidecar only after its `/proc` authority proof. Its displayed submission ID is
+authority erasure, verifies the decrypted tarball against the private sidecar,
+and performs the real deterministic reconstruction against the exact State
+acceptance snapshot using the scheduled `eligible_at` as the staging-only
+trusted as-of time. It validates the public-only manifest and source allowlist,
+then deletes both plaintext and reconstructed output. All of this occurs only
+after its `/proc` authority proof. Its displayed submission ID is
 derived from that reconstructed and digest-bound plan, never from the unbound
-dispatch input passed to the authority job. It neither reconstructs or
-publishes the plaintext source before the embargo nor writes State or
-this repository, and it uploads no artifact.
+dispatch input passed to the authority job. It never publishes, commits, pushes,
+or changes either Git checkout, and it uploads no artifact.
 Before executing any checked-out staging State code, the workflow requires the
 checkout to be clean, complete-history, and exact `origin/main`, to descend from
 the reviewed staging release contract, and to retain its exact reviewed

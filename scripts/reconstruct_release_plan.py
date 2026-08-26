@@ -108,12 +108,16 @@ def _materialize_at(
             worktree / "scripts/state.py",
             "--root",
             str(worktree),
+            "--protected-main-commit",
+            state_commit,
             "validate",
         )
         _run_exact_python(
             worktree / "scripts/state.py",
             "--root",
             str(worktree),
+            "--protected-main-commit",
+            state_commit,
             "materialize",
             "--output",
             str(views),

@@ -74,7 +74,7 @@ run_exact_python_quiet() {
   case "$phase" in
     authority-contract|manifest-validation|plan-reconstruction|\
       identity-validation|publication-classification|publication-write|\
-      source-decryption|source-reconstruction|source-validation|\
+      reuse-validation|source-decryption|source-reconstruction|source-validation|\
       state-materialization|state-validation) ;;
     *) echo "private release phase is invalid" >&2; return 1 ;;
   esac
@@ -225,6 +225,10 @@ fi
 
 if [ "$mode" = staging ]; then
   : "${GITHUB_STEP_SUMMARY:?}"
+  release_head_before=$(git rev-parse HEAD)
+  release_tree_before=$(git rev-parse 'HEAD^{tree}')
+  state_head_before=$(git -C state rev-parse HEAD)
+  state_tree_before=$(git -C state rev-parse 'HEAD^{tree}')
   submission_id=$(jq -er .request.submission.submission_id \
     "$RUNNER_TEMP/release-plan.json")
   require_private_regular "$RUNNER_TEMP/unwrap-request.json"
@@ -237,6 +241,12 @@ if [ "$mode" = staging ]; then
     --metadata "$RUNNER_TEMP/unwrap-metadata.json" \
     --output "$RUNNER_TEMP/identity.age"
   require_private_regular "$RUNNER_TEMP/identity.age"
+  require_private_regular "$RUNNER_TEMP/unwrap-reuse-response.json"
+  require_private_regular "$RUNNER_TEMP/unwrap-reuse-metadata.json"
+  run_exact_python_quiet reuse-validation \
+    scripts/release_controller.py verify-unwrap-reuse-refusal \
+    --response "$RUNNER_TEMP/unwrap-reuse-response.json" \
+    --metadata "$RUNNER_TEMP/unwrap-reuse-metadata.json"
   test "$("$RUNNER_TEMP/age-bin" --version)" = v1.3.1
   if ! "$RUNNER_TEMP/age-bin" --decrypt \
     --identity "$RUNNER_TEMP/identity.age" \
@@ -253,17 +263,64 @@ if [ "$mode" = staging ]; then
   run_exact_python_quiet source-validation \
     scripts/validate_release_source_archive.py \
     --plaintext-tar "$RUNNER_TEMP/source.tar.gz"
+  run_exact_python_quiet state-validation \
+    state/scripts/state.py --root state \
+    --protected-main-commit "$state_head_before" validate
+  run_exact_python_quiet state-materialization \
+    state/scripts/state.py --root state \
+    --protected-main-commit "$state_head_before" materialize \
+    --output "$RUNNER_TEMP/state-views"
+  require_private_regular \
+    "$RUNNER_TEMP/state-views/release-acceptance-snapshot.json"
+  trusted_as_of=$(jq -er .request.release.eligible_at \
+    "$RUNNER_TEMP/release-plan.json")
+  run_exact_python_quiet source-reconstruction scripts/reconstruct_release.py \
+    "$RUNNER_TEMP/release-plan.json" \
+    --plaintext-tar "$RUNNER_TEMP/source.tar.gz" \
+    --trusted-as-of "$trusted_as_of" \
+    --state-acceptance-snapshot \
+      "$RUNNER_TEMP/state-views/release-acceptance-snapshot.json" \
+    --output-root "$RUNNER_TEMP/reconstructed"
+  run_exact_python_quiet manifest-validation scripts/validate_manifest.py \
+    "$RUNNER_TEMP/reconstructed/release-manifest.json" \
+    --trusted-as-of "$trusted_as_of" \
+    --state-acceptance-snapshot \
+      "$RUNNER_TEMP/state-views/release-acceptance-snapshot.json" \
+    --bundle-root "$RUNNER_TEMP/reconstructed"
+  release_path=$(jq -er .request.release.path \
+    "$RUNNER_TEMP/release-plan.json")
+  test -f "$RUNNER_TEMP/reconstructed/$release_path/Submission.lean"
+  test -f "$RUNNER_TEMP/reconstructed/$release_path/metadata.json"
+  test -f "$RUNNER_TEMP/reconstructed/$release_path/LICENSE"
+  test -f "$RUNNER_TEMP/reconstructed/sources/$submission_id.tar.gz"
+  test "$(git rev-parse HEAD)" = "$release_head_before"
+  test "$(git rev-parse 'HEAD^{tree}')" = "$release_tree_before"
+  test "$(git -C state rev-parse HEAD)" = "$state_head_before"
+  test "$(git -C state rev-parse 'HEAD^{tree}')" = "$state_tree_before"
+  test -z "$(git status --porcelain --untracked-files=all -- \
+    . ':(exclude)state')"
+  git diff --quiet HEAD --
+  git diff --cached --quiet HEAD --
+  test -z "$(git -C state status --porcelain --untracked-files=all)"
   ciphertext_digest=$(jq -er .sha256_ciphertext \
     "$RUNNER_TEMP/archive-sidecar.json")
   audit_commit=$(jq -er .request.archive.archive_commit \
     "$RUNNER_TEMP/release-plan.json")
+  remove_sensitive_scratch
+  test ! -e "$RUNNER_TEMP/reconstructed"
+  test ! -e "$RUNNER_TEMP/source.tar.gz"
+  test ! -e "$RUNNER_TEMP/identity.age"
+  test ! -e "$RUNNER_TEMP/unwrap-response.json"
+  test ! -e "$RUNNER_TEMP/unwrap-reuse-response.json"
+  test ! -e "$RUNNER_TEMP/state-views"
   {
-    echo '### Credentialed staging release boundary passed'
+    echo '### Credentialed staging release reconstruction passed'
     echo
     echo "- submission: \`$submission_id\`"
     echo "- audit commit: \`$audit_commit\`"
     echo "- ciphertext SHA-256: \`$ciphertext_digest\`"
-    echo '- plaintext matched the private sidecar and was discarded without publication or artifact upload'
+    echo '- the identical unwrap request was refused after its first successful use'
+    echo '- the public-only tree was reconstructed, validated, and discarded without publication, State/Git mutation, or artifact upload'
   } >> "$GITHUB_STEP_SUMMARY"
   exit 0
 fi
@@ -271,6 +328,8 @@ fi
 expected_release_head=$(jq -er .request.controller.release_commit \
   "$RUNNER_TEMP/release-plan.json")
 test "$(git rev-parse HEAD)" = "$expected_release_head"
+protected_state_head=$(git -C state rev-parse HEAD)
+[[ "$protected_state_head" =~ ^[0-9a-f]{40}$ ]]
 started_event_id=$(jq -er .event_id "$RUNNER_TEMP/release-started-event.json")
 started_event_path="events/${started_event_id:0:2}/$started_event_id.json"
 git -C state show "HEAD:$started_event_path" \
@@ -278,9 +337,11 @@ git -C state show "HEAD:$started_event_path" \
 cmp "$RUNNER_TEMP/release-started-event.json" \
   "$RUNNER_TEMP/committed-release-started-event.json"
 run_exact_python_quiet state-validation \
-  state/scripts/state.py --root state validate
+  state/scripts/state.py --root state \
+  --protected-main-commit "$protected_state_head" validate
 run_exact_python_quiet state-materialization \
-  state/scripts/state.py --root state materialize \
+  state/scripts/state.py --root state \
+  --protected-main-commit "$protected_state_head" materialize \
   --output "$RUNNER_TEMP/state-views"
 
 require_private_regular "$RUNNER_TEMP/unwrap-request.json"
