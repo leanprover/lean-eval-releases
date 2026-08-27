@@ -2609,7 +2609,15 @@ class ReleaseControllerTests(unittest.TestCase):
             )
             ciphertext_path.write_bytes(self.ciphertext)
             environment = os.environ.copy()
-            environment.update(HOME=str(home), RUNNER_TEMP=str(runner))
+            environment.update(
+                HOME=str(home),
+                RUNNER_TEMP=str(runner),
+                AWS_ACCESS_KEY_ID="temporary-exact-access-key",
+                AWS_SECRET_ACCESS_KEY="temporary-exact-secret-key",
+                AWS_SESSION_TOKEN="temporary-exact-session-token",
+                AWS_REGION="us-east-1",
+                AWS_DEFAULT_REGION="us-east-1",
+            )
             completed = subprocess.run(
                 [
                     sys.executable,
@@ -2839,6 +2847,10 @@ class ReleaseControllerTests(unittest.TestCase):
                 "RUNNER_TEMP": str(runner),
                 "HOME": str(home),
                 "AWS_ACCESS_KEY_ID": "temporary-exact-access-key",
+                "AWS_SECRET_ACCESS_KEY": "temporary-exact-secret-key",
+                "AWS_SESSION_TOKEN": "temporary-exact-session-token",
+                "AWS_REGION": "us-east-1",
+                "AWS_DEFAULT_REGION": "us-east-1",
             }
             (commands / "safe").write_text("PATH=/usr/bin\n", encoding="utf-8")
             release_provider_literal.scan_authority_files(environment)
@@ -2852,6 +2864,147 @@ class ReleaseControllerTests(unittest.TestCase):
                 release_provider_literal.scan_authority_files(environment)
             self.assertEqual(rejected.exception.diagnostic, "runner-command-scan")
             (commands / "credential").unlink()
+            records = [
+                ("AWS_ACCESS_KEY_ID", ""),
+                ("AWS_SECRET_ACCESS_KEY", ""),
+                ("AWS_SESSION_TOKEN", ""),
+                ("AWS_REGION", ""),
+                ("AWS_DEFAULT_REGION", ""),
+                ("AWS_DEFAULT_REGION", "us-east-1"),
+                ("AWS_REGION", "us-east-1"),
+                ("AWS_ACCESS_KEY_ID", "temporary-exact-access-key"),
+                ("AWS_SECRET_ACCESS_KEY", "temporary-exact-secret-key"),
+                ("AWS_SESSION_TOKEN", "temporary-exact-session-token"),
+            ]
+
+            def serialized_export(values: list[tuple[str, str]]) -> str:
+                chunks = []
+                for index, (name, value) in enumerate(values, start=1):
+                    delimiter = (
+                        "ghadelimiter_00000000-0000-0000-0000-"
+                        f"{index:012x}"
+                    )
+                    chunks.append(f"{name}<<{delimiter}\n{value}\n{delimiter}\n")
+                return "".join(chunks)
+
+            export = commands / "set_env_12345678-1234-1234-1234-123456789abc"
+            export.write_text(serialized_export(records), encoding="utf-8")
+            release_provider_literal.remove_expected_aws_credential_export(
+                environment
+            )
+            self.assertFalse(export.exists())
+            self.assertTrue((commands / "safe").is_file())
+            release_provider_literal.scan_authority_files(environment)
+            malformed = commands / "unexpected-export"
+            malformed.write_text(
+                "AWS_ACCESS_KEY_ID=temporary-exact-access-key\n",
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(
+                release_provider_literal.ProviderError,
+                "credential export cleanup failed",
+            ) as rejected:
+                release_provider_literal.remove_expected_aws_credential_export(
+                    environment
+                )
+            self.assertEqual(rejected.exception.diagnostic, "runner-command-scan")
+            self.assertTrue(malformed.is_file())
+            malformed.unlink()
+
+            extra_authority = commands / (
+                "set_env_23456789-2345-2345-2345-23456789abcd"
+            )
+            extra_authority.write_text(
+                serialized_export(
+                    records
+                    + [("ACTIONS_ID_TOKEN_REQUEST_TOKEN", "retained-authority")]
+                ),
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(
+                release_provider_literal.ProviderError,
+                "credential export cleanup failed",
+            ) as rejected:
+                release_provider_literal.remove_expected_aws_credential_export(
+                    environment
+                )
+            self.assertEqual(rejected.exception.diagnostic, "runner-command-scan")
+            self.assertTrue(extra_authority.is_file())
+            extra_authority.unlink()
+
+            swapped = records.copy()
+            swapped[-3] = ("AWS_ACCESS_KEY_ID", "temporary-exact-secret-key")
+            swapped[-2] = ("AWS_SECRET_ACCESS_KEY", "temporary-exact-access-key")
+            swapped_export = commands / (
+                "set_env_3456789a-3456-3456-3456-3456789abcde"
+            )
+            swapped_export.write_text(serialized_export(swapped), encoding="utf-8")
+            with self.assertRaises(release_provider_literal.ProviderError):
+                release_provider_literal.remove_expected_aws_credential_export(
+                    environment
+                )
+            self.assertTrue(swapped_export.is_file())
+            swapped_export.unlink()
+
+            linked_export = commands / (
+                "set_env_456789ab-4567-4567-4567-456789abcdef"
+            )
+            linked_export.write_text(serialized_export(records), encoding="utf-8")
+            linked_copy = commands / "linked-export"
+            os.link(linked_export, linked_copy)
+            with self.assertRaises(release_provider_literal.ProviderError):
+                release_provider_literal.remove_expected_aws_credential_export(
+                    environment
+                )
+            self.assertTrue(linked_export.is_file())
+            self.assertTrue(linked_copy.is_file())
+            linked_copy.unlink()
+            linked_export.unlink()
+
+            symlink_target = root / "symlink-target"
+            symlink_target.write_text(serialized_export(records), encoding="utf-8")
+            symlink_export = commands / (
+                "set_env_4abcdef0-4567-4567-4567-456789abcdef"
+            )
+            symlink_export.symlink_to(symlink_target)
+            with self.assertRaises(release_provider_literal.ProviderError):
+                release_provider_literal.remove_expected_aws_credential_export(
+                    environment
+                )
+            self.assertTrue(symlink_export.is_symlink())
+            symlink_export.unlink()
+            symlink_target.unlink()
+
+            nested = commands / "nested"
+            nested.mkdir()
+            nested_export = nested / (
+                "set_env_4bcdef01-4567-4567-4567-456789abcdef"
+            )
+            nested_export.write_text(serialized_export(records), encoding="utf-8")
+            with self.assertRaises(release_provider_literal.ProviderError):
+                release_provider_literal.remove_expected_aws_credential_export(
+                    environment
+                )
+            self.assertTrue(nested_export.is_file())
+            nested_export.unlink()
+            nested.rmdir()
+
+            first = commands / "set_env_56789abc-5678-5678-5678-56789abcdef0"
+            second = commands / "set_env_6789abcd-6789-6789-6789-6789abcdef01"
+            first.write_text(serialized_export(records), encoding="utf-8")
+            second.write_text(serialized_export(records), encoding="utf-8")
+            with self.assertRaisesRegex(
+                release_provider_literal.ProviderError,
+                "not unique",
+            ):
+                release_provider_literal.remove_expected_aws_credential_export(
+                    environment
+                )
+            self.assertTrue(first.is_file())
+            self.assertTrue(second.is_file())
+            first.unlink()
+            second.unlink()
+
             (aws / "credentials").write_text(
                 "aws_secret_access_key = residual\n", encoding="utf-8"
             )
