@@ -129,6 +129,10 @@ AUTHORITY_DESCRIPTOR_FIELDS = {
 class ProviderError(ValueError):
     """Literal provider input or runner authority state is invalid."""
 
+    def __init__(self, message: str, *, diagnostic: str = "input-validation") -> None:
+        super().__init__(message)
+        self.diagnostic = diagnostic
+
 
 def _object(value: Any, label: str) -> dict[str, Any]:
     if not isinstance(value, dict) or not all(
@@ -626,11 +630,20 @@ def scan_authority_files(environ: Mapping[str, str]) -> None:
         value = environ.get(name, "")
         if value:
             needles.append(value.encode("utf-8"))
-    for root in (runner_temp / "_runner_file_commands", home / ".aws"):
-        for path in _iter_scan_files(root):
-            content = path.read_bytes()
-            if any(needle in content for needle in needles):
-                raise ProviderError(f"authority remains in runner file: {path}")
+    roots = (
+        (runner_temp / "_runner_file_commands", "runner-command-scan"),
+        (home / ".aws", "aws-home-scan"),
+    )
+    for root, diagnostic in roots:
+        try:
+            for path in _iter_scan_files(root):
+                content = path.read_bytes()
+                if any(needle in content for needle in needles):
+                    raise ProviderError(f"authority remains in runner file: {path}")
+        except (OSError, ProviderError) as error:
+            raise ProviderError(
+                "authority file scan failed", diagnostic=diagnostic
+            ) from error
 
 
 def validate_authority_descriptor(value: Any) -> dict[str, Any]:
@@ -850,28 +863,49 @@ def main(argv: list[str] | None = None) -> int:
     authority_path, sidecar_path, ciphertext_path, output_path = map(
         pathlib.Path, arguments
     )
-    scan_authority_files(os.environ)
-    authority = json.loads(authority_path.read_text(encoding="utf-8"))
-    sidecar = json.loads(sidecar_path.read_text(encoding="utf-8"))
-    ciphertext = ciphertext_path.read_bytes()
-    value = build_request_from_authority(
-        authority,
-        sidecar,
-        ciphertext,
-        dt.datetime.now(dt.timezone.utc),
-    )
-    output_path.write_text(
-        json.dumps(
-            value,
-            ensure_ascii=False,
-            allow_nan=False,
-            separators=(",", ":"),
-            sort_keys=True,
+    try:
+        scan_authority_files(os.environ)
+    except (KeyError, OSError, ProviderError, UnicodeError, ValueError) as error:
+        diagnostic = (
+            error.diagnostic
+            if isinstance(error, ProviderError)
+            else "runner-state-validation"
         )
-        + "\n",
-        encoding="utf-8",
-    )
-    os.chmod(output_path, 0o600)
+        print("literal provider failed closed", file=sys.stderr)
+        return {
+            "runner-command-scan": 10,
+            "aws-home-scan": 11,
+            "runner-state-validation": 12,
+        }[diagnostic]
+    try:
+        authority = json.loads(authority_path.read_text(encoding="utf-8"))
+        sidecar = json.loads(sidecar_path.read_text(encoding="utf-8"))
+        ciphertext = ciphertext_path.read_bytes()
+        value = build_request_from_authority(
+            authority,
+            sidecar,
+            ciphertext,
+            dt.datetime.now(dt.timezone.utc),
+        )
+    except (KeyError, OSError, ProviderError, UnicodeError, ValueError):
+        print("literal provider failed closed", file=sys.stderr)
+        return 13
+    try:
+        output_path.write_text(
+            json.dumps(
+                value,
+                ensure_ascii=False,
+                allow_nan=False,
+                separators=(",", ":"),
+                sort_keys=True,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        os.chmod(output_path, 0o600)
+    except (OSError, UnicodeError, ValueError):
+        print("literal provider failed closed", file=sys.stderr)
+        return 14
     return 0
 
 

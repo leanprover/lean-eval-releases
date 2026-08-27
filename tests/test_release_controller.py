@@ -1367,6 +1367,14 @@ class ReleaseControllerTests(unittest.TestCase):
         final_text = str(after[0]["text"])
         self.assertIn("AWS_STEP_OUTCOME: ${{ steps.aws.outcome }}", final_text)
         self.assertIn(f"--function-name {function_name}", final_text)
+        for phase in (
+            "provider-runner-command-scan",
+            "provider-aws-home-scan",
+            "provider-runner-state-validation",
+            "provider-input-validation",
+            "provider-output-write",
+        ):
+            self.assertIn(phase, final_text)
         self.assertIn("exec -c /usr/bin/bash", final_text)
         provider, tail = final_text.split("exec -c /usr/bin/bash", 1)
         for checkout_executable in (
@@ -2618,6 +2626,7 @@ class ReleaseControllerTests(unittest.TestCase):
                 check=False,
             )
             self.assertNotEqual(completed.returncode, 0)
+            self.assertEqual(completed.returncode, 13)
             self.assertEqual(completed.stdout, "")
             self.assertEqual(completed.stderr, "literal provider failed closed\n")
             self.assertNotIn(hostile_field, completed.stderr)
@@ -2838,18 +2847,20 @@ class ReleaseControllerTests(unittest.TestCase):
             )
             with self.assertRaisesRegex(
                 release_provider_literal.ProviderError,
-                "authority remains",
-            ):
+                "authority file scan failed",
+            ) as rejected:
                 release_provider_literal.scan_authority_files(environment)
+            self.assertEqual(rejected.exception.diagnostic, "runner-command-scan")
             (commands / "credential").unlink()
             (aws / "credentials").write_text(
                 "aws_secret_access_key = residual\n", encoding="utf-8"
             )
             with self.assertRaisesRegex(
                 release_provider_literal.ProviderError,
-                "authority remains",
-            ):
+                "authority file scan failed",
+            ) as rejected:
                 release_provider_literal.scan_authority_files(environment)
+            self.assertEqual(rejected.exception.diagnostic, "aws-home-scan")
 
     def test_production_credential_preflight_is_manual_and_nonmutating(self) -> None:
         workflow = (
