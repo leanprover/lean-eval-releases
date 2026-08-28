@@ -3529,9 +3529,26 @@ class ReleaseControllerTests(unittest.TestCase):
             "run-name: Reconstruct staging submission ${{ inputs.submission_id }}",
             workflow,
         )
-        self.assertIn("github.repository == 'leanprover/lean-eval-releases'", workflow)
-        self.assertIn("github.ref == 'refs/heads/main'", workflow)
-        self.assertIn("inputs.confirm_staging_smoke == true", workflow)
+        self.assertIn("expected_release_commit:", workflow)
+        jobs = workflow_jobs(workflow)
+        authorization = jobs["authorize-manual"]
+        self.assertIn("permissions: {}", authorization)
+        self.assertIn("timeout-minutes: 1", authorization)
+        self.assertIn(
+            'test "$EVENT_REPOSITORY" = leanprover/lean-eval-releases',
+            authorization,
+        )
+        self.assertIn('test "$EVENT_REF" = refs/heads/main', authorization)
+        self.assertIn('test "$EVENT_REF_PROTECTED" = true', authorization)
+        self.assertIn('test "$CONFIRM_STAGING_SMOKE" = true', authorization)
+        self.assertIn(
+            'test "$EXPECTED_RELEASE_COMMIT" = "$EVENT_SHA"', authorization
+        )
+        self.assertNotIn("environment:", authorization)
+        self.assertNotIn("secrets.", authorization)
+        prepare = jobs["prepare-one"]
+        self.assertIn("needs: authorize-manual", prepare)
+        self.assertNotIn("\n    if:", prepare)
         self.assertIn("environment: release-staging", workflow)
         self.assertIn("repository: leanprover/lean-eval-state-staging", workflow)
         self.assertIn("repository: leanprover/lean-eval-audit", workflow)
