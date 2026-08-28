@@ -218,8 +218,11 @@ AWS, artifact, commit, or non-dry-run push step.
 
 `Verify production release OIDC trust` is a third manual, publication-disabled
 preflight for the production environment's release-unwrapper role. A
-secret-free job first requires an exact upstream `main` dispatch and explicit
-confirmation. The protected `release-production` job then receives only
+secret-free job first requires an exact upstream protected-`main` dispatch, a
+40-hex reviewed commit equal to the workflow run SHA, and explicit confirmation.
+It is unconditional, and every later job is an unconditional dependency, so a
+failed authorization cannot become a skipped-success run. The protected
+`release-production` job then receives only
 `id-token: write`, requires the publication latch to remain absent or `false`,
 and refuses a role variable other than the exact production release Invoke
 role. It assumes that role for 15 minutes under an inline session policy that
