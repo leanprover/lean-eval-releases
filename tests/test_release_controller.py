@@ -3525,6 +3525,10 @@ class ReleaseControllerTests(unittest.TestCase):
         workflow = (
             ROOT / ".github/workflows/credentialed-release-staging-smoke.yml"
         ).read_text(encoding="utf-8")
+        self.assertIn(
+            "run-name: Reconstruct staging submission ${{ inputs.submission_id }}",
+            workflow,
+        )
         self.assertIn("github.repository == 'leanprover/lean-eval-releases'", workflow)
         self.assertIn("github.ref == 'refs/heads/main'", workflow)
         self.assertIn("inputs.confirm_staging_smoke == true", workflow)
