@@ -194,9 +194,6 @@ environment deployment occurs after `release.started`, and its protection
 rules, variables, and secrets are mutable external state.
 This is an explicit publication-launch blocker, not a property proved by
 repository CI.
-A read-only GitHub API check on 2026-08-25 showed its
-only protection rule was the protected-branch policy: no reviewers and no wait
-timer, so that snapshot would not introduce another manual approval or timer.
 An authenticated operator must read back and record the environment protection
 rules again immediately before enabling the publication latch, after the last
 environment change and after both credential preflights pass; any reviewer,
