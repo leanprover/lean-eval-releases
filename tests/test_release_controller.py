@@ -3295,6 +3295,17 @@ class ReleaseControllerTests(unittest.TestCase):
         self.assertNotIn("push:\n", workflow)
         self.assertNotIn("workflow_call:", workflow)
         self.assertIn("permissions: {}", workflow)
+        self.assertIn("expected_release_commit:", workflow)
+        self.assertRegex(
+            workflow,
+            re.compile(
+                r"expected_release_commit:\n"
+                r"\s+description: Exact reviewed protected-main release workflow "
+                r"commit\n"
+                r"\s+required: true\n"
+                r"\s+type: string"
+            ),
+        )
         self.assertIn(
             "    permissions:\n"
             "      id-token: write\n"
@@ -3304,10 +3315,35 @@ class ReleaseControllerTests(unittest.TestCase):
         self.assertNotIn("contents:", workflow)
         self.assertEqual(workflow.count("id-token: write"), 1)
         self.assertEqual(workflow.count("runs-on:"), 3)
-        self.assertIn("needs: authorize", workflow)
-        self.assertIn("github.repository == 'leanprover/lean-eval-releases'", workflow)
-        self.assertIn("github.ref == 'refs/heads/main'", workflow)
-        self.assertIn("inputs.confirm_publication_disabled == true", workflow)
+        jobs = workflow_jobs(workflow)
+        self.assertEqual(set(jobs), {"authorize", "oidc-trust", "summarize"})
+        authorization = jobs["authorize"]
+        self.assertIn("permissions: {}", authorization)
+        self.assertNotIn("environment:", authorization)
+        self.assertNotIn("\n    if:", authorization)
+        self.assertIn(
+            'test "$EVENT_REPOSITORY" = leanprover/lean-eval-releases',
+            authorization,
+        )
+        self.assertIn('test "$EVENT_REF" = refs/heads/main', authorization)
+        self.assertIn('test "$EVENT_REF_PROTECTED" = true', authorization)
+        self.assertIn(
+            '[[ "$EXPECTED_RELEASE_COMMIT" =~ ^[0-9a-f]{40}$ ]]',
+            authorization,
+        )
+        self.assertIn(
+            'test "$EXPECTED_RELEASE_COMMIT" = "$EVENT_SHA"',
+            authorization,
+        )
+        self.assertIn(
+            'test "$CONFIRM_PUBLICATION_DISABLED" = true', authorization
+        )
+        oidc = jobs["oidc-trust"]
+        self.assertIn("needs: authorize", oidc)
+        self.assertNotIn("\n    if:", oidc)
+        summary = jobs["summarize"]
+        self.assertIn("needs: oidc-trust", summary)
+        self.assertNotIn("\n    if:", summary)
         self.assertIn("environment: release-production", workflow)
         self.assertIn(
             "group: lean-eval-release-controller-production-oidc-preflight",
@@ -3411,6 +3447,7 @@ class ReleaseControllerTests(unittest.TestCase):
 
         def validate_closed_boundary(candidate: str) -> None:
             self.assertIn("permissions: {}", candidate)
+            self.assertIn("expected_release_commit:", candidate)
             self.assertIn(
                 "    permissions:\n"
                 "      id-token: write\n"
@@ -3422,6 +3459,35 @@ class ReleaseControllerTests(unittest.TestCase):
             self.assertNotIn("workflow_call:", candidate)
             self.assertEqual(candidate.count("runs-on:"), 3)
             self.assertEqual(candidate.count("uses:"), 1)
+            jobs = workflow_jobs(candidate)
+            self.assertEqual(set(jobs), {"authorize", "oidc-trust", "summarize"})
+            authorization = jobs["authorize"]
+            self.assertIn("permissions: {}", authorization)
+            self.assertNotIn("environment:", authorization)
+            self.assertNotIn("\n    if:", authorization)
+            self.assertIn(
+                'test "$EVENT_REPOSITORY" = leanprover/lean-eval-releases',
+                authorization,
+            )
+            self.assertIn('test "$EVENT_REF" = refs/heads/main', authorization)
+            self.assertIn(
+                'test "$EVENT_REF_PROTECTED" = true', authorization
+            )
+            self.assertIn(
+                '[[ "$EXPECTED_RELEASE_COMMIT" =~ ^[0-9a-f]{40}$ ]]',
+                authorization,
+            )
+            self.assertIn(
+                'test "$EXPECTED_RELEASE_COMMIT" = "$EVENT_SHA"',
+                authorization,
+            )
+            self.assertIn(
+                'test "$CONFIRM_PUBLICATION_DISABLED" = true', authorization
+            )
+            self.assertIn("needs: authorize", jobs["oidc-trust"])
+            self.assertNotIn("\n    if:", jobs["oidc-trust"])
+            self.assertIn("needs: oidc-trust", jobs["summarize"])
+            self.assertNotIn("\n    if:", jobs["summarize"])
             self.assertEqual(
                 re.findall(r"secrets\.([A-Z0-9_]+)", candidate), []
             )
@@ -3477,6 +3543,30 @@ class ReleaseControllerTests(unittest.TestCase):
             (
                 "on:\n  workflow_dispatch:",
                 "on:\n  workflow_dispatch:\n  workflow_call:",
+            ),
+            (
+                "      expected_release_commit:\n",
+                "      unbound_release_commit:\n",
+            ),
+            (
+                '          test "$EVENT_REF_PROTECTED" = true',
+                '          test "$EVENT_REF_PROTECTED" = false',
+            ),
+            (
+                '          [[ "$EXPECTED_RELEASE_COMMIT" =~ ^[0-9a-f]{40}$ ]]',
+                '          test -n "$EXPECTED_RELEASE_COMMIT"',
+            ),
+            (
+                '          test "$EXPECTED_RELEASE_COMMIT" = "$EVENT_SHA"',
+                '          test "$EXPECTED_RELEASE_COMMIT" != "$EVENT_SHA"',
+            ),
+            (
+                "  oidc-trust:\n    needs: authorize",
+                "  oidc-trust:\n    if: always()\n    needs: authorize",
+            ),
+            (
+                "  summarize:\n    needs: oidc-trust",
+                "  summarize:\n    if: always()\n    needs: oidc-trust",
             ),
             (
                 "      - name: Record a source-free trust proof",
