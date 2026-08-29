@@ -91,8 +91,9 @@ consume exactly one `lean-eval-release` unwrap capability, decrypt it, and only
 then invoke this provider-neutral reconstruction tool.
 
 `Publish due source release` is the credentialed production controller. Its
-daily schedule is inert unless the repository variable `PUBLICATION_ENABLED`
-is exactly `true`. Both jobs retain a job-level latch check as defense in depth,
+daily schedule is inert unless the `release-production` environment variable
+`PUBLICATION_ENABLED` is exactly `true`. Both jobs retain a job-level latch
+check as defense in depth,
 but GitHub evaluates each condition from the workflow run context; it is not a
 live revocation mechanism and a queued job must not be assumed to observe a
 later variable change. After disabling the variable, operators must cancel
@@ -146,12 +147,12 @@ Before planning, the controller checks both full-history Git checkouts against
 the closed credential contract, requires exact tracked-clean `origin/main`
 commits, and requires production State to descend from the reviewed release
 event contract. That reviewed production State contract is commit
-`3b7f713c5f39de27e84db5916980d4e96c353112`, root tree
-`a4f2cf17dab8b3be80427e2560ad2a4cbf2b93b7`, with README blob
-`9def120f4d0aae84fc3b713a029832e86b9a961e`, docs tree
-`df80aab31568ba6d715895b4d058e2cf53178e33`, schema tree
-`d5ab8e25ce33cfc54e19cd8fae4c4bdcc0455045`, and scripts tree
-`9e019a7b631b93df2b5d91bd2ba3d164838c290d`. A source-free qualification
+`c6a4bb67b55609ae7215bdd3cac2378b2db42a0a`, root tree
+`d0717b97256eaa58936a9571ce1892dfd310e0a7`, with README blob
+`7b62f1d8f6163fae029eba2c3bed2cdca306db5e`, docs tree
+`d86908a7a5dc214ec9e12b2049d1cb69c30161af`, schema tree
+`d391a2bcda4cffb883cc0b39dcc29f22bf8e4329`, and scripts tree
+`cb41e84264627f91deca3d2be52e99fc65d905f1`. A source-free qualification
 binds the exact controller commit, State commit and event provenance,
 release-queue bytes, and acceptance-snapshot bytes into the execution plan.
 Reconstruction rechecks the acceptance snapshot binding. The detailed

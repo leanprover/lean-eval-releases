@@ -24,13 +24,13 @@ from release_removal import (  # noqa: E402
 )
 from release_tree import tree_digest  # noqa: E402
 
-STATE_CONTRACT_COMMIT = "3b7f713c5f39de27e84db5916980d4e96c353112"
-STATE_CONTRACT_TREE = "a4f2cf17dab8b3be80427e2560ad2a4cbf2b93b7"
+STATE_CONTRACT_COMMIT = "c6a4bb67b55609ae7215bdd3cac2378b2db42a0a"
+STATE_CONTRACT_TREE = "d0717b97256eaa58936a9571ce1892dfd310e0a7"
 STATE_CONTRACT_ROOTS = {
-    "README.md": "9def120f4d0aae84fc3b713a029832e86b9a961e",
-    "docs": "df80aab31568ba6d715895b4d058e2cf53178e33",
-    "schema": "d5ab8e25ce33cfc54e19cd8fae4c4bdcc0455045",
-    "scripts": "9e019a7b631b93df2b5d91bd2ba3d164838c290d",
+    "README.md": "7b62f1d8f6163fae029eba2c3bed2cdca306db5e",
+    "docs": "d86908a7a5dc214ec9e12b2049d1cb69c30161af",
+    "schema": "d391a2bcda4cffb883cc0b39dcc29f22bf8e4329",
+    "scripts": "cb41e84264627f91deca3d2be52e99fc65d905f1",
 }
 STATE_CONTRACT_TREES = {
     path: STATE_CONTRACT_ROOTS[path] for path in ("schema", "scripts")
