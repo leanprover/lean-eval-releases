@@ -2686,7 +2686,7 @@ class ReleaseControllerTests(unittest.TestCase):
             "release_commit": "4" * 40,
             "state_repository": "leanprover/lean-eval-state",
             "state_commit": "5" * 40,
-            "state_contract_commit": "3b7f713c5f39de27e84db5916980d4e96c353112",
+            "state_contract_commit": "c6a4bb67b55609ae7215bdd3cac2378b2db42a0a",
             "state_source_event_count": 1,
             "state_source_digest": "6" * 64,
             "release_queue_sha256": "7" * 64,
