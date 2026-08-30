@@ -250,12 +250,12 @@ GitHub origin. Production State must also descend from
 the reviewed `release.started`, `release.published`, `release.failed`, owner
 opt-out, monotone release-revision, and immediate-predecessor contract commit
 recorded in the credential contract. The current reviewed commit is
-`c6a4bb67b55609ae7215bdd3cac2378b2db42a0a`, with root tree
-`d0717b97256eaa58936a9571ce1892dfd310e0a7`, README blob
+`2812517256274fe681ea112eb4fc9599b7789277`, with root tree
+`43f4e1eff2003f20d7fd472be73653058074990f`, README blob
 `7b62f1d8f6163fae029eba2c3bed2cdca306db5e`, docs tree
 `d86908a7a5dc214ec9e12b2049d1cb69c30161af`, schema tree
 `d391a2bcda4cffb883cc0b39dcc29f22bf8e4329`, and scripts tree
-`cb41e84264627f91deca3d2be52e99fc65d905f1`. Its live `schema` and `scripts`
+`05df674cc5f01fd521404609336e7107d783131a`. Its live `schema` and `scripts`
 trees must still equal the trees at that reviewed commit, so later data-only
 State commits remain usable while any contract-code drift fails closed. Full
 Git history is checked out because interrupted-release recovery must inspect
