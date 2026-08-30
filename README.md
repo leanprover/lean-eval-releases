@@ -147,12 +147,12 @@ Before planning, the controller checks both full-history Git checkouts against
 the closed credential contract, requires exact tracked-clean `origin/main`
 commits, and requires production State to descend from the reviewed release
 event contract. That reviewed production State contract is commit
-`2812517256274fe681ea112eb4fc9599b7789277`, root tree
-`43f4e1eff2003f20d7fd472be73653058074990f`, with README blob
-`7b62f1d8f6163fae029eba2c3bed2cdca306db5e`, docs tree
-`d86908a7a5dc214ec9e12b2049d1cb69c30161af`, schema tree
-`d391a2bcda4cffb883cc0b39dcc29f22bf8e4329`, and scripts tree
-`05df674cc5f01fd521404609336e7107d783131a`. A source-free qualification
+`0c943edde8a247b8670e10339b80fc65be6c0f33`, root tree
+`0ba2090d9c43e0d51fb08272efbd12a3efb490e9`, with README blob
+`ff7430d32bf28e2a2814852a16cabda710b74182`, docs tree
+`5d3923158bd8f620f184fee5a4d00924220464fa`, schema tree
+`2c0004214d90b82cf895e79a91c239ac9e7bbf67`, and scripts tree
+`ed830aea8fe7a4a0e6db7acdcf82f23cb24a296d`. A source-free qualification
 binds the exact controller commit, State commit and event provenance,
 release-queue bytes, and acceptance-snapshot bytes into the execution plan.
 Reconstruction rechecks the acceptance snapshot binding. The detailed
