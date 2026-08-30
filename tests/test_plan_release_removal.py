@@ -55,13 +55,13 @@ class ReleaseRemovalPlanTests(unittest.TestCase):
     def test_pinned_state_contract_manifest_is_exact(self) -> None:
         self.assertEqual(
             removal_module.STATE_REMOVAL_CONTRACT_COMMIT,
-            "c6a4bb67b55609ae7215bdd3cac2378b2db42a0a",
+            "2812517256274fe681ea112eb4fc9599b7789277",
         )
         self.assertEqual(
             removal_module.STATE_REMOVAL_CONTRACT_TREES,
             {
                 "schema": "d391a2bcda4cffb883cc0b39dcc29f22bf8e4329",
-                "scripts": "cb41e84264627f91deca3d2be52e99fc65d905f1",
+                "scripts": "05df674cc5f01fd521404609336e7107d783131a",
             },
         )
         self.assertEqual(
@@ -99,8 +99,8 @@ class ReleaseRemovalPlanTests(unittest.TestCase):
                 ),
                 "scripts/public_projection.py": (
                     "100755",
-                    "ff0940d0117c7783ef3c5d868247b8ef4bef9418",
-                    "2391e7574faff98763b2e8d60370f76876e8062eea5e1848a2d6a98579a0727b",
+                    "c8beec4795896d15968184e837ca6a77970bbd5a",
+                    "a90fdaa4fb8346fcd98a402d326eb17b6e98117b8464b427a3f2c74e0a098219",
                 ),
                 "scripts/state.py": (
                     "100644",
