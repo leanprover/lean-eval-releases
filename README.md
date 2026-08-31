@@ -172,8 +172,10 @@ The production environment currently has no reviewer or wait-timer rule, so
 its two split jobs do not create a second manual approval after
 `release.started`; the runbook must reverify that external fact before enabling
 publication.
-Owner publication changes are folded into the State-owned release queue, so an
-opt-out ordered before `release.started` is not executable work.
+Owner publication changes are folded into the State-owned release queue. A
+submission initially marked `withheld` contributes no executable work; its sole
+later owner transition is an irreversible change to `scheduled`, which adds the
+release task. A scheduled submission cannot return to private.
 
 The protected `release-production` environment contains only:
 
