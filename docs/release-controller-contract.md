@@ -247,8 +247,9 @@ Before planning work, `scripts/release_qualification.py` fails closed unless
 both local checkouts are tracked-clean, are the exact fetched `origin/main`,
 have complete history, resolve at their Git toplevel, and have the expected
 GitHub origin. Production State must also descend from
-the reviewed `release.started`, `release.published`, `release.failed`, owner
-opt-out, monotone release-revision, and immediate-predecessor contract commit
+the reviewed `release.started`, `release.published`, `release.failed`, one-way
+private-to-scheduled publication transition, monotone release-revision, and
+immediate-predecessor contract commit
 recorded in the credential contract. The current reviewed commit is
 `0c943edde8a247b8670e10339b80fc65be6c0f33`, with root tree
 `0ba2090d9c43e0d51fb08272efbd12a3efb490e9`, README blob
