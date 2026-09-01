@@ -101,7 +101,11 @@ jobs:
         run: |
           set -euo pipefail
           test "$(jq -r .environment state/state.json)" = production
-          python -m unittest discover -s tests -v
+          # The repository test suite includes fail-closed containment tests
+          # whose production mutation guard must remain disabled.  Exercise
+          # those tests in that safe baseline without changing the cached
+          # latch used by the controller qualification below.
+          PUBLICATION_ENABLED=false python -m unittest discover -s tests -v
           state_head=$(git -C state rev-parse HEAD)
           [[ "$state_head" =~ ^[0-9a-f]{40}$ ]]
           python state/scripts/state.py --root state \
