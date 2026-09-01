@@ -1260,6 +1260,15 @@ class ReleaseControllerTests(unittest.TestCase):
             "${{ needs.authorize-publication.outputs.publication_enabled }}",
             jobs["prepare-one"],
         )
+        controller_test_commands = [
+            line.strip()
+            for line in jobs["prepare-one"].splitlines()
+            if "python -m unittest discover -s tests -v" in line
+        ]
+        self.assertEqual(
+            controller_test_commands,
+            ["PUBLICATION_ENABLED=false python -m unittest discover -s tests -v"],
+        )
 
         documentation = "\n".join(
             (ROOT / path).read_text(encoding="utf-8")
