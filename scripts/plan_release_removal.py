@@ -48,10 +48,10 @@ PRIVATE_EVIDENCE_REPOSITORIES = {
     "leanprover/lean-eval-audit",
     EXPECTED_STATE_REPOSITORY,
 }
-STATE_REMOVAL_CONTRACT_COMMIT = "0c943edde8a247b8670e10339b80fc65be6c0f33"
+STATE_REMOVAL_CONTRACT_COMMIT = "235a96c96462438c7680e6fb90fa0e6044ec1774"
 STATE_REMOVAL_CONTRACT_TREES = {
-    "schema": "2c0004214d90b82cf895e79a91c239ac9e7bbf67",
-    "scripts": "ed830aea8fe7a4a0e6db7acdcf82f23cb24a296d",
+    "schema": "4cfe7363c7d8ab2d8ebf0cb2c4e26697c27ab680",
+    "scripts": "402b090e3b9d3bf233fdc410ab684f108999d725",
 }
 STATE_REMOVAL_CONTRACT_COMPONENTS = {
     "schema/public-state-projection-v1.schema.json": (
@@ -71,8 +71,8 @@ STATE_REMOVAL_CONTRACT_COMPONENTS = {
     ),
     "schema/state-event-v1.schema.json": (
         "100644",
-        "d5acc1bb0bce0a913e26ce8c6dae6a6076505453",
-        "2d19515da1b0798f00dd3e9809c3a2770fee8b27ce6323ac9b9e827db4c7ea27",
+        "5224f32019ee44f1449f7cb5d831198ba3bf417e",
+        "5394e7f24901db390b16c97ac5ab781a407da6cedee60f96e3e9396bce549587",
     ),
     "schema/result-overlays-v1.schema.json": (
         "100644",
@@ -81,8 +81,8 @@ STATE_REMOVAL_CONTRACT_COMPONENTS = {
     ),
     "scripts/materialize_state.py": (
         "100755",
-        "bebf968fe9a3bc70b43db4e80042b5b0d360d20d",
-        "5c437c12f1b3c24f9cd9d5a9da3f876fddc4f55e126cee74bf213723984719e7",
+        "13fec2145baef95639fd6fcbe841997e8436ee72",
+        "c53ee9a99c32d9a4638667d7b349c8929ee58ab47db0362289f6d6ae11c72ec5",
     ),
     "scripts/public_projection.py": (
         "100755",
@@ -96,8 +96,8 @@ STATE_REMOVAL_CONTRACT_COMPONENTS = {
     ),
     "scripts/validate_state.py": (
         "100755",
-        "4116bb34ef7ba55018c20f14ba4407618ccfc698",
-        "d36222c071054c2bf925d081141c1f1dc4fca0c65ec686e5438b2eb02a131ed2",
+        "dffee2cacb2e059ddde3a87bb753a6afcd900870",
+        "916e96ece481c1b9079147e9e4c3e3a3f2baea432de7b0d0a4729c04f70a3c92",
     ),
 }
 REQUEST_FIELDS = {

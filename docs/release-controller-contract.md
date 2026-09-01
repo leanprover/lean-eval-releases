@@ -257,12 +257,12 @@ the reviewed `release.started`, `release.published`, `release.failed`, one-way
 private-to-scheduled publication transition, monotone release-revision, and
 immediate-predecessor contract commit
 recorded in the credential contract. The current reviewed commit is
-`0c943edde8a247b8670e10339b80fc65be6c0f33`, with root tree
-`0ba2090d9c43e0d51fb08272efbd12a3efb490e9`, README blob
-`ff7430d32bf28e2a2814852a16cabda710b74182`, docs tree
-`5d3923158bd8f620f184fee5a4d00924220464fa`, schema tree
-`2c0004214d90b82cf895e79a91c239ac9e7bbf67`, and scripts tree
-`ed830aea8fe7a4a0e6db7acdcf82f23cb24a296d`. Its live `schema` and `scripts`
+`235a96c96462438c7680e6fb90fa0e6044ec1774`, with root tree
+`e09bb3f039f8b188716c99ac6591e12dbee15085`, README blob
+`1dd08b8569c1a3a8eadec72af96276f520d4afec`, docs tree
+`7401f6bf26083ebbc0db05f11cd90007d2a74f80`, schema tree
+`4cfe7363c7d8ab2d8ebf0cb2c4e26697c27ab680`, and scripts tree
+`402b090e3b9d3bf233fdc410ab684f108999d725`. Its live `schema` and `scripts`
 trees must still equal the trees at that reviewed commit, so later data-only
 State commits remain usable while any contract-code drift fails closed. Full
 Git history is checked out because interrupted-release recovery must inspect

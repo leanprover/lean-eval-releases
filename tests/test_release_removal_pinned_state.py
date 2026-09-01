@@ -24,13 +24,13 @@ from release_removal import (  # noqa: E402
 )
 from release_tree import tree_digest  # noqa: E402
 
-STATE_CONTRACT_COMMIT = "0c943edde8a247b8670e10339b80fc65be6c0f33"
-STATE_CONTRACT_TREE = "0ba2090d9c43e0d51fb08272efbd12a3efb490e9"
+STATE_CONTRACT_COMMIT = "235a96c96462438c7680e6fb90fa0e6044ec1774"
+STATE_CONTRACT_TREE = "e09bb3f039f8b188716c99ac6591e12dbee15085"
 STATE_CONTRACT_ROOTS = {
-    "README.md": "ff7430d32bf28e2a2814852a16cabda710b74182",
-    "docs": "5d3923158bd8f620f184fee5a4d00924220464fa",
-    "schema": "2c0004214d90b82cf895e79a91c239ac9e7bbf67",
-    "scripts": "ed830aea8fe7a4a0e6db7acdcf82f23cb24a296d",
+    "README.md": "1dd08b8569c1a3a8eadec72af96276f520d4afec",
+    "docs": "7401f6bf26083ebbc0db05f11cd90007d2a74f80",
+    "schema": "4cfe7363c7d8ab2d8ebf0cb2c4e26697c27ab680",
+    "scripts": "402b090e3b9d3bf233fdc410ab684f108999d725",
 }
 STATE_CONTRACT_TREES = {
     path: STATE_CONTRACT_ROOTS[path] for path in ("schema", "scripts")
@@ -212,6 +212,49 @@ write_views(materialize("production", events), output, False)
                 if key in os.environ
             },
         )
+
+    def test_exact_live_contract_accepts_current_and_rejects_drift(self) -> None:
+        self.qualify_state_source()
+        contract = planner_module._state_removal_contract(
+            self.state_source, STATE_CONTRACT_COMMIT
+        )
+        self.assertEqual(contract["commit"], STATE_CONTRACT_COMMIT)
+        self.assertEqual(
+            contract["trees"],
+            [
+                {"path": path, "tree": tree}
+                for path, tree in sorted(STATE_CONTRACT_TREES.items())
+            ],
+        )
+
+        with tempfile.TemporaryDirectory() as directory:
+            drifted = pathlib.Path(directory) / "state"
+            subprocess.run(
+                [
+                    "git",
+                    "clone",
+                    "--no-checkout",
+                    "--shared",
+                    str(self.state_source),
+                    str(drifted),
+                ],
+                check=True,
+                capture_output=True,
+                timeout=30,
+            )
+            self.git(drifted, "checkout", "--detach", STATE_CONTRACT_COMMIT)
+            self.git(drifted, "config", "user.name", "release-test")
+            self.git(drifted, "config", "user.email", "release-test@example.invalid")
+            schema = drifted / "schema" / "state-event-v1.schema.json"
+            schema.write_bytes(schema.read_bytes() + b"\n")
+            self.git(drifted, "add", "--", str(schema.relative_to(drifted)))
+            self.git(drifted, "commit", "-m", "Drift removal contract")
+            drifted_head = self.git(drifted, "rev-parse", "HEAD")
+            with self.assertRaisesRegex(
+                planner_module.RemovalPlanError,
+                "live release removal State tree schema has drifted",
+            ):
+                planner_module._state_removal_contract(drifted, drifted_head)
 
     def test_exact_pinned_consumers_accept_atomic_removal_and_hide_solution(self) -> None:
         self.qualify_state_source()

@@ -149,12 +149,12 @@ Before planning, the controller checks both full-history Git checkouts against
 the closed credential contract, requires exact tracked-clean `origin/main`
 commits, and requires production State to descend from the reviewed release
 event contract. That reviewed production State contract is commit
-`0c943edde8a247b8670e10339b80fc65be6c0f33`, root tree
-`0ba2090d9c43e0d51fb08272efbd12a3efb490e9`, with README blob
-`ff7430d32bf28e2a2814852a16cabda710b74182`, docs tree
-`5d3923158bd8f620f184fee5a4d00924220464fa`, schema tree
-`2c0004214d90b82cf895e79a91c239ac9e7bbf67`, and scripts tree
-`ed830aea8fe7a4a0e6db7acdcf82f23cb24a296d`. A source-free qualification
+`235a96c96462438c7680e6fb90fa0e6044ec1774`, root tree
+`e09bb3f039f8b188716c99ac6591e12dbee15085`, with README blob
+`1dd08b8569c1a3a8eadec72af96276f520d4afec`, docs tree
+`7401f6bf26083ebbc0db05f11cd90007d2a74f80`, schema tree
+`4cfe7363c7d8ab2d8ebf0cb2c4e26697c27ab680`, and scripts tree
+`402b090e3b9d3bf233fdc410ab684f108999d725`. A source-free qualification
 binds the exact controller commit, State commit and event provenance,
 release-queue bytes, and acceptance-snapshot bytes into the execution plan.
 Reconstruction rechecks the acceptance snapshot binding. The detailed
@@ -262,9 +262,9 @@ Before executing any checked-out staging State code, the workflow requires the
 checkout to be clean, complete-history, and exact `origin/main`, to descend from
 the reviewed staging release contract, and to retain its exact reviewed
 `schema` and `scripts` trees. That staging contract is commit
-`f00055ed2ba9b4252f04e096d27aadd5beef0ed4`, schema tree
-`13d5853b5c1bf7227e90d697c86d42c7ce232102`, and scripts tree
-`de1017d55eaf9740358ae38908c77c168a25e8de`.
+`6105a6255ec40409bcce66c6cf6b6764e0e93ed4`, schema tree
+`5d3218039b1c4079d751fb54a30b1516917a81cd`, and scripts tree
+`6527eafbad98ed43206e9e26f1731ae16d4fc995`.
 The workflow also refuses a role variable other than the reviewed staging ARN
 and restricts its 15-minute session to the exact qualified staging unwrap
 Lambda alias (plus caller identity) in account `161072922960`.
