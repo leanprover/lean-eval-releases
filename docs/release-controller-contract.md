@@ -345,3 +345,14 @@ The publication workflow must remain disabled until the rollout runbook's
 external staging and credential gates have passed and an operator deliberately
 creates `PUBLICATION_ENABLED=true`. Reviewing or merging this contract does not
 authorize that environment change.
+
+The manual production no-op preflight is the write-free check used while that
+latch is absent or `false`. It shares the production controller's non-cancelling
+concurrency group, qualifies exact release and State `main` checkouts, rejects
+any interrupted release, and accepts only an `empty` or `not_due` plan. The
+State credential is passed only to pinned checkout actions with credential
+persistence disabled; no repository-authored step receives a push credential.
+The workflow has no release publication key, audit key, OIDC permission, AWS
+operation, archive checkout, Git commit or push, or artifact upload. A second
+credential-isolated State checkout and a public release-ref readback make
+concurrent head movement fail the preflight rather than certify a stale plan.

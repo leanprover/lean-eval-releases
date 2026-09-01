@@ -3117,6 +3117,50 @@ class ReleaseControllerTests(unittest.TestCase):
         self.assertNotIn("aws ", workflow)
         self.assertNotIn("upload-artifact", workflow)
 
+    def test_production_noop_preflight_is_disabled_write_free_and_exact(self) -> None:
+        workflow = (
+            ROOT / ".github/workflows/verify-production-release-noop.yml"
+        ).read_text(encoding="utf-8")
+        self.assertIn("workflow_dispatch:", workflow)
+        self.assertNotIn("schedule:", workflow)
+        self.assertNotIn("pull_request:", workflow)
+        self.assertNotIn("push:\n", workflow)
+        self.assertNotIn("workflow_call:", workflow)
+        self.assertIn("inputs.confirm_publication_disabled == true", workflow)
+        self.assertIn("environment: release-production", workflow)
+        self.assertIn("group: lean-eval-release-controller-production", workflow)
+        self.assertIn("cancel-in-progress: false", workflow)
+        self.assertIn("PUBLICATION_ENABLED must remain absent or false", workflow)
+        self.assertIn("--mode preflight", workflow)
+        self.assertIn("scripts/release_qualification.py", workflow)
+        self.assertIn("scripts/release_controller.py recover", workflow)
+        self.assertIn("scripts/release_orchestrator.py", workflow)
+        self.assertIn('. == {schema_version: 1, kind: "none"}', workflow)
+        self.assertIn("empty|not_due", workflow)
+        self.assertEqual(
+            set(re.findall(r"secrets\.([A-Z0-9_]+)", workflow)),
+            {"PRODUCTION_STATE_CONTROLLER_KEY"},
+        )
+        self.assertEqual(workflow.count("persist-credentials: false"), 3)
+        self.assertEqual(workflow.count("repository: leanprover/lean-eval-state"), 2)
+        self.assertIn("contents: read", workflow)
+        self.assertNotIn("contents: write", workflow)
+        self.assertNotIn("id-token: write", workflow)
+        self.assertNotIn("RELEASE_PUBLISH_KEY", workflow)
+        self.assertNotIn("AUDIT_READ_KEY", workflow)
+        for forbidden in (
+            "git commit",
+            "git push",
+            "state.py --root state append",
+            "configure-aws-credentials",
+            "aws ",
+            "upload-artifact",
+            "download-artifact",
+            "repository: leanprover/lean-eval-audit",
+        ):
+            with self.subTest(forbidden=forbidden):
+                self.assertNotIn(forbidden, workflow)
+
     def test_production_audit_read_preflight_is_isolated_and_nonmutating(
         self,
     ) -> None:
@@ -3842,7 +3886,7 @@ class ReleaseControllerTests(unittest.TestCase):
                     if reference.startswith("./"):
                         continue
                     self.assertRegex(reference, r"^[^@]+@[0-9a-f]{40}$")
-        self.assertEqual(len(references), 29)
+        self.assertEqual(len(references), 33)
 
     def request(self) -> dict[str, object]:
         return prepare_unwrap(

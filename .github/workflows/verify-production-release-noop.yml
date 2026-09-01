@@ -1,0 +1,192 @@
+name: Verify production release controller no-op
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm_publication_disabled:
+        description: Confirm this check must not publish or write State
+        required: true
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: lean-eval-release-controller-production
+  cancel-in-progress: false
+
+jobs:
+  authorize:
+    if: >-
+      github.repository == 'leanprover/lean-eval-releases' &&
+      github.ref == 'refs/heads/main' &&
+      inputs.confirm_publication_disabled == true
+    permissions: {}
+    runs-on: ubuntu-latest
+    timeout-minutes: 1
+    steps:
+      - name: Require the exact protected-main request
+        env:
+          DISPATCH_REF: ${{ github.ref }}
+          DISPATCH_REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          test "$DISPATCH_REPOSITORY" = leanprover/lean-eval-releases
+          test "$DISPATCH_REF" = refs/heads/main
+
+  verify-noop:
+    needs: authorize
+    if: >-
+      github.repository == 'leanprover/lean-eval-releases' &&
+      github.ref == 'refs/heads/main' &&
+      inputs.confirm_publication_disabled == true
+    environment: release-production
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    outputs:
+      kind: ${{ steps.plan.outputs.kind }}
+      release_commit: ${{ steps.plan.outputs.release_commit }}
+      state_commit: ${{ steps.plan.outputs.state_commit }}
+    steps:
+      # actions/checkout pinned to v7.0.1. No publication credential is supplied.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: main
+          fetch-depth: 0
+          persist-credentials: false
+
+      # The State write key is confined to the pinned checkout action. With
+      # persist-credentials false, no repository-authored step receives a Git
+      # credential or has a State push path.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: leanprover/lean-eval-state
+          ref: main
+          path: state
+          fetch-depth: 0
+          persist-credentials: false
+          ssh-key: ${{ secrets.PRODUCTION_STATE_CONTROLLER_KEY }}
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: '3.11.10'
+
+      - name: Require publication disabled and build the exact no-op plan
+        id: plan
+        env:
+          PUBLICATION_ENABLED: ${{ vars.PUBLICATION_ENABLED }}
+        run: |
+          set -euo pipefail
+          case "$PUBLICATION_ENABLED" in
+            ""|false) ;;
+            *) echo "PUBLICATION_ENABLED must remain absent or false" >&2; exit 1 ;;
+          esac
+
+          release_commit=$(git rev-parse HEAD)
+          state_commit=$(git -C state rev-parse HEAD)
+          [[ "$release_commit" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$state_commit" =~ ^[0-9a-f]{40}$ ]]
+          test "$(git rev-parse refs/remotes/origin/main)" = "$release_commit"
+          test "$(git -C state rev-parse refs/remotes/origin/main)" = "$state_commit"
+
+          python scripts/verify_release_state_contract.py \
+            --environment production \
+            --state-root state
+          test "$(jq -r .environment state/state.json)" = production
+          python state/scripts/state.py --root state \
+            --protected-main-commit "$state_commit" validate
+          python state/scripts/state.py --root state \
+            --protected-main-commit "$state_commit" materialize \
+            --output "$RUNNER_TEMP/state-views"
+
+          queue="$RUNNER_TEMP/state-views/release-queue.json"
+          snapshot="$RUNNER_TEMP/state-views/release-acceptance-snapshot.json"
+          queue_before=$(sha256sum "$queue")
+          snapshot_before=$(sha256sum "$snapshot")
+          python scripts/release_qualification.py \
+            --contract configuration/release-controller-credential-contract-v1.json \
+            --release-root . \
+            --state-root state \
+            --queue "$queue" \
+            --acceptance-snapshot "$snapshot" \
+            --environment production \
+            --publication-enabled "$PUBLICATION_ENABLED" \
+            --mode preflight \
+            --output "$RUNNER_TEMP/release-controller-qualification.json"
+          test "$(jq -er .release_commit \
+            "$RUNNER_TEMP/release-controller-qualification.json")" = "$release_commit"
+          test "$(jq -er .state_commit \
+            "$RUNNER_TEMP/release-controller-qualification.json")" = "$state_commit"
+
+          trusted_now=$(date --utc +%Y-%m-%dT%H:%M:%S.000Z)
+          python scripts/release_controller.py recover \
+            --domain "$RUNNER_TEMP/state-views/domain.json" \
+            --release-root . \
+            --trusted-now "$trusted_now" \
+            --output "$RUNNER_TEMP/release-recovery.json"
+          test "$(jq -er '. == {schema_version: 1, kind: "none"}' \
+            "$RUNNER_TEMP/release-recovery.json")" = true
+
+          python scripts/release_orchestrator.py "$queue" \
+            --trusted-as-of "$trusted_now" \
+            --output "$RUNNER_TEMP/release-plan.json"
+          kind=$(jq -er .kind "$RUNNER_TEMP/release-plan.json")
+          case "$kind" in
+            empty|not_due) ;;
+            *) echo "disabled publication preflight did not produce a no-op plan" >&2; exit 1 ;;
+          esac
+          test "$(sha256sum "$queue")" = "$queue_before"
+          test "$(sha256sum "$snapshot")" = "$snapshot_before"
+          test "$(git rev-parse HEAD)" = "$release_commit"
+          test "$(git -C state rev-parse HEAD)" = "$state_commit"
+          test -z "$(git status --porcelain --untracked-files=all -- \
+            . ':(exclude)state')"
+          test -z "$(git -C state status --porcelain --untracked-files=all)"
+          test -z "$(git config --local --get-regexp \
+            '^(http\..*\.extraheader|core\.sshCommand)$' || true)"
+          test -z "$(git -C state config --local --get-regexp \
+            '^(http\..*\.extraheader|core\.sshCommand)$' || true)"
+          {
+            echo "kind=$kind"
+            echo "release_commit=$release_commit"
+            echo "state_commit=$state_commit"
+            echo "trusted_now=$trusted_now"
+          } >> "$GITHUB_OUTPUT"
+
+      # Refetching main with the key again confined to the checkout action
+      # turns concurrent State movement into a stale-preflight failure.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: leanprover/lean-eval-state
+          ref: main
+          path: state-readback
+          fetch-depth: 1
+          persist-credentials: false
+          ssh-key: ${{ secrets.PRODUCTION_STATE_CONTROLLER_KEY }}
+
+      - name: Require exact-head stability and record the source-free result
+        env:
+          EXPECTED_RELEASE_COMMIT: ${{ steps.plan.outputs.release_commit }}
+          EXPECTED_STATE_COMMIT: ${{ steps.plan.outputs.state_commit }}
+          PLAN_KIND: ${{ steps.plan.outputs.kind }}
+          TRUSTED_NOW: ${{ steps.plan.outputs.trusted_now }}
+        run: |
+          set -euo pipefail
+          release_remote=$(git ls-remote --exit-code \
+            https://github.com/leanprover/lean-eval-releases.git \
+            refs/heads/main | awk '{print $1}')
+          test "$release_remote" = "$EXPECTED_RELEASE_COMMIT"
+          test "$(git -C state-readback rev-parse HEAD)" = "$EXPECTED_STATE_COMMIT"
+          test -z "$(git -C state-readback config --local --get-regexp \
+            '^(http\..*\.extraheader|core\.sshCommand)$' || true)"
+          {
+            echo '### Production release no-op preflight passed'
+            echo
+            echo "- release main: \`$EXPECTED_RELEASE_COMMIT\`"
+            echo "- production State main: \`$EXPECTED_STATE_COMMIT\`"
+            echo "- trusted clock: \`$TRUSTED_NOW\`"
+            echo "- plan: \`$PLAN_KIND\`"
+            echo '- recovery: `none`'
+            echo '- publication remained disabled; no State, release, archive, AWS, or artifact write path was present'
+          } >> "$GITHUB_STEP_SUMMARY"
