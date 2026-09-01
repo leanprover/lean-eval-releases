@@ -34,11 +34,11 @@ STATE_RELEASE_CONTRACT_TREES = {
     "scripts": "ed830aea8fe7a4a0e6db7acdcf82f23cb24a296d",
 }
 STAGING_STATE_RELEASE_CONTRACT_COMMIT = (
-    "f00055ed2ba9b4252f04e096d27aadd5beef0ed4"
+    "23852beaeb059c88caf043d22dad19b211c377b2"
 )
 STAGING_STATE_RELEASE_CONTRACT_TREES = {
-    "schema": "13d5853b5c1bf7227e90d697c86d42c7ce232102",
-    "scripts": "de1017d55eaf9740358ae38908c77c168a25e8de",
+    "schema": "3f4c615f308beb357a08a24f78aab40467beaf5d",
+    "scripts": "5de5ef033c295a8f5cab4434b004fb6d42c96252",
 }
 CONTROLLER_QUALIFICATION_FIELDS = {
     "schema_version",
