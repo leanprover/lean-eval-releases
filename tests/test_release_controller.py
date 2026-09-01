@@ -3841,7 +3841,20 @@ class ReleaseControllerTests(unittest.TestCase):
             plan["request"]["release"]["eligible_at"],
             queue["tasks"][0]["release_at"],
         )
-        competing = copy.deepcopy(queue["tasks"][0])
+        with self.assertRaisesRegex(ControllerError, "exactly one"):
+            staging_smoke_plan(queue, "0198abcd-0000-7000-8000-000000000099")
+
+    def test_staging_smoke_isolates_requested_task_from_earlier_competitor(
+        self,
+    ) -> None:
+        queue = json.loads(
+            (ROOT / "tests/fixtures/release-queue-v1.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        queue["environment"] = "staging"
+        requested = queue["tasks"][0]
+        competing = copy.deepcopy(requested)
         competing.update(
             event_id="0198abcd-0000-7000-8000-00000000000d",
             owner_login="aaron",
@@ -3858,11 +3871,23 @@ class ReleaseControllerTests(unittest.TestCase):
         )
         queue["tasks"].append(competing)
         queue["tasks"].sort(key=lambda task: task["result_id"])
-        later_submission_id = queue["tasks"][-1]["submission_id"]
-        with self.assertRaisesRegex(ControllerError, "requested submission"):
-            staging_smoke_plan(queue, later_submission_id)
-        with self.assertRaisesRegex(ControllerError, "exactly one"):
-            staging_smoke_plan(queue, "0198abcd-0000-7000-8000-000000000099")
+        self.assertLess(competing["result_id"], requested["result_id"])
+        queue_before = copy.deepcopy(queue)
+
+        plan = staging_smoke_plan(queue, requested["submission_id"])
+
+        self.assertEqual(queue, queue_before)
+        self.assertEqual(plan["kind"], "execution")
+        self.assertEqual(
+            plan["request"]["submission"]["submission_id"],
+            requested["submission_id"],
+        )
+        self.assertEqual(
+            plan["request"]["result"]["result_id"], requested["result_id"]
+        )
+        self.assertEqual(
+            plan["request"]["release"]["eligible_at"], requested["release_at"]
+        )
 
     def test_prepare_unwrap_rejects_each_binding_layer(self) -> None:
         changed = copy.deepcopy(self.sidecar)
