@@ -92,16 +92,18 @@ then invoke this provider-neutral reconstruction tool.
 
 `Publish due source release` is the credentialed production controller. Its
 daily schedule is inert unless the `release-production` environment variable
-`PUBLICATION_ENABLED` is exactly `true`. Both jobs retain a job-level latch
-check as defense in depth,
-but GitHub evaluates each condition from the workflow run context; it is not a
-live revocation mechanism and a queued job must not be assumed to observe a
-later variable change. After disabling the variable, operators must cancel
-every queued or running controller run. An emergency stop must additionally
-revoke the scoped production keys or unwrap role, or block the job with
-`release-production` environment protection. A manual run additionally
-requires an explicit confirmation. The workflow also refuses any repository
-or ref other than the exact upstream `main`.
+`PUBLICATION_ENABLED` is exactly `true`. A minimal job attached to that
+environment reads and caches the latch before either authority-bearing job can
+start. This avoids relying on environment-scoped variables in job-level
+conditions, which GitHub evaluates before attaching a job's environment. Both
+authority-bearing jobs require the cached exact-true output as defense in
+depth. The cached value is not a live revocation mechanism, so a queued job
+must not be assumed to observe a later variable change. After disabling the
+variable, operators must cancel every queued or running controller run. An
+emergency stop must additionally revoke the scoped production keys or unwrap
+role, or block the job with `release-production` environment protection. A
+manual run additionally requires an explicit confirmation. Every job also
+refuses any repository or ref other than the exact upstream `main`.
 A State-writing preparation job materializes the private production State
 repository through a read/write deploy key scoped only to that repository,
 selects at most one due result, atomically stages `release.started` and its

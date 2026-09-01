@@ -175,7 +175,13 @@ class ReleaseControllerTests(unittest.TestCase):
         self.assertIn("cron: '23 4 * * *'", workflow)
         self.assertIn("github.repository == 'leanprover/lean-eval-releases'", workflow)
         self.assertIn("github.ref == 'refs/heads/main'", workflow)
-        self.assertIn("vars.PUBLICATION_ENABLED == 'true'", workflow)
+        self.assertIn(
+            "needs.authorize-publication.outputs.publication_enabled == 'true'",
+            workflow,
+        )
+        self.assertIn(
+            "PUBLICATION_ENABLED: ${{ vars.PUBLICATION_ENABLED }}", workflow
+        )
         self.assertIn("environment: release-production", workflow)
         self.assertIn("id-token: write", workflow)
         self.assertIn("secrets.RELEASE_PUBLISH_KEY", workflow)
@@ -1217,11 +1223,43 @@ class ReleaseControllerTests(unittest.TestCase):
         }
         self.assertEqual(publication_jobs, {"prepare-one", "unwrap-publish"})
 
-        latch = "vars.PUBLICATION_ENABLED == 'true'"
+        latch = (
+            "needs.authorize-publication.outputs.publication_enabled == 'true'"
+        )
         for name in sorted(publication_jobs):
             with self.subTest(job=name):
                 condition = workflow_job_condition(jobs[name])
                 self.assertEqual(condition.count(latch), 1)
+
+        gate = jobs["authorize-publication"]
+        gate_condition = workflow_job_condition(gate)
+        self.assertIn(
+            "github.repository == 'leanprover/lean-eval-releases'",
+            gate_condition,
+        )
+        self.assertIn("github.ref == 'refs/heads/main'", gate_condition)
+        self.assertIn("inputs.confirm_publication == true", gate_condition)
+        self.assertIn("environment: release-production", gate)
+        self.assertIn("permissions: {}", gate)
+        self.assertIn("timeout-minutes: 1", gate)
+        self.assertIn("PUBLICATION_ENABLED: ${{ vars.PUBLICATION_ENABLED }}", gate)
+        self.assertIn('""|false) enabled=false', gate)
+        self.assertIn("true) enabled=true", gate)
+        self.assertNotIn("secrets.", gate)
+
+        for name, block in jobs.items():
+            with self.subTest(job_level_environment_variable=name):
+                if "\n    if:" in block:
+                    self.assertNotIn(
+                        "vars.PUBLICATION_ENABLED",
+                        workflow_job_condition(block),
+                    )
+        self.assertEqual(workflow.count("vars.PUBLICATION_ENABLED"), 1)
+        self.assertIn(
+            "PUBLICATION_ENABLED: "
+            "${{ needs.authorize-publication.outputs.publication_enabled }}",
+            jobs["prepare-one"],
+        )
 
         documentation = "\n".join(
             (ROOT / path).read_text(encoding="utf-8")

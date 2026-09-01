@@ -19,11 +19,37 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  prepare-one:
+  authorize-publication:
     if: >-
       github.repository == 'leanprover/lean-eval-releases' &&
       github.ref == 'refs/heads/main' &&
-      vars.PUBLICATION_ENABLED == 'true' &&
+      (github.event_name == 'schedule' || inputs.confirm_publication == true)
+    environment: release-production
+    permissions: {}
+    runs-on: ubuntu-latest
+    timeout-minutes: 1
+    outputs:
+      publication_enabled: ${{ steps.latch.outputs.publication_enabled }}
+    steps:
+      - name: Cache the environment-scoped publication latch
+        id: latch
+        env:
+          PUBLICATION_ENABLED: ${{ vars.PUBLICATION_ENABLED }}
+        run: |
+          set -euo pipefail
+          case "$PUBLICATION_ENABLED" in
+            true) enabled=true ;;
+            ""|false) enabled=false ;;
+            *) echo "PUBLICATION_ENABLED must be absent, false, or true" >&2; exit 1 ;;
+          esac
+          echo "publication_enabled=$enabled" >> "$GITHUB_OUTPUT"
+
+  prepare-one:
+    needs: authorize-publication
+    if: >-
+      github.repository == 'leanprover/lean-eval-releases' &&
+      github.ref == 'refs/heads/main' &&
+      needs.authorize-publication.outputs.publication_enabled == 'true' &&
       (github.event_name == 'schedule' || inputs.confirm_publication == true)
     environment: release-production
     runs-on: ubuntu-latest
@@ -71,7 +97,7 @@ jobs:
 
       - name: Validate controller and materialize exact production State
         env:
-          PUBLICATION_ENABLED: ${{ vars.PUBLICATION_ENABLED }}
+          PUBLICATION_ENABLED: ${{ needs.authorize-publication.outputs.publication_enabled }}
         run: |
           set -euo pipefail
           test "$(jq -r .environment state/state.json)" = production
@@ -280,9 +306,12 @@ jobs:
 
 
   unwrap-publish:
-    needs: prepare-one
+    needs: [authorize-publication, prepare-one]
     if: >-
-      vars.PUBLICATION_ENABLED == 'true' &&
+      github.repository == 'leanprover/lean-eval-releases' &&
+      github.ref == 'refs/heads/main' &&
+      needs.authorize-publication.outputs.publication_enabled == 'true' &&
+      (github.event_name == 'schedule' || inputs.confirm_publication == true) &&
       needs.prepare-one.outputs.kind == 'execution' &&
       needs.prepare-one.outputs.archive_commit != '' &&
       needs.prepare-one.outputs.archive_path != '' &&
