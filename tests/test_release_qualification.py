@@ -75,18 +75,11 @@ class ReleaseQualificationTests(unittest.TestCase):
         self.assertEqual(schema_commit, STATE_RELEASE_CONTRACT_COMMIT)
         self.assertEqual(
             removal_module.STATE_REMOVAL_CONTRACT_COMMIT,
-            "0c943edde8a247b8670e10339b80fc65be6c0f33",
+            STATE_RELEASE_CONTRACT_COMMIT,
         )
         self.assertEqual(
             removal_module.STATE_REMOVAL_CONTRACT_TREES,
-            {
-                "schema": "2c0004214d90b82cf895e79a91c239ac9e7bbf67",
-                "scripts": "ed830aea8fe7a4a0e6db7acdcf82f23cb24a296d",
-            },
-        )
-        self.assertNotEqual(
-            removal_module.STATE_REMOVAL_CONTRACT_COMMIT,
-            STATE_RELEASE_CONTRACT_COMMIT,
+            STATE_RELEASE_CONTRACT_TREES,
         )
         self.assertEqual(
             STATE_RELEASE_CONTRACT_TREES,
