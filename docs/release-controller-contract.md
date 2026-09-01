@@ -4,8 +4,10 @@ The automatic controller has two run-admission gates. GitHub must run the exact
 `leanprover/lean-eval-releases` `main` ref in the protected
 `release-production` environment, and that environment's Actions variable
 `PUBLICATION_ENABLED` must be exactly `true`. The tracked repository does not
-set that variable. The variable gate is evaluated from workflow run context,
-not as live revocation. The manual credential preflight instead requires it to
+set that variable. A minimal job attached to `release-production` reads and
+caches the environment-scoped variable before either authority-bearing job can
+start. The cached gate is part of the workflow run context, not live
+revocation. The manual credential preflight instead requires the variable to
 be absent or exactly `false`, so the same run cannot qualify publication.
 
 [`configuration/release-controller-credential-contract-v1.json`](../configuration/release-controller-credential-contract-v1.json)
@@ -175,9 +177,13 @@ cleanup and leave the committed `release.started` for the next controller's
 one-hour interrupted-run recovery.
 
 Both split production jobs require environment-scoped keys and therefore name
-`release-production`. Both job-level conditions retain a
-`PUBLICATION_ENABLED == 'true'` check as defense in depth, but GitHub evaluates
-them from the workflow run context. They are not a live revocation
+`release-production`. Their job-level conditions require the minimal
+environment-bound gate's cached exact-true output as defense in depth. The gate
+contains no publication credential or repository permission, and missing or
+false disables the run without entering either authority-bearing job. This
+separation is required because GitHub evaluates a job-level condition before
+attaching that job's environment, so such a condition cannot directly read an
+environment-scoped variable. The cached value is not a live revocation
 mechanism, and a queued job must not be assumed to observe a later variable
 change. The workflow deliberately does not attempt a REST re-read with
 `github.token`: the repository-variable endpoint requires the separate
