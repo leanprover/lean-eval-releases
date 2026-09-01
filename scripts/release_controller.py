@@ -863,7 +863,8 @@ def staging_smoke_plan(queue_value: Any, submission_id: str) -> dict[str, Any]:
         raise ControllerError(
             "staging submission must have exactly one queueable release"
         )
-    plan = plan_next(queue, matches[0]["release_at"])
+    requested_queue = {**queue, "tasks": [matches[0]]}
+    plan = plan_next(requested_queue, matches[0]["release_at"])
     if (
         plan.get("kind") != "execution"
         or plan.get("request", {}).get("submission", {}).get("submission_id")
