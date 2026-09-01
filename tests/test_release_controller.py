@@ -3131,6 +3131,19 @@ class ReleaseControllerTests(unittest.TestCase):
         self.assertIn("group: lean-eval-release-controller-production", workflow)
         self.assertIn("cancel-in-progress: false", workflow)
         self.assertIn("PUBLICATION_ENABLED must remain absent or false", workflow)
+        self.assertIn("ref: ${{ github.sha }}", workflow)
+        self.assertIn("WORKFLOW_COMMIT: ${{ github.sha }}", workflow)
+        self.assertIn('[[ "$WORKFLOW_COMMIT" =~ ^[0-9a-f]{40}$ ]]', workflow)
+        self.assertIn('test "$release_commit" = "$WORKFLOW_COMMIT"', workflow)
+        self.assertIn(
+            'test "$(git rev-parse refs/remotes/origin/main)" = "$release_commit"',
+            workflow,
+        )
+        self.assertIn(
+            "https://github.com/leanprover/lean-eval-releases.git",
+            workflow,
+        )
+        self.assertIn('test "$release_remote" = "$EXPECTED_RELEASE_COMMIT"', workflow)
         self.assertIn("--mode preflight", workflow)
         self.assertIn("scripts/release_qualification.py", workflow)
         self.assertIn("scripts/release_controller.py recover", workflow)

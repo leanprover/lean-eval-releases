@@ -52,7 +52,7 @@ jobs:
       # actions/checkout pinned to v7.0.1. No publication credential is supplied.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          ref: main
+          ref: ${{ github.sha }}
           fetch-depth: 0
           persist-credentials: false
 
@@ -76,6 +76,7 @@ jobs:
         id: plan
         env:
           PUBLICATION_ENABLED: ${{ vars.PUBLICATION_ENABLED }}
+          WORKFLOW_COMMIT: ${{ github.sha }}
         run: |
           set -euo pipefail
           case "$PUBLICATION_ENABLED" in
@@ -85,8 +86,10 @@ jobs:
 
           release_commit=$(git rev-parse HEAD)
           state_commit=$(git -C state rev-parse HEAD)
+          [[ "$WORKFLOW_COMMIT" =~ ^[0-9a-f]{40}$ ]]
           [[ "$release_commit" =~ ^[0-9a-f]{40}$ ]]
           [[ "$state_commit" =~ ^[0-9a-f]{40}$ ]]
+          test "$release_commit" = "$WORKFLOW_COMMIT"
           test "$(git rev-parse refs/remotes/origin/main)" = "$release_commit"
           test "$(git -C state rev-parse refs/remotes/origin/main)" = "$state_commit"
 
