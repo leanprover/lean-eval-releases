@@ -48,10 +48,10 @@ PRIVATE_EVIDENCE_REPOSITORIES = {
     "leanprover/lean-eval-audit",
     EXPECTED_STATE_REPOSITORY,
 }
-STATE_REMOVAL_CONTRACT_COMMIT = "235a96c96462438c7680e6fb90fa0e6044ec1774"
+STATE_REMOVAL_CONTRACT_COMMIT = "7ffb7ffb78d79847137785c65df25770f41b62ef"
 STATE_REMOVAL_CONTRACT_TREES = {
     "schema": "4cfe7363c7d8ab2d8ebf0cb2c4e26697c27ab680",
-    "scripts": "402b090e3b9d3bf233fdc410ab684f108999d725",
+    "scripts": "34abea8751e17bd6d65a0bcbdc4837540b6fd84e",
 }
 STATE_REMOVAL_CONTRACT_COMPONENTS = {
     "schema/public-state-projection-v1.schema.json": (
@@ -86,8 +86,8 @@ STATE_REMOVAL_CONTRACT_COMPONENTS = {
     ),
     "scripts/public_projection.py": (
         "100755",
-        "847443f5ecaafa5fa041293ced73cecad7f4835c",
-        "559b4197e7427bf8411ea04171a10d767008075e239de77e23a63e15303b2abf",
+        "8f84a73a0fb2335d1548857000f0e3341cf84b79",
+        "d2a5bc8194d2bde666f27bacece016867daea98d100743154f4b5d2fb146151d",
     ),
     "scripts/state.py": (
         "100644",
