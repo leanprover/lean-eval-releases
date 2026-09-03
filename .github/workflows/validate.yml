@@ -69,7 +69,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           repository: leanprover/lean-eval-state
-          ref: 7ffb7ffb78d79847137785c65df25770f41b62ef
+          ref: 4dd6c5498559599d250f8803b765e92c56397659
           path: .pinned-state-contract
           persist-credentials: false
           ssh-key: ${{ secrets.PRODUCTION_STATE_CONTROLLER_KEY }}

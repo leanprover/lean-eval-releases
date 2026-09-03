@@ -157,7 +157,7 @@
         "release_commit": { "$ref": "#/$defs/commit" },
         "state_repository": { "const": "leanprover/lean-eval-state" },
         "state_commit": { "$ref": "#/$defs/commit" },
-        "state_contract_commit": { "const": "7ffb7ffb78d79847137785c65df25770f41b62ef" },
+        "state_contract_commit": { "const": "4dd6c5498559599d250f8803b765e92c56397659" },
         "state_source_event_count": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 },
         "state_source_digest": { "$ref": "#/$defs/digest" },
         "release_queue_sha256": { "$ref": "#/$defs/digest" },
