@@ -172,8 +172,8 @@ interruption or proves an already-published tree and records
 `release.published`; this closes the push-succeeded/callback-lost ambiguity.
 The production environment currently has no reviewer or wait-timer rule, so
 its two split jobs do not create a second manual approval after
-`release.started`; the runbook must reverify that external fact before enabling
-publication.
+`release.started`; the runbook must continue to reverify that external fact
+while automatic publication is enabled.
 Owner publication changes are folded into the State-owned release queue. A
 submission initially marked `withheld` contributes no executable work; its sole
 later owner transition is an irreversible change to `scheduled`, which adds the
@@ -322,11 +322,11 @@ the ref, expected remote head, and push mode needed by the ordinary CAS path.
 The CAS precondition verifier rejects such output even if a supplied observed
 head happens to match.
 
-Publication remains disabled until the production credentials and a
-single-submission decrypt/reconstruction check are complete. The contributor
-acknowledgement and Apache-2.0 release choice are fixed by the approved rollout
-decision; eligibility and current consent still come only from validated
-State.
+Automatic publication is enabled and operational. One canary is scheduled for
+`2026-11-02T03:50:01.002Z`; it is not yet due, and no source release has been
+published yet. The contributor acknowledgement and Apache-2.0 release choice
+are fixed by the approved rollout decision; eligibility and current consent
+still come only from validated State.
 
 ```bash
 python -m unittest discover -s tests -v
