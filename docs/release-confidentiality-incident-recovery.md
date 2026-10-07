@@ -261,8 +261,8 @@ trees it also rechecks the relevant Git modes, blob IDs, and SHA-256s and parses
 the reviewed event schema to prove the closed top-level fields, system actor,
 exact payload fields, release-path grammar, and shared-path bound agree with the
 event skeleton it emits. The reviewed event schema is blob
-`5224f32019ee44f1449f7cb5d831198ba3bf417e` with SHA-256
-`5394e7f24901db390b16c97ac5ab781a407da6cedee60f96e3e9396bce549587`.
+`7690490e41ebacdcf9c03d180ece85f66a8b3a07` with SHA-256
+`501d5521f831e412471d296535f7ce390fe4afa19b814b74699156430a2adac8`.
 
 Release-repository CI also checks out this exact State commit by immutable SHA
 and runs a full harmless publication/removal fixture through its real
