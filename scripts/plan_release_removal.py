@@ -71,8 +71,8 @@ STATE_REMOVAL_CONTRACT_COMPONENTS = {
     ),
     "schema/state-event-v1.schema.json": (
         "100644",
-        "5224f32019ee44f1449f7cb5d831198ba3bf417e",
-        "5394e7f24901db390b16c97ac5ab781a407da6cedee60f96e3e9396bce549587",
+        "7690490e41ebacdcf9c03d180ece85f66a8b3a07",
+        "501d5521f831e412471d296535f7ce390fe4afa19b814b74699156430a2adac8",
     ),
     "schema/result-overlays-v1.schema.json": (
         "100644",
@@ -86,8 +86,8 @@ STATE_REMOVAL_CONTRACT_COMPONENTS = {
     ),
     "scripts/public_projection.py": (
         "100755",
-        "be4da8c3f431be6413eeae7a204959a7e58582a5",
-        "d8f5dd904459d3b99dec252f8c553ceb669248e8f11ccf552c770fc499497918",
+        "e302ccb1397202687dd61ee5b500852569aaed5f",
+        "a1bd53db942a3a3e016ce16e5196ec6da54258feba96821b6179900b0a0508e3",
     ),
     "scripts/state.py": (
         "100644",
@@ -96,8 +96,8 @@ STATE_REMOVAL_CONTRACT_COMPONENTS = {
     ),
     "scripts/validate_state.py": (
         "100755",
-        "dffee2cacb2e059ddde3a87bb753a6afcd900870",
-        "916e96ece481c1b9079147e9e4c3e3a3f2baea432de7b0d0a4729c04f70a3c92",
+        "e9c5c29e728d06376f796e116824c7ffbcc94517",
+        "4534b1046dd4f384fdf6bf9aa04eb13f19f17b56fe5099ba99282e85948ec00d",
     ),
 }
 REQUEST_FIELDS = {
