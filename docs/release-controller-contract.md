@@ -257,11 +257,11 @@ the reviewed `release.started`, `release.published`, `release.failed`, one-way
 private-to-scheduled publication transition, monotone release-revision, and
 immediate-predecessor contract commit
 recorded in the credential contract. The current reviewed commit is
-`d510abf410b04981142b5cbb21f23edc4d74ba20`, with root tree
-`d723926fd143e02a87ca4283272b9750defce478`, README blob
+`e2dd6314f04df175966ff105709b855053949d97`, with root tree
+`a544e078cf81da76cfa5fcb01dbb493fce28d450`, README blob
 `1dd08b8569c1a3a8eadec72af96276f520d4afec`, docs tree
 `27ab87708f95a4d919a63ae535b5b2ad6a21f88b`, schema tree
-`160a31c5a93490eae6e5dbb4b54d1b0bcf8fb3d6`, and scripts tree
+`2e83ec14e70ca6dd4bba1518c8a2ca28ee76be94`, and scripts tree
 `cf03bcfa56de6381f2d66a00b2547d4d9b46b0df`. Its live `schema` and `scripts`
 trees must still equal the trees at that reviewed commit, so later data-only
 State commits remain usable while any contract-code drift fails closed. Full

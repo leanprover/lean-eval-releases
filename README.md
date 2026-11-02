@@ -154,11 +154,11 @@ Before planning, the controller checks both full-history Git checkouts against
 the closed credential contract, requires exact tracked-clean `origin/main`
 commits, and requires production State to descend from the reviewed release
 event contract. That reviewed production State contract is commit
-`d510abf410b04981142b5cbb21f23edc4d74ba20`, root tree
-`d723926fd143e02a87ca4283272b9750defce478`, with README blob
+`e2dd6314f04df175966ff105709b855053949d97`, root tree
+`a544e078cf81da76cfa5fcb01dbb493fce28d450`, with README blob
 `1dd08b8569c1a3a8eadec72af96276f520d4afec`, docs tree
 `27ab87708f95a4d919a63ae535b5b2ad6a21f88b`, schema tree
-`160a31c5a93490eae6e5dbb4b54d1b0bcf8fb3d6`, and scripts tree
+`2e83ec14e70ca6dd4bba1518c8a2ca28ee76be94`, and scripts tree
 `cf03bcfa56de6381f2d66a00b2547d4d9b46b0df`. A source-free qualification
 binds the exact controller commit, State commit and event provenance,
 release-queue bytes, and acceptance-snapshot bytes into the execution plan.
@@ -267,8 +267,8 @@ Before executing any checked-out staging State code, the workflow requires the
 checkout to be clean, complete-history, and exact `origin/main`, to descend from
 the reviewed staging release contract, and to retain its exact reviewed
 `schema` and `scripts` trees. That staging contract is commit
-`803dba1245354335ff7675a4af76fd278f59b5dd`, schema tree
-`f0dd7cb2a760ae4010e05c62c3e6f02d55333030`, and scripts tree
+`f410468baefe0eb1e91ec131ded313f0ffad45f0`, schema tree
+`080f0c42ded00155b76ada937e3312d8591ee86f`, and scripts tree
 `7261fdd5a616800cd207ec44b05e982a296cd210`.
 The workflow also refuses a role variable other than the reviewed staging ARN
 and restricts its 15-minute session to the exact qualified staging unwrap

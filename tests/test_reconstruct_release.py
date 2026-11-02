@@ -44,7 +44,7 @@ class ReconstructionTests(unittest.TestCase):
             "release_commit": "a" * 40,
             "state_repository": "leanprover/lean-eval-state",
             "state_commit": "b" * 40,
-            "state_contract_commit": "d510abf410b04981142b5cbb21f23edc4d74ba20",
+            "state_contract_commit": "e2dd6314f04df175966ff105709b855053949d97",
             "state_source_event_count": queue["source_event_count"],
             "state_source_digest": queue["source_digest"],
             "release_queue_sha256": canonical_json_digest(queue, "release-queue"),
