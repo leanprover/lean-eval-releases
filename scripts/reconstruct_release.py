@@ -343,6 +343,13 @@ def _write_deterministic_bundle(path: pathlib.Path, sources: dict[str, bytes]) -
     return hashlib.sha256(content).hexdigest()
 
 
+PUBLIC_METADATA_V1_FIELDS = frozenset({
+    "credit_identity", "component_models", "harness", "human_involvement",
+    "web_access", "wall_time_seconds", "input_tokens", "output_tokens",
+    "cost_usd", "billing_mode", "prompt", "notes",
+})
+
+
 def _metadata(
     plan: dict[str, Any], generated_at: str, sources: dict[str, bytes]
 ) -> dict[str, Any]:
@@ -351,7 +358,14 @@ def _metadata(
         "schema_version": 1,
         "generated_at": generated_at,
         "result": request["result"],
-        "submission": request["submission"],
+        "submission": {
+            **request["submission"],
+            "production_metadata": {
+                key: value
+                for key, value in request["submission"]["production_metadata"].items()
+                if key in PUBLIC_METADATA_V1_FIELDS
+            },
+        },
         "archive": request["archive"],
         "release": request["release"],
         "source_files": [

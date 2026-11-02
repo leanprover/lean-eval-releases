@@ -45,7 +45,7 @@ MAX_WRAPPED_BYTES = 16_384
 MAX_SCAN_FILES = 1024
 MAX_SCAN_FILE_BYTES = 8 * 1024 * 1024
 MAX_SCAN_TOTAL_BYTES = 32 * 1024 * 1024
-STATE_RELEASE_CONTRACT_COMMIT = "5aa983fbc33be91a39d1ab38cfbdf5315fb14b00"
+STATE_RELEASE_CONTRACT_COMMIT = "e2dd6314f04df175966ff105709b855053949d97"
 
 CONTROLLER_QUALIFICATION_FIELDS = {
     "schema_version",
@@ -69,6 +69,7 @@ METADATA_FIELDS = {
     "web_access",
     "wall_time_seconds",
     "input_tokens",
+    "cached_input_tokens",
     "output_tokens",
     "cost_usd",
     "billing_mode",
@@ -249,7 +250,7 @@ def _production_metadata(value: Any, label: str) -> dict[str, Any]:
                 or not 0 <= item <= maximum
             ):
                 raise ProviderError(f"{item_label} must be finite and in range")
-        elif key in {"input_tokens", "output_tokens"}:
+        elif key in {"input_tokens", "cached_input_tokens", "output_tokens"}:
             _safe_integer(item, item_label, 0)
         elif key == "billing_mode" and item not in {
             "api",
@@ -257,6 +258,12 @@ def _production_metadata(value: Any, label: str) -> dict[str, Any]:
             "unknown",
         }:
             raise ProviderError(f"{item_label} is invalid")
+    if (
+        "input_tokens" in metadata
+        and "cached_input_tokens" in metadata
+        and metadata["cached_input_tokens"] > metadata["input_tokens"]
+    ):
+        raise ProviderError(f"{label}.cached_input_tokens exceeds input_tokens")
     return metadata
 
 

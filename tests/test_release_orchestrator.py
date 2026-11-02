@@ -163,6 +163,27 @@ class ReleaseOrchestratorTests(unittest.TestCase):
         with self.assertRaisesRegex(ReleaseError, "control-free"):
             validate_release_queue(queue)
 
+    def test_cached_input_metadata_survives_planning_and_is_bounded(self) -> None:
+        for metadata in (
+            {"input_tokens": 10, "cached_input_tokens": 5},
+            {"cached_input_tokens": 0},
+        ):
+            with self.subTest(metadata=metadata):
+                queue = self.queue()
+                self.task(queue)["production_metadata"] = metadata
+                plan = plan_next(queue, "2026-10-20T06:07:05.000Z")
+                self.assertEqual(
+                    plan["request"]["submission"]["production_metadata"], metadata
+                )
+        for count in (True, -1, 0.5, 9_007_199_254_740_992, 11):
+            with self.subTest(count=count):
+                queue = self.queue()
+                self.task(queue)["production_metadata"] = {
+                    "input_tokens": 10, "cached_input_tokens": count
+                }
+                with self.assertRaises(ReleaseError):
+                    validate_release_queue(queue)
+
     def test_schema_references_are_document_local(self) -> None:
         schemas = sorted((ROOT / "schema").glob("*.json"))
         self.assertTrue(schemas)

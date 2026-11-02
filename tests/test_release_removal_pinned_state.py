@@ -24,13 +24,13 @@ from release_removal import (  # noqa: E402
 )
 from release_tree import tree_digest  # noqa: E402
 
-STATE_CONTRACT_COMMIT = "5aa983fbc33be91a39d1ab38cfbdf5315fb14b00"
-STATE_CONTRACT_TREE = "4988f9ca445c75b2c7dc1e42023298dc304c213a"
+STATE_CONTRACT_COMMIT = "e2dd6314f04df175966ff105709b855053949d97"
+STATE_CONTRACT_TREE = "a544e078cf81da76cfa5fcb01dbb493fce28d450"
 STATE_CONTRACT_ROOTS = {
     "README.md": "1dd08b8569c1a3a8eadec72af96276f520d4afec",
-    "docs": "7401f6bf26083ebbc0db05f11cd90007d2a74f80",
-    "schema": "a39d9b597abbecc41122b592c61dd0f23c7b74ad",
-    "scripts": "13d9caf6663eb4fc6187890da8d0cfd0eddf5a91",
+    "docs": "27ab87708f95a4d919a63ae535b5b2ad6a21f88b",
+    "schema": "2e83ec14e70ca6dd4bba1518c8a2ca28ee76be94",
+    "scripts": "cf03bcfa56de6381f2d66a00b2547d4d9b46b0df",
 }
 STATE_CONTRACT_TREES = {
     path: STATE_CONTRACT_ROOTS[path] for path in ("schema", "scripts")

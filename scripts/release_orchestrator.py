@@ -28,17 +28,17 @@ DIGEST = re.compile(r"[0-9a-f]{64}")
 REASON = re.compile(r"[a-z][a-z0-9_]{1,63}")
 SAFE_INTEGER = 9_007_199_254_740_991
 MAX_RELEASE_ATTEMPTS = 4
-STATE_RELEASE_CONTRACT_COMMIT = "5aa983fbc33be91a39d1ab38cfbdf5315fb14b00"
+STATE_RELEASE_CONTRACT_COMMIT = "e2dd6314f04df175966ff105709b855053949d97"
 STATE_RELEASE_CONTRACT_TREES = {
-    "schema": "a39d9b597abbecc41122b592c61dd0f23c7b74ad",
-    "scripts": "13d9caf6663eb4fc6187890da8d0cfd0eddf5a91",
+    "schema": "2e83ec14e70ca6dd4bba1518c8a2ca28ee76be94",
+    "scripts": "cf03bcfa56de6381f2d66a00b2547d4d9b46b0df",
 }
 STAGING_STATE_RELEASE_CONTRACT_COMMIT = (
-    "6105a6255ec40409bcce66c6cf6b6764e0e93ed4"
+    "f410468baefe0eb1e91ec131ded313f0ffad45f0"
 )
 STAGING_STATE_RELEASE_CONTRACT_TREES = {
-    "schema": "5d3218039b1c4079d751fb54a30b1516917a81cd",
-    "scripts": "6527eafbad98ed43206e9e26f1731ae16d4fc995",
+    "schema": "080f0c42ded00155b76ada937e3312d8591ee86f",
+    "scripts": "7261fdd5a616800cd207ec44b05e982a296cd210",
 }
 CONTROLLER_QUALIFICATION_FIELDS = {
     "schema_version",
@@ -62,6 +62,7 @@ METADATA_FIELDS = {
     "web_access",
     "wall_time_seconds",
     "input_tokens",
+    "cached_input_tokens",
     "output_tokens",
     "cost_usd",
     "billing_mode",
@@ -180,10 +181,16 @@ def _production_metadata(value: Any, label: str) -> dict[str, Any]:
                 or not 0 <= item <= maximum
             ):
                 raise ReleaseError(f"{item_label} must be finite and in range")
-        elif key in {"input_tokens", "output_tokens"}:
+        elif key in {"input_tokens", "cached_input_tokens", "output_tokens"}:
             _safe_integer(item, item_label, 0)
         elif key == "billing_mode" and item not in {"api", "subscription", "unknown"}:
             raise ReleaseError(f"{item_label} is invalid")
+    if (
+        "input_tokens" in metadata
+        and "cached_input_tokens" in metadata
+        and metadata["cached_input_tokens"] > metadata["input_tokens"]
+    ):
+        raise ReleaseError(f"{label}.cached_input_tokens exceeds input_tokens")
     return metadata
 
 
