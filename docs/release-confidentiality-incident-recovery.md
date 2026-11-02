@@ -254,15 +254,15 @@ State schema version 1 defines a direct, system-authored `release.removed`
 event caused by the original `release.published` event. The current reviewed
 contract, materializer, public projection, compatibility behavior, and tests
 are pinned to `leanprover/lean-eval-state` commit
-`5aa983fbc33be91a39d1ab38cfbdf5315fb14b00`. The planner fails closed unless
+`5b8e2d9e65434bc75d1b6774ba57f2d3fbbefe90`. The planner fails closed unless
 that exact contract commit is reachable from live protected State `main` and
 the complete State `schema/` and `scripts/` trees remain unchanged. Within those
 trees it also rechecks the relevant Git modes, blob IDs, and SHA-256s and parses
 the reviewed event schema to prove the closed top-level fields, system actor,
 exact payload fields, release-path grammar, and shared-path bound agree with the
 event skeleton it emits. The reviewed event schema is blob
-`7690490e41ebacdcf9c03d180ece85f66a8b3a07` with SHA-256
-`501d5521f831e412471d296535f7ce390fe4afa19b814b74699156430a2adac8`.
+`f87c3a20d9977f60999dee5f546b21313f243d65` with SHA-256
+`c7993f8038a4937659ea2bd40fce8b97100c6f63bb1565605d841b67091f8a9e`.
 
 Release-repository CI also checks out this exact State commit by immutable SHA
 and runs a full harmless publication/removal fixture through its real

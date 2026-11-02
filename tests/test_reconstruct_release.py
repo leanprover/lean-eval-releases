@@ -44,7 +44,7 @@ class ReconstructionTests(unittest.TestCase):
             "release_commit": "a" * 40,
             "state_repository": "leanprover/lean-eval-state",
             "state_commit": "b" * 40,
-            "state_contract_commit": "5aa983fbc33be91a39d1ab38cfbdf5315fb14b00",
+            "state_contract_commit": "5b8e2d9e65434bc75d1b6774ba57f2d3fbbefe90",
             "state_source_event_count": queue["source_event_count"],
             "state_source_digest": queue["source_digest"],
             "release_queue_sha256": canonical_json_digest(queue, "release-queue"),
@@ -93,9 +93,12 @@ class ReconstructionTests(unittest.TestCase):
             root = pathlib.Path(temporary)
             archive = self.archive(root)
             outputs = [root / "first", root / "second"]
+            plan = self.plan()
+            production_metadata = {"input_tokens": 10, "cached_input_tokens": 4}
+            plan["request"]["submission"]["production_metadata"] = production_metadata
             manifests = [
                 reconstruct_one(
-                    plan_value=self.plan(),
+                    plan_value=plan,
                     plaintext_tar=archive,
                     trusted_as_of=TRUSTED_AS_OF,
                     state_snapshot_value=self.state(),
@@ -129,6 +132,9 @@ class ReconstructionTests(unittest.TestCase):
                 (release / "metadata.json").read_text(encoding="utf-8")
             )
             self.assertEqual(metadata["result"]["result_id"], entry["result_id"])
+            self.assertEqual(
+                metadata["submission"]["production_metadata"], production_metadata
+            )
             self.assertEqual(
                 metadata["release"]["accepted_at"], "2026-08-20T06:07:05.000Z"
             )

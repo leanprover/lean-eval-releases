@@ -55,13 +55,13 @@ class ReleaseRemovalPlanTests(unittest.TestCase):
     def test_pinned_state_contract_manifest_is_exact(self) -> None:
         self.assertEqual(
             removal_module.STATE_REMOVAL_CONTRACT_COMMIT,
-            "5aa983fbc33be91a39d1ab38cfbdf5315fb14b00",
+            "5b8e2d9e65434bc75d1b6774ba57f2d3fbbefe90",
         )
         self.assertEqual(
             removal_module.STATE_REMOVAL_CONTRACT_TREES,
             {
-                "schema": "a39d9b597abbecc41122b592c61dd0f23c7b74ad",
-                "scripts": "13d9caf6663eb4fc6187890da8d0cfd0eddf5a91",
+                "schema": "14c21bdd3333d6cb304e233fae1feacd23eaea6e",
+                "scripts": "cf03bcfa56de6381f2d66a00b2547d4d9b46b0df",
             },
         )
         self.assertEqual(
@@ -84,13 +84,13 @@ class ReleaseRemovalPlanTests(unittest.TestCase):
                 ),
                 "schema/state-event-v1.schema.json": (
                     "100644",
-                    "7690490e41ebacdcf9c03d180ece85f66a8b3a07",
-                    "501d5521f831e412471d296535f7ce390fe4afa19b814b74699156430a2adac8",
+                    "f87c3a20d9977f60999dee5f546b21313f243d65",
+                    "c7993f8038a4937659ea2bd40fce8b97100c6f63bb1565605d841b67091f8a9e",
                 ),
                 "schema/result-overlays-v1.schema.json": (
                     "100644",
-                    "41d4078133d6854bf8de839873a3f58e9ba1afd1",
-                    "245324f32265d0476ca45e55ec5fbe2363c47da852d2641ddc292df0c5d9d474",
+                    "04e32e0ddc434ec6a460ab9e8fe28350ac33a17c",
+                    "4e7f7093c56bc00eee24d7315fa42fed068407988a5fb14f97592aa86ff15eac",
                 ),
                 "scripts/materialize_state.py": (
                     "100755",
@@ -99,8 +99,8 @@ class ReleaseRemovalPlanTests(unittest.TestCase):
                 ),
                 "scripts/public_projection.py": (
                     "100755",
-                    "e302ccb1397202687dd61ee5b500852569aaed5f",
-                    "a1bd53db942a3a3e016ce16e5196ec6da54258feba96821b6179900b0a0508e3",
+                    "1bfa9036f7e7825de9a9b3ea4f8fd999ed814360",
+                    "ea512864cd63462ad17a066ee260f7d29b41f6cefc8c88d5c8d4005140713e18",
                 ),
                 "scripts/state.py": (
                     "100644",
@@ -109,8 +109,8 @@ class ReleaseRemovalPlanTests(unittest.TestCase):
                 ),
                 "scripts/validate_state.py": (
                     "100755",
-                    "e9c5c29e728d06376f796e116824c7ffbcc94517",
-                    "4534b1046dd4f384fdf6bf9aa04eb13f19f17b56fe5099ba99282e85948ec00d",
+                    "51f5f623e113f2889519bb91705d7231975931e0",
+                    "455a58f083d4955029bbdaca33b149c6887be4d0a51a5583ce1b3ac1ff18d914",
                 ),
             },
         )

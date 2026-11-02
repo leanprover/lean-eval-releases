@@ -2733,7 +2733,7 @@ class ReleaseControllerTests(unittest.TestCase):
             "release_commit": "4" * 40,
             "state_repository": "leanprover/lean-eval-state",
             "state_commit": "5" * 40,
-            "state_contract_commit": "5aa983fbc33be91a39d1ab38cfbdf5315fb14b00",
+            "state_contract_commit": "5b8e2d9e65434bc75d1b6774ba57f2d3fbbefe90",
             "state_source_event_count": 1,
             "state_source_digest": "6" * 64,
             "release_queue_sha256": "7" * 64,
@@ -2747,6 +2747,7 @@ class ReleaseControllerTests(unittest.TestCase):
             "web_access": False,
             "wall_time_seconds": 12.5,
             "input_tokens": 10,
+            "cached_input_tokens": 5,
             "output_tokens": 20,
             "cost_usd": 0.5,
             "billing_mode": "api",
@@ -2837,6 +2838,12 @@ class ReleaseControllerTests(unittest.TestCase):
                 ),
             )
         )
+        for count in (True, -1, 0.5, 9_007_199_254_740_992, 11):
+            candidate = replace_at(
+                plan, ("request", "submission", "production_metadata", "cached_input_tokens"), count
+            )
+            self.assertFalse(accepted(candidate, literal=False))
+            self.assertFalse(accepted(candidate, literal=True))
         rejected = 0
         for label, candidate in mutations:
             with self.subTest(mutation=label):

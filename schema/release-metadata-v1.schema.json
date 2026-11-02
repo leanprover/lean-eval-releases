@@ -83,6 +83,7 @@
         "web_access": { "type": "boolean" },
         "wall_time_seconds": { "type": "number", "minimum": 0, "maximum": 31536000 },
         "input_tokens": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 },
+        "cached_input_tokens": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 },
         "output_tokens": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 },
         "cost_usd": { "type": "number", "minimum": 0, "maximum": 1000000 },
         "billing_mode": { "enum": ["api", "subscription", "unknown"] },
