@@ -145,18 +145,20 @@ body, owner/model, and production prompt/notes never cross that boundary and
 are not logged, summarized, or uploaded as artifacts. No identity, plaintext,
 or private archive is transferred between jobs or uploaded.
 
-Optional `cached_input_tokens` is preserved in release metadata. It is part of
-total input tokens and cannot exceed `input_tokens` when both are reported.
+Optional `cached_input_tokens` is preserved in internal release planning. It is
+part of total input tokens and cannot exceed `input_tokens` when both are reported.
+Public release metadata v1 keeps its existing shape and omits this field; the
+leaderboard publishes cached counts through State projection v7.
 
 Before planning, the controller checks both full-history Git checkouts against
 the closed credential contract, requires exact tracked-clean `origin/main`
 commits, and requires production State to descend from the reviewed release
 event contract. That reviewed production State contract is commit
-`5b8e2d9e65434bc75d1b6774ba57f2d3fbbefe90`, root tree
-`0d86723246ae5b4fd5a25ed1868a8a024cd861d8`, with README blob
+`d510abf410b04981142b5cbb21f23edc4d74ba20`, root tree
+`d723926fd143e02a87ca4283272b9750defce478`, with README blob
 `1dd08b8569c1a3a8eadec72af96276f520d4afec`, docs tree
 `27ab87708f95a4d919a63ae535b5b2ad6a21f88b`, schema tree
-`14c21bdd3333d6cb304e233fae1feacd23eaea6e`, and scripts tree
+`160a31c5a93490eae6e5dbb4b54d1b0bcf8fb3d6`, and scripts tree
 `cf03bcfa56de6381f2d66a00b2547d4d9b46b0df`. A source-free qualification
 binds the exact controller commit, State commit and event provenance,
 release-queue bytes, and acceptance-snapshot bytes into the execution plan.
@@ -265,8 +267,8 @@ Before executing any checked-out staging State code, the workflow requires the
 checkout to be clean, complete-history, and exact `origin/main`, to descend from
 the reviewed staging release contract, and to retain its exact reviewed
 `schema` and `scripts` trees. That staging contract is commit
-`eaf7d925e89ac20f398a8c450182618697bdacb0`, schema tree
-`7224521e2b2e7cf9eca3a115580d26595ee093c5`, and scripts tree
+`803dba1245354335ff7675a4af76fd278f59b5dd`, schema tree
+`f0dd7cb2a760ae4010e05c62c3e6f02d55333030`, and scripts tree
 `7261fdd5a616800cd207ec44b05e982a296cd210`.
 The workflow also refuses a role variable other than the reviewed staging ARN
 and restricts its 15-minute session to the exact qualified staging unwrap

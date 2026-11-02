@@ -44,7 +44,7 @@ class ReconstructionTests(unittest.TestCase):
             "release_commit": "a" * 40,
             "state_repository": "leanprover/lean-eval-state",
             "state_commit": "b" * 40,
-            "state_contract_commit": "5b8e2d9e65434bc75d1b6774ba57f2d3fbbefe90",
+            "state_contract_commit": "d510abf410b04981142b5cbb21f23edc4d74ba20",
             "state_source_event_count": queue["source_event_count"],
             "state_source_digest": queue["source_digest"],
             "release_queue_sha256": canonical_json_digest(queue, "release-queue"),
@@ -133,7 +133,7 @@ class ReconstructionTests(unittest.TestCase):
             )
             self.assertEqual(metadata["result"]["result_id"], entry["result_id"])
             self.assertEqual(
-                metadata["submission"]["production_metadata"], production_metadata
+                metadata["submission"]["production_metadata"], {"input_tokens": 10}
             )
             self.assertEqual(
                 metadata["release"]["accepted_at"], "2026-08-20T06:07:05.000Z"

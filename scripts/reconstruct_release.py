@@ -351,7 +351,14 @@ def _metadata(
         "schema_version": 1,
         "generated_at": generated_at,
         "result": request["result"],
-        "submission": request["submission"],
+        "submission": {
+            **request["submission"],
+            "production_metadata": {
+                key: value
+                for key, value in request["submission"]["production_metadata"].items()
+                if key != "cached_input_tokens"
+            },
+        },
         "archive": request["archive"],
         "release": request["release"],
         "source_files": [

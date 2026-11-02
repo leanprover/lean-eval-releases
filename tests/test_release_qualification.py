@@ -69,7 +69,7 @@ class ReleaseQualificationTests(unittest.TestCase):
         ]["state_contract_commit"]["const"]
         self.assertEqual(
             STATE_RELEASE_CONTRACT_COMMIT,
-            "5b8e2d9e65434bc75d1b6774ba57f2d3fbbefe90",
+            "d510abf410b04981142b5cbb21f23edc4d74ba20",
         )
         self.assertEqual(contract_commit, STATE_RELEASE_CONTRACT_COMMIT)
         self.assertEqual(schema_commit, STATE_RELEASE_CONTRACT_COMMIT)
@@ -84,7 +84,7 @@ class ReleaseQualificationTests(unittest.TestCase):
         self.assertEqual(
             STATE_RELEASE_CONTRACT_TREES,
             {
-                "schema": "14c21bdd3333d6cb304e233fae1feacd23eaea6e",
+                "schema": "160a31c5a93490eae6e5dbb4b54d1b0bcf8fb3d6",
                 "scripts": "cf03bcfa56de6381f2d66a00b2547d4d9b46b0df",
             },
         )
@@ -106,12 +106,12 @@ class ReleaseQualificationTests(unittest.TestCase):
         )
         self.assertEqual(
             STAGING_STATE_RELEASE_CONTRACT_COMMIT,
-            "eaf7d925e89ac20f398a8c450182618697bdacb0",
+            "803dba1245354335ff7675a4af76fd278f59b5dd",
         )
         self.assertEqual(
             STAGING_STATE_RELEASE_CONTRACT_TREES,
             {
-                "schema": "7224521e2b2e7cf9eca3a115580d26595ee093c5",
+                "schema": "f0dd7cb2a760ae4010e05c62c3e6f02d55333030",
                 "scripts": "7261fdd5a616800cd207ec44b05e982a296cd210",
             },
         )
