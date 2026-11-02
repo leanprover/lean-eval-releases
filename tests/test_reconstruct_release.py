@@ -106,6 +106,9 @@ class ReconstructionTests(unittest.TestCase):
                 )
                 for output in outputs
             ]
+            self.assertEqual(
+                plan["request"]["submission"]["production_metadata"], production_metadata
+            )
             self.assertEqual(manifests[0], manifests[1])
             entry = manifests[0]["entries"][0]
             release = outputs[0] / entry["release_path"]
