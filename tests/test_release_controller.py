@@ -2035,7 +2035,10 @@ class ReleaseControllerTests(unittest.TestCase):
                     live: list[int] = []
                     while time.monotonic() < deadline:
                         live = []
-                        for cmdline in pathlib.Path("/proc").glob("[0-9]*/cmdline"):
+                        for process in pathlib.Path("/proc").iterdir():
+                            if not process.name.isdecimal():
+                                continue
+                            cmdline = process / "cmdline"
                             try:
                                 arguments = cmdline.read_bytes().split(b"\0")
                             except (
@@ -3909,7 +3912,7 @@ class ReleaseControllerTests(unittest.TestCase):
                     if reference.startswith("./"):
                         continue
                     self.assertRegex(reference, r"^[^@]+@[0-9a-f]{40}$")
-        self.assertEqual(len(references), 33)
+        self.assertEqual(len(references), 34)
 
     def request(self) -> dict[str, object]:
         return prepare_unwrap(

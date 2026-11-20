@@ -10,6 +10,33 @@ start. The cached gate is part of the workflow run context, not live
 revocation. The manual credential preflight instead requires the variable to
 be absent or exactly `false`, so the same run cannot qualify publication.
 
+Before a production plan can append `release.started`, the planner also checks
+the selected Result at the exact canonical `result.recorded` commit and file
+digest, using read-only public Submissions history and the qualified State
+commit. Its original server UUID, owner/model/problem/revision, benchmark, and
+Source repository/ref/visibility must agree with that submission's acceptance
+chain. Ambiguous original issue provenance is held for review. This is an
+additional conservative admission requirement; the historical Result callback
+verified the Result identity and file digest, without requiring its intake UUID.
+
+The admission floor is the later of the existing canonical `release_at` and two
+UTC calendar months after that bound `result.recorded.occurred_at`. The latter
+is the trusted receipt's wall clock sampled after successful evaluation and
+recording; it is not checker finish time. It must also bound the original base
+row's whole-second recording clock, including its truncation interval. The
+floor clamps month ends using the existing embargo helper. This protects old
+acceptances whose event clocks were derived from archival time.
+
+An early candidate produces `not_due`; missing or inconsistent evidence fails
+planning closed. Neither path appends a State event, unwraps, spends a provider
+grant, consumes a release attempt, or declares permanent unavailability. The
+guard leaves canonical timestamps, schedules, release paths and event history
+unchanged. It preserves deterministic candidate selection: a held first
+candidate holds that invocation rather than silently reordering the queue.
+Interrupted-release recovery precedes this check. Existing started releases
+retain their original recovery path. Admission uses no Actions API, private
+source, new credential or caller-supplied qualification inventory.
+
 [`configuration/release-controller-credential-contract-v1.json`](../configuration/release-controller-credential-contract-v1.json)
 is the closed, reviewed Git authority contract. It names three non-overlapping
 credentials:

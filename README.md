@@ -342,6 +342,10 @@ python scripts/validate_manifest.py path/to/release-manifest.json \
 
 python scripts/release_orchestrator.py path/to/release-queue.json \
   --trusted-as-of "$TRUSTED_UTC_NOW" \
+  --controller-qualification path/to/release-controller-qualification.json \
+  --require-controller-qualification \
+  --state-root path/to/qualified-state \
+  --original-results-root path/to/public-submissions-history \
   --output /tmp/release-plan.json
 
 python scripts/reconstruct_release.py /tmp/release-plan.json \
