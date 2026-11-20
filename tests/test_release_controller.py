@@ -20,6 +20,7 @@ import tempfile
 import textwrap
 import time
 import unittest
+from unittest import mock
 
 from scripts import release_provider_literal
 from scripts.reconstruct_release_plan import ReconstructionError, reconstruct
@@ -973,8 +974,9 @@ class ReleaseControllerTests(unittest.TestCase):
                 published_paths,
             )
 
+    @mock.patch("scripts.reconstruct_release_plan.select_state_contract", return_value=("e2dd6314f04df175966ff105709b855053949d97", {}))
     def test_staging_plan_reconstructs_only_from_exact_state_and_descriptor(
-        self,
+        self, _reviewed_fixture_contract,
     ) -> None:
         queue = json.loads(
             (ROOT / "tests/fixtures/release-queue-v1.json").read_text(
@@ -1073,8 +1075,9 @@ class ReleaseControllerTests(unittest.TestCase):
                     scratch_root=scratch,
                 )
 
+    @mock.patch("scripts.reconstruct_release_plan.select_state_contract", return_value=("e2dd6314f04df175966ff105709b855053949d97", {}))
     def test_production_plan_reconstructs_from_exact_started_state_commit(
-        self,
+        self, _reviewed_fixture_contract,
     ) -> None:
         queue = json.loads(
             (ROOT / "tests/fixtures/release-queue-v1.json").read_text(

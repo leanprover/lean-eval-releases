@@ -51,6 +51,12 @@ GITHUB_ORIGIN = re.compile(
 )
 
 
+if __package__:
+    from .state_contracts import STATE_CODE_CONTRACTS, select_state_contract
+else:
+    from state_contracts import STATE_CODE_CONTRACTS, select_state_contract
+
+
 class QualificationError(ValueError):
     """The local controller inputs do not match the reviewed contract."""
 
@@ -241,8 +247,12 @@ def build_qualification(
     mode: str,
     release_commit: str,
     state_commit: str,
+    state_contract_commit: str | None = None,
 ) -> dict[str, Any]:
     contract = validate_contract(contract_value)
+    selected_contract = state_contract_commit or contract["state"]["minimum_contract_commit"]
+    if selected_contract not in STATE_CODE_CONTRACTS:
+        raise QualificationError("State code contract is not reviewed")
     queue = validate_release_queue(queue_value)
     load_state_snapshot(snapshot_value)
     if environment != "production" or queue["environment"] != environment:
@@ -268,7 +278,7 @@ def build_qualification(
         "release_commit": release_commit,
         "state_repository": contract["state"]["repository"],
         "state_commit": state_commit,
-        "state_contract_commit": contract["state"]["minimum_contract_commit"],
+        "state_contract_commit": selected_contract,
         "state_source_event_count": queue["source_event_count"],
         "state_source_digest": queue["source_digest"],
         "release_queue_sha256": canonical_json_digest(queue, "release-queue"),
@@ -302,11 +312,12 @@ def main(argv: list[str] | None = None) -> int:
         release_commit = qualify_repository(
             args.release_root, contract["release"]["repository"]
         )
+        state_contract_commit, state_code = select_state_contract(args.state_root)
         state_commit = qualify_repository(
             args.state_root,
             contract["state"]["repository"],
-            contract["state"]["minimum_contract_commit"],
-            STATE_RELEASE_CONTRACT_TREES,
+            state_contract_commit,
+            state_code["trees"],
         )
         qualification = build_qualification(
             contract,
@@ -317,6 +328,7 @@ def main(argv: list[str] | None = None) -> int:
             mode=args.mode,
             release_commit=release_commit,
             state_commit=state_commit,
+            state_contract_commit=state_contract_commit,
         )
         if args.output.exists() or args.output.is_symlink():
             raise QualificationError("refusing to overwrite qualification output")

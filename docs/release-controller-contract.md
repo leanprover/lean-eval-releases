@@ -264,7 +264,21 @@ recorded in the credential contract. The current reviewed commit is
 `2e83ec14e70ca6dd4bba1518c8a2ca28ee76be94`, and scripts tree
 `cf03bcfa56de6381f2d66a00b2547d4d9b46b0df`. Its live `schema` and `scripts`
 trees must still equal the trees at that reviewed commit, so later data-only
-State commits remain usable while any contract-code drift fails closed. Full
+State commits remain usable while any unreviewed contract-code drift fails closed.
+The closed additional contract is State commit
+`351b1c409290516bfa379fc857908908e1d08932`, with schema tree
+`f7efe29098882c33bba25b5dbbeba34bd981205d` and scripts tree
+`1f0173a9cf24d00e139c0c346500a2deef5c2453`. `scripts/state_contracts.py`
+records both exact tree pairs and the critical file modes, Git blobs, and
+SHA-256s, including the new `archive_replay_contract.py` runtime dependency.
+Only a descendant whose complete code trees equal one of these two contracts
+is admitted. The credential contract's minimum remains the original commit;
+the qualification records the contract actually selected from the source.
+Interrupted-plan reconstruction selects that plan's original State code before
+executing it, so an old plan's qualification and identity do not change.
+Historical archive replay tasks do not become ordinary release tasks.
+
+Full
 Git history is checked out because interrupted-release recovery must inspect
 the commit that first published a release path.
 

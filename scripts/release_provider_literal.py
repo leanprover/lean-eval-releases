@@ -46,6 +46,7 @@ MAX_SCAN_FILES = 1024
 MAX_SCAN_FILE_BYTES = 8 * 1024 * 1024
 MAX_SCAN_TOTAL_BYTES = 32 * 1024 * 1024
 STATE_RELEASE_CONTRACT_COMMIT = "e2dd6314f04df175966ff105709b855053949d97"
+STATE_RELEASE_CONTRACTS = {STATE_RELEASE_CONTRACT_COMMIT, "351b1c409290516bfa379fc857908908e1d08932"}
 
 CONTROLLER_QUALIFICATION_FIELDS = {
     "schema_version",
@@ -292,7 +293,7 @@ def _validate_controller_binding(value: Any) -> dict[str, Any]:
         != "leanprover/lean-eval-releases"
         or qualification["state_repository"] != "leanprover/lean-eval-state"
         or qualification["state_contract_commit"]
-        != STATE_RELEASE_CONTRACT_COMMIT
+        not in STATE_RELEASE_CONTRACTS
     ):
         raise ProviderError("controller qualification identity is invalid")
     for field in ("release_commit", "state_commit"):

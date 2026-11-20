@@ -27,6 +27,11 @@ COMMIT = re.compile(r"[0-9a-f]{40}")
 DIGEST = re.compile(r"[0-9a-f]{64}")
 REASON = re.compile(r"[a-z][a-z0-9_]{1,63}")
 SAFE_INTEGER = 9_007_199_254_740_991
+if __package__:
+    from .state_contracts import STATE_CODE_CONTRACTS
+else:
+    from state_contracts import STATE_CODE_CONTRACTS
+
 MAX_RELEASE_ATTEMPTS = 4
 STATE_RELEASE_CONTRACT_COMMIT = "e2dd6314f04df175966ff105709b855053949d97"
 STATE_RELEASE_CONTRACT_TREES = {
@@ -328,7 +333,7 @@ def validate_controller_binding(value: Any) -> dict[str, Any]:
         or qualification["mode"] != "publication"
         or qualification["release_repository"] != "leanprover/lean-eval-releases"
         or qualification["state_repository"] != "leanprover/lean-eval-state"
-        or qualification["state_contract_commit"] != STATE_RELEASE_CONTRACT_COMMIT
+        or qualification["state_contract_commit"] not in STATE_CODE_CONTRACTS
     ):
         raise ReleaseError("controller qualification identity is invalid")
     for field in ("release_commit", "state_commit"):

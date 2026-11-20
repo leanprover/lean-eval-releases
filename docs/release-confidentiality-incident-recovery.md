@@ -264,8 +264,21 @@ event skeleton it emits. The reviewed event schema is blob
 `f87c3a20d9977f60999dee5f546b21313f243d65` with SHA-256
 `c7993f8038a4937659ea2bd40fce8b97100c6f63bb1565605d841b67091f8a9e`.
 
-Release-repository CI also checks out this exact State commit by immutable SHA
-and runs a full harmless publication/removal fixture through its real
+The closed additional State contract is
+`351b1c409290516bfa379fc857908908e1d08932`, with schema tree
+`f7efe29098882c33bba25b5dbbeba34bd981205d` and scripts tree
+`1f0173a9cf24d00e139c0c346500a2deef5c2453`. Its exact component mode/blob/SHA-256
+map is in `scripts/state_contracts.py`; it includes the archive runtime module
+and projection schemas through v8. The planner selects the exact effective
+code pair and records that contract in the plan. A mixture of old and new
+trees, or any unknown code change, is rejected. Legacy contract descriptors
+remain unchanged. A saved removal plan still requires its recorded contract
+to equal the live contract at execution; after a code transition, produce a
+fresh reviewed containment plan rather than waiving that comparison.
+
+Release-repository protected-main CI checks out the newer exact State commit
+with complete history and runs a full harmless publication/removal fixture
+against each of the two contracts through its real
 `validate_state.py`, `materialize_state.py`, and `public_projection.py` entry
 points. The smaller unit doubles remain for focused fault injection, but are
 not the compatibility evidence for the pinned production consumers.

@@ -24,6 +24,7 @@ from typing import Any
 from release_controller import ControllerError, parse_timestamp
 from release_orchestrator import COMMIT, DIGEST, REPOSITORY, RESULT_ID, UUID7
 from release_tree import projected_digest
+from state_contracts import ARCHIVE_STATE_CONTRACT, STATE_CODE_CONTRACTS
 
 
 MAX_DOCUMENT_BYTES = 1024 * 1024
@@ -546,18 +547,41 @@ def _state_removal_contract(
     state_root: pathlib.Path, remote_main: str
 ) -> dict[str, Any]:
     """Bind planning to the exact reviewed and currently effective contract."""
+    contracts = {
+        STATE_REMOVAL_CONTRACT_COMMIT: {
+            "trees": STATE_REMOVAL_CONTRACT_TREES,
+            "components": STATE_REMOVAL_CONTRACT_COMPONENTS,
+        },
+        ARCHIVE_STATE_CONTRACT: STATE_CODE_CONTRACTS[ARCHIVE_STATE_CONTRACT],
+    }
+    eligible = {}
+    for anchor, entry in contracts.items():
+        try:
+            _commit_on_remote_main(state_root, anchor, remote_main, "reviewed State contract")
+            eligible[anchor] = entry
+        except RemovalPlanError:
+            continue
+    if not eligible:
+        raise RemovalPlanError("reviewed State contract ancestry is invalid")
+    live = {path: _git_text(state_root, "rev-parse", f"{remote_main}:{path}", label=f"live State {path}") for path in ("schema", "scripts")}
+    matches = [(commit, entry) for commit, entry in eligible.items() if entry["trees"] == live]
+    if len(matches) != 1:
+        path = next((path for path in ("schema", "scripts") if live[path] != STATE_REMOVAL_CONTRACT_TREES[path]), "schema")
+        raise RemovalPlanError(f"live release removal State tree {path} has drifted from the reviewed contracts")
+    contract_commit, selected = matches[0]
+    contract_trees, contract_components = selected["trees"], selected["components"]
     _commit_on_remote_main(
         state_root,
-        STATE_REMOVAL_CONTRACT_COMMIT,
+        contract_commit,
         remote_main,
         "release removal State contract",
     )
     trees = []
-    for path, expected_tree in sorted(STATE_REMOVAL_CONTRACT_TREES.items()):
+    for path, expected_tree in sorted(contract_trees.items()):
         reviewed_tree = _git_text(
             state_root,
             "rev-parse",
-            f"{STATE_REMOVAL_CONTRACT_COMMIT}:{path}",
+            f"{contract_commit}:{path}",
             label=f"reviewed release removal State tree {path}",
         )
         live_tree = _git_text(
@@ -580,11 +604,11 @@ def _state_removal_contract(
         trees.append({"path": path, "tree": expected_tree})
     components = []
     for path, (expected_mode, expected_blob, expected_sha256) in sorted(
-        STATE_REMOVAL_CONTRACT_COMPONENTS.items()
+        contract_components.items()
     ):
         reviewed_blob, reviewed_raw = _one_blob(
             state_root,
-            STATE_REMOVAL_CONTRACT_COMMIT,
+            contract_commit,
             path,
             label=f"reviewed release removal State component {path}",
             maximum=MAX_DOCUMENT_BYTES,
@@ -620,7 +644,7 @@ def _state_removal_contract(
             _validate_state_removal_schema(reviewed_raw)
     return {
         "repository": EXPECTED_STATE_REPOSITORY,
-        "commit": STATE_REMOVAL_CONTRACT_COMMIT,
+        "commit": contract_commit,
         "event_type": "release.removed",
         "trees": trees,
         "components": components,
