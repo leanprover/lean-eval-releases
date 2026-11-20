@@ -454,6 +454,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--trusted-as-of", required=True)
     parser.add_argument("--controller-qualification", type=pathlib.Path)
     parser.add_argument("--require-controller-qualification", action="store_true")
+    parser.add_argument("--state-root", type=pathlib.Path)
+    parser.add_argument("--original-results-root", type=pathlib.Path)
     parser.add_argument("--output", required=True, type=pathlib.Path)
     args = parser.parse_args(argv)
     try:
@@ -466,6 +468,15 @@ def main(argv: list[str] | None = None) -> int:
         if args.require_controller_qualification and qualification is None:
             raise ReleaseError("controller qualification is required")
         plan = plan_next(queue, args.trusted_as_of, qualification)
+        if queue["environment"] == "production" and plan["kind"] == "execution":
+            if qualification is None or args.state_root is None or args.original_results_root is None:
+                raise ReleaseError("production admission requires qualified State and original Results")
+            if __package__:
+                from .original_recording_floor import admit
+            else:
+                from original_recording_floor import admit
+            plan = admit(plan, args.trusted_as_of, state_root=args.state_root,
+                         results_root=args.original_results_root)
         args.output.write_text(
             json.dumps(plan, ensure_ascii=True, indent=2, sort_keys=True) + "\n",
             encoding="utf-8",

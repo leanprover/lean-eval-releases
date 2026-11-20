@@ -208,6 +208,16 @@ jobs:
           test "$(git -C state rev-parse HEAD^)" = "$state_head"
           git -C state push origin HEAD:main
 
+      - name: Check out public original Results history for admission
+        if: steps.recovery.outputs.kind == 'none'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: leanprover/lean-eval-submissions
+          ref: main
+          fetch-depth: 0
+          persist-credentials: false
+          path: original-results
+
       - name: Plan at the trusted workflow clock
         if: steps.recovery.outputs.kind == 'none'
         id: plan
@@ -220,6 +230,8 @@ jobs:
             --controller-qualification \
               "$RUNNER_TEMP/release-controller-qualification.json" \
             --require-controller-qualification \
+            --state-root state \
+            --original-results-root original-results \
             --output "$RUNNER_TEMP/release-plan.json"
           kind=$(jq -r .kind "$RUNNER_TEMP/release-plan.json")
           case "$kind" in
