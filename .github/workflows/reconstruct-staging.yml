@@ -34,8 +34,17 @@ jobs:
         run: python -m unittest discover -s tests -v
       - name: Build one due execution plan
         run: |
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          queue = json.loads(Path("tests/fixtures/release-queue-v1.json").read_text())
+          queue["environment"] = "staging"
+          Path(os.environ["RUNNER_TEMP"], "staging-release-queue.json").write_text(json.dumps(queue))
+          PY
           python scripts/release_orchestrator.py \
-            tests/fixtures/release-queue-v1.json \
+            "$RUNNER_TEMP/staging-release-queue.json" \
             --trusted-as-of 2026-10-20T06:07:05.000Z \
             --output "$RUNNER_TEMP/release-plan.json"
       - name: Build a harmless synthetic decrypted archive

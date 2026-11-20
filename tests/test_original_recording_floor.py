@@ -263,6 +263,26 @@ class OriginalRecordingFloorTests(unittest.TestCase):
         self.assertIn("--state-root state", plan_block)
         self.assertIn("--original-results-root original-results", plan_block)
 
+    def test_actual_synthetic_staging_plan_step_still_runs_without_production_authority(self) -> None:
+        import os
+        import textwrap
+
+        workflow = (ROOT / ".github/workflows/reconstruct-staging.yml").read_text()
+        start = workflow.index("      - name: Build one due execution plan")
+        end = workflow.index("      - name:", start + 20)
+        body = textwrap.dedent(workflow[start:end].split("        run: |\n", 1)[1])
+        environment = dict(os.environ, RUNNER_TEMP=str(self.root))
+        # Exercise the authored workflow shell, including its fixture copy and
+        # CLI, rather than duplicating that preparation in this regression.
+        completed = subprocess.run(["bash", "-e", "-c", body], cwd=ROOT,
+                                   env=environment, capture_output=True, text=True)
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertEqual(json.loads((self.root / "staging-release-queue.json").read_text())["environment"], "staging")
+        plan = json.loads((self.root / "release-plan.json").read_text())
+        self.assertEqual(plan["kind"], "execution")
+        self.assertNotIn("controller", plan["request"])
+        self.assertEqual(json.loads((ROOT / "tests/fixtures/release-queue-v1.json").read_text())["environment"], "production")
+
 
 if __name__ == "__main__":
     unittest.main()
