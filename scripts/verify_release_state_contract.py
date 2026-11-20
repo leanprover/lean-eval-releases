@@ -14,6 +14,7 @@ from release_orchestrator import (
     STATE_RELEASE_CONTRACT_TREES,
 )
 from release_qualification import QualificationError, qualify_repository
+from state_contracts import select_state_contract
 
 STATE_CONTRACTS = {
     "production": (
@@ -41,6 +42,9 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     repository, contract_commit, contract_trees = STATE_CONTRACTS[args.environment]
     try:
+        if args.environment == "production":
+            contract_commit, entry = select_state_contract(args.state_root)
+            contract_trees = entry["trees"]
         qualify_repository(
             args.state_root,
             repository,

@@ -66,13 +66,13 @@ class ReleaseQualificationTests(unittest.TestCase):
         )
         schema_commit = release_plan_schema["$defs"]["controllerQualification"][
             "properties"
-        ]["state_contract_commit"]["const"]
+        ]["state_contract_commit"]["enum"]
         self.assertEqual(
             STATE_RELEASE_CONTRACT_COMMIT,
             "e2dd6314f04df175966ff105709b855053949d97",
         )
         self.assertEqual(contract_commit, STATE_RELEASE_CONTRACT_COMMIT)
-        self.assertEqual(schema_commit, STATE_RELEASE_CONTRACT_COMMIT)
+        self.assertEqual(set(schema_commit), {STATE_RELEASE_CONTRACT_COMMIT, "351b1c409290516bfa379fc857908908e1d08932"})
         self.assertEqual(
             removal_module.STATE_REMOVAL_CONTRACT_COMMIT,
             STATE_RELEASE_CONTRACT_COMMIT,

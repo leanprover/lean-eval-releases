@@ -47,7 +47,7 @@ class PinnedStateWorkflowTests(unittest.TestCase):
             encoding="utf-8"
         )
         self.assertIn("repository: leanprover/lean-eval-state", workflow)
-        self.assertIn(f"ref: {STATE_CONTRACT_COMMIT}", workflow)
+        self.assertIn("ref: 351b1c409290516bfa379fc857908908e1d08932", workflow)
         self.assertIn("path: .pinned-state-contract", workflow)
         self.assertIn("environment: release-production", workflow)
         self.assertIn(
@@ -65,7 +65,7 @@ class PinnedStateWorkflowTests(unittest.TestCase):
             "${{ github.workspace }}/.pinned-state-contract",
             workflow,
         )
-        self.assertEqual(workflow.count(f"ref: {STATE_CONTRACT_COMMIT}"), 1)
+        self.assertEqual(workflow.count("ref: 351b1c409290516bfa379fc857908908e1d08932"), 1)
         self.assertEqual(workflow.count("repository: leanprover/lean-eval-state"), 1)
 
 
@@ -258,8 +258,9 @@ write_views(materialize("production", events), output, False)
 
     def test_exact_pinned_consumers_accept_atomic_removal_and_hide_solution(self) -> None:
         self.qualify_state_source()
-        self.assertEqual(planner_module.STATE_REMOVAL_CONTRACT_COMMIT, STATE_CONTRACT_COMMIT)
-        self.assertEqual(planner_module.STATE_REMOVAL_CONTRACT_TREES, STATE_CONTRACT_TREES)
+        selected = planner_module._state_removal_contract(self.state_source, STATE_CONTRACT_COMMIT)
+        self.assertEqual(selected["commit"], STATE_CONTRACT_COMMIT)
+        self.assertEqual(selected["trees"], [{"path":p,"tree":t} for p,t in sorted(STATE_CONTRACT_TREES.items())])
 
         with tempfile.TemporaryDirectory() as directory:
             parent = pathlib.Path(directory)
@@ -485,3 +486,17 @@ write_views(materialize("production", events), output, False)
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ArchivedStateConsumerIntegrationTests(PinnedStateConsumerIntegrationTests):
+    def setUp(self) -> None:
+        super().setUp()
+        from unittest import mock
+        import sys
+        binding = mock.patch.multiple(sys.modules[__name__],
+            STATE_CONTRACT_COMMIT="351b1c409290516bfa379fc857908908e1d08932",
+            STATE_CONTRACT_TREE="a59838cf70755739bf9ad4fb9c43fdf531a9148b",
+            STATE_CONTRACT_ROOTS={'README.md': '98dceb606e0f8e2c779fa54cd2a810cfb7c591ef', 'docs': '7eff701f6cb2716092f2f13980354c3aec880373', 'schema': 'f7efe29098882c33bba25b5dbbeba34bd981205d', 'scripts': '1f0173a9cf24d00e139c0c346500a2deef5c2453'},
+            STATE_CONTRACT_TREES={'schema': 'f7efe29098882c33bba25b5dbbeba34bd981205d', 'scripts': '1f0173a9cf24d00e139c0c346500a2deef5c2453'})
+        binding.start()
+        self.addCleanup(binding.stop)

@@ -20,11 +20,13 @@ if __package__:
         validate_authority_descriptor,
     )
     from .release_qualification import build_qualification
+    from .state_contracts import select_state_contract
 else:
     from release_controller import canonical_json, staging_smoke_plan, started_event
     from release_orchestrator import plan_next
     from release_provider_literal import ProviderError, validate_authority_descriptor
     from release_qualification import build_qualification
+    from state_contracts import select_state_contract
 
 
 class ReconstructionError(ValueError):
@@ -77,7 +79,9 @@ def _materialize_at(
     state_root: pathlib.Path,
     state_commit: str,
     scratch_root: pathlib.Path,
+    environment: str = "production",
 ) -> tuple[dict[str, Any], dict[str, Any]]:
+    select_state_contract(state_root, state_commit, environment=environment)
     worktree = scratch_root / "state-views" / "release-plan-source"
     views = scratch_root / "state-views" / "release-plan-materialized"
     if (
@@ -223,6 +227,7 @@ def reconstruct(
         state_root,
         source_state_commit,
         scratch_root,
+        descriptor["environment"],
     )
     if descriptor["environment"] == "production":
         contract = _read_json(
@@ -238,6 +243,7 @@ def reconstruct(
             mode="publication",
             release_commit=release_commit,
             state_commit=source_state_commit,
+            state_contract_commit=select_state_contract(state_root, source_state_commit)[0],
         )
         if started is None:
             raise ReconstructionError("production release.started is missing")
